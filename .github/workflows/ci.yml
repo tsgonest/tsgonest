@@ -41,9 +41,8 @@ jobs:
         with:
           node-version: '24'
 
-      - name: Install e2e dependencies
+      - name: Install workspace dependencies
         run: pnpm install --frozen-lockfile
-        working-directory: e2e
 
       - name: Run e2e tests
         run: just test-e2e
