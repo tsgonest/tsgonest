@@ -140,6 +140,20 @@ jobs:
             packages/cli-linux-arm64/bin/tsgonest  \
             packages/cli-linux-x64/bin/tsgonest
 
+      # ── 3b. Rename binaries for GitHub Release ─────────────────
+      #
+      # GitHub Release assets need unique filenames. The build step places
+      # all Unix binaries as "tsgonest" inside their platform directories.
+      # Copy them into a flat release/ dir with platform suffixes.
+      - name: Rename binaries for release
+        run: |
+          mkdir -p release
+          cp packages/cli-darwin-arm64/bin/tsgonest  release/tsgonest-darwin-arm64
+          cp packages/cli-darwin-x64/bin/tsgonest    release/tsgonest-darwin-x64
+          cp packages/cli-linux-arm64/bin/tsgonest   release/tsgonest-linux-arm64
+          cp packages/cli-linux-x64/bin/tsgonest     release/tsgonest-linux-x64
+          cp packages/cli-win32-x64/bin/tsgonest.exe release/tsgonest-windows-x64.exe
+
       # ── 4. Bump version in every packages/*/package.json ─────
       #
       # pnpm publish -r replaces workspace:* refs with the real version,
@@ -198,8 +212,8 @@ jobs:
         with:
           body_path: /tmp/release-notes.md
           files: |
-            packages/cli-darwin-arm64/bin/tsgonest
-            packages/cli-darwin-x64/bin/tsgonest
-            packages/cli-linux-arm64/bin/tsgonest
-            packages/cli-linux-x64/bin/tsgonest
-            packages/cli-win32-x64/bin/tsgonest.exe
+            release/tsgonest-darwin-arm64
+            release/tsgonest-darwin-x64
+            release/tsgonest-linux-arm64
+            release/tsgonest-linux-x64
+            release/tsgonest-windows-x64.exe

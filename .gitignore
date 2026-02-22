@@ -5,6 +5,7 @@
 packages/cli-*/bin/
 packages/core/bin/
 dist/
+release/
 runtime/dist/
 testdata/*/dist/
 
