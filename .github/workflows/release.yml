@@ -1,0 +1,205 @@
+name: Release
+
+# Triggered by pushing a version tag, e.g. git tag v0.1.0 && git push --tags
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write        # Create GitHub Release + commit changelog back to main
+  id-token: write        # OIDC Trusted Publishing — no NPM_TOKEN secret needed
+  pull-requests: read    # git-cliff needs this to enrich changelog with PR titles
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Full history required for git-cliff to generate an accurate changelog.
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+          cache: true
+          cache-dependency-path: '**/go.sum'
+
+      - uses: extractions/setup-just@v2
+
+      - name: Initialize project
+        run: just init
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: '10'
+
+      # Node 24 LTS. Do NOT set registry-url here — actions/setup-node injects
+      # _authToken=${NODE_AUTH_TOKEN} into .npmrc and sets NODE_AUTH_TOKEN to
+      # GITHUB_TOKEN, which overrides and breaks the OIDC exchange.
+      # id-token: write (top-level) already sets ACTIONS_ID_TOKEN_REQUEST_*;
+      # pnpm + NPM_CONFIG_PROVENANCE=true handles OIDC auth automatically.
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+
+      # ── 1. Extract semver from tag (strip leading "v") ───────
+      - name: Extract version
+        id: version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      # ── 2. Generate changelog ─────────────────────────────────
+      #
+      # git-cliff reads all conventional commits and:
+      #   a) Writes the full CHANGELOG.md at the repo root
+      #   b) Outputs just the current release's notes (for the GitHub Release body)
+      #   c) Writes apps/docs/content/docs/changelog.mdx (with Fumadocs frontmatter)
+      #
+      # The two files are committed back to main so the repo and docs site always
+      # reflect the latest release without any manual editing.
+      - name: Generate changelog
+        uses: orhun/git-cliff-action@v4
+        id: cliff
+        with:
+          config: cliff.toml
+          # --latest: emit only the newest tag's section (used as release body below)
+          args: --verbose --latest --strip header
+        env:
+          OUTPUT: /tmp/release-notes.md
+          GITHUB_REPO: ${{ github.repository }}
+
+      - name: Write full CHANGELOG.md
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: cliff.toml
+          args: --verbose
+        env:
+          OUTPUT: CHANGELOG.md
+          GITHUB_REPO: ${{ github.repository }}
+
+      - name: Update docs changelog page
+        env:
+          VERSION: ${{ steps.version.outputs.VERSION }}
+        run: |
+          {
+            printf -- '---\ntitle: Changelog\ndescription: All notable changes to tsgonest.\n---\n\n'
+            # Strip the top-level "# Changelog" header — Fumadocs renders its own
+            tail -n +6 CHANGELOG.md
+          } > apps/docs/content/docs/changelog.mdx
+
+      - name: Commit changelog to main
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add CHANGELOG.md apps/docs/content/docs/changelog.mdx
+          git diff --staged --quiet \
+            || git commit -m "chore(release): update changelog for ${{ github.ref_name }}"
+          git push origin HEAD:refs/heads/main
+
+      # ── 3. Cross-compile all five platform binaries ──────────
+      #
+      # Go's cross-compiler handles all platforms from Linux.
+      # Build cache is keyed per GOOS/GOARCH, so each target compiles from
+      # scratch. Run 2 at a time to balance speed vs the 7 GB RAM limit on
+      # standard GitHub Actions runners (5 at once OOMs).
+      - name: Build all platform binaries
+        env:
+          VERSION: ${{ steps.version.outputs.VERSION }}
+        run: |
+          LDFLAGS="-s -w -X main.version=${VERSION}"
+          mkdir -p \
+            packages/cli-darwin-arm64/bin \
+            packages/cli-darwin-x64/bin  \
+            packages/cli-linux-arm64/bin  \
+            packages/cli-linux-x64/bin   \
+            packages/cli-win32-x64/bin
+
+          # Batch 1 (2 parallel)
+          GOOS=darwin  GOARCH=arm64 go build -ldflags "${LDFLAGS}" \
+            -o packages/cli-darwin-arm64/bin/tsgonest   ./cmd/tsgonest &
+          GOOS=darwin  GOARCH=amd64 go build -ldflags "${LDFLAGS}" \
+            -o packages/cli-darwin-x64/bin/tsgonest    ./cmd/tsgonest &
+          wait
+
+          # Batch 2 (2 parallel)
+          GOOS=linux   GOARCH=arm64 go build -ldflags "${LDFLAGS}" \
+            -o packages/cli-linux-arm64/bin/tsgonest   ./cmd/tsgonest &
+          GOOS=linux   GOARCH=amd64 go build -ldflags "${LDFLAGS}" \
+            -o packages/cli-linux-x64/bin/tsgonest     ./cmd/tsgonest &
+          wait
+
+          # Batch 3 (1 remaining)
+          GOOS=windows GOARCH=amd64 go build -ldflags "${LDFLAGS}" \
+            -o packages/cli-win32-x64/bin/tsgonest.exe ./cmd/tsgonest
+
+          chmod +x \
+            packages/cli-darwin-arm64/bin/tsgonest \
+            packages/cli-darwin-x64/bin/tsgonest  \
+            packages/cli-linux-arm64/bin/tsgonest  \
+            packages/cli-linux-x64/bin/tsgonest
+
+      # ── 4. Bump version in every packages/*/package.json ─────
+      #
+      # pnpm publish -r replaces workspace:* refs with the real version,
+      # but the version field itself must be set manually first.
+      - name: Bump package versions
+        env:
+          VERSION: ${{ steps.version.outputs.VERSION }}
+        run: |
+          node - <<'EOF'
+          const fs = require('fs'), path = require('path');
+          const version = process.env.VERSION;
+          const pkgFiles = fs.readdirSync('packages', { withFileTypes: true })
+            .filter(d => d.isDirectory())
+            .map(d => path.join('packages', d.name, 'package.json'))
+            .filter(f => fs.existsSync(f));
+          for (const f of pkgFiles) {
+            const pkg = JSON.parse(fs.readFileSync(f, 'utf8'));
+            pkg.version = version;
+            fs.writeFileSync(f, JSON.stringify(pkg, null, 2) + '\n');
+            console.log(`  ${f}  →  ${version}`);
+          }
+          console.log(`Bumped ${pkgFiles.length} package(s) to ${version}`);
+          EOF
+
+      # ── 5. Install workspace (builds lock + symlinks) ────────
+      - name: Install workspace
+        run: pnpm install --no-frozen-lockfile
+
+      # ── 6. Build TypeScript packages (runtime + types) ───────
+      - name: Build TypeScript packages
+        run: pnpm build:packages
+
+      # ── 7. Publish to npm via OIDC Trusted Publishing ────────
+      #
+      # pnpm publish -r:
+      #   • Respects dependency order (cli-* → runtime → types → core)
+      #   • Rewrites workspace:* deps to the real version number
+      #   • --access public  required for scoped packages (@tsgonest/*)
+      #   • --no-git-checks  skip dirty-tree check (we bumped versions above)
+      #
+      # NPM_CONFIG_PROVENANCE=true tells pnpm to pass --provenance to the
+      # underlying npm registry client (the env-var approach for third-party
+      # tools per https://docs.npmjs.com/generating-provenance-statements).
+      - name: Publish to npm
+        run: pnpm publish -r --access public --no-git-checks
+        env:
+          NPM_CONFIG_PROVENANCE: 'true'
+
+      # ── 8. Create GitHub Release ──────────────────────────────
+      #
+      # Uses the git-cliff output as the release body instead of the default
+      # auto-generated notes, giving a clean conventional-commit-based summary.
+      # Raw binaries are attached for users who prefer direct downloads.
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: /tmp/release-notes.md
+          files: |
+            packages/cli-darwin-arm64/bin/tsgonest
+            packages/cli-darwin-x64/bin/tsgonest
+            packages/cli-linux-arm64/bin/tsgonest
+            packages/cli-linux-x64/bin/tsgonest
+            packages/cli-win32-x64/bin/tsgonest.exe

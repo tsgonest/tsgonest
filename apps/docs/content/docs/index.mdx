@@ -1,0 +1,48 @@
+---
+title: tsgonest overview
+description: Native-speed TypeScript compilation plus generated validation, serialization, and OpenAPI.
+---
+
+`tsgonest` is a Go CLI that wraps `typescript-go` (`tsgo`) and augments emit output for NestJS-heavy backends.
+
+## What it does
+
+1. Compiles TypeScript using `tsgo`.
+2. Generates companion validators and serializers beside emitted JS.
+3. Builds an OpenAPI 3.1 document from static NestJS controller analysis.
+4. Writes a manifest (`__tsgonest_manifest.json`) so runtime utilities can discover companions.
+5. Provides `@tsgonest/runtime` with `TsgonestValidationPipe` and `TsgonestSerializationInterceptor`.
+
+## Compilation pipeline
+
+```text
+CLI args + config load
+  -> tsgo program creation
+  -> JavaScript emit
+  -> type metadata walk
+  -> companion generation
+  -> manifest generation
+  -> OpenAPI generation
+```
+
+## Output artifacts
+
+Given a DTO file such as `src/user.dto.ts`, `tsgonest` can generate:
+
+- `dist/src/user.dto.CreateUserDto.validate.js`
+- `dist/src/user.dto.UserResponse.serialize.js`
+- `dist/src/__tsgonest_manifest.json`
+- `dist/openapi.json`
+
+:::note
+The current CLI is `tsgonest [flags]`. `tsgonest dev` and `tsgonest build` are planned phases, not current commands.
+:::
+
+## Next
+
+<Cards>
+  <Card title="Get started" href="/docs/getting-started" />
+  <Card title="CLI reference" href="/docs/cli" />
+  <Card title="Validation & deserialization" href="/docs/validation-deserialization" />
+  <Card title="Serialization & runtime" href="/docs/serialization-runtime" />
+</Cards>

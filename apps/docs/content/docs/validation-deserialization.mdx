@@ -1,0 +1,69 @@
+---
+title: validation and deserialization
+description: Generated `*.validate.js` companions, assertions, and JSON deserialization flow.
+---
+
+When `transforms.validation` is enabled, `tsgonest` generates per-type validation companions.
+
+## Generated functions
+
+For `CreateUserDto`, the output file resembles:
+
+- `validateCreateUserDto(input)`
+- `assertCreateUserDto(input)`
+- `deserializeCreateUserDto(json)`
+
+Path example:
+
+```text
+dist/src/user.dto.CreateUserDto.validate.js
+```
+
+## Runtime behavior
+
+`validate*` returns structured success/error information, while `assert*` throws on invalid values.
+
+`deserialize*` parses JSON and validates the resulting value in one step.
+
+## Constraints and formats
+
+Constraint checks are generated from metadata/JSDoc, including:
+
+- string length constraints (`@minLength`, `@maxLength`)
+- numeric range constraints (`@minimum`, `@maximum`)
+- format constraints (for example `@format email`)
+
+Example DTO from fixtures:
+
+```ts
+export interface CreateUserDto {
+  /**
+   * @minLength 1
+   * @maxLength 255
+   */
+  name: string;
+
+  /** @format email */
+  email: string;
+
+  /**
+   * @minimum 0
+   * @maximum 150
+   */
+  age: number;
+}
+```
+
+## Ignore controls
+
+Type-level ignore metadata can skip generation for:
+
+- all companions
+- validation only
+- serialization only
+
+(handled through metadata fields during codegen)
+
+:::note
+Companions are generated for object-like DTO types; primitives and unsupported shapes are skipped.
+:::

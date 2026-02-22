@@ -1,0 +1,54 @@
+---
+title: cli reference
+description: Command flags and runtime behavior for the current tsgonest CLI.
+---
+
+## Usage
+
+```bash
+tsgonest [flags]
+```
+
+## Flags
+
+| Flag | Alias | Description | Default |
+| --- | --- | --- | --- |
+| `--project <path>` | `-p` | Path to `tsconfig.json` | `tsconfig.json` |
+| `--config <path>` | - | Path to `tsgonest.config.json` | auto-detect `./tsgonest.config.json` |
+| `--dump-metadata` | - | Dump walked type metadata JSON to stdout | `false` |
+| `--version` | - | Print version and exit | `false` |
+| `--help` | - | Print usage and exit | `false` |
+
+## Operational flow
+
+When not using `--dump-metadata`, the CLI runs in this order:
+
+1. Resolve working directory.
+2. Load config (explicit path or default file).
+3. Create tsgo program with the selected `tsconfig`.
+4. Emit JS.
+5. Generate companions (validation/serialization) if enabled.
+6. Generate manifest when companions exist.
+7. Generate OpenAPI when `openapi.output` is configured.
+
+## Examples
+
+```bash
+tsgonest
+```
+
+```bash
+tsgonest --project tsconfig.build.json
+```
+
+```bash
+tsgonest --config testdata/nestjs/tsgonest.config.json --project testdata/nestjs/tsconfig.json
+```
+
+```bash
+tsgonest --dump-metadata --project testdata/nestjs/tsconfig.json
+```
+
+:::note
+Current implementation is single-command CLI. Subcommands like `dev`/`build` are planned in future phases.
+:::

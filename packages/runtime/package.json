@@ -1,0 +1,58 @@
+{
+  "name": "@tsgonest/runtime",
+  "version": "0.0.1",
+  "description": "Runtime utilities for tsgonest — validation pipe, serialization interceptor, and companion file discovery",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest --run"
+  },
+  "peerDependencies": {
+    "@nestjs/common": ">=9.0.0",
+    "@nestjs/core": ">=9.0.0",
+    "rxjs": ">=7.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@nestjs/common": {
+      "optional": true
+    },
+    "@nestjs/core": {
+      "optional": true
+    },
+    "rxjs": {
+      "optional": true
+    }
+  },
+  "keywords": [
+    "nestjs",
+    "typescript",
+    "validation",
+    "serialization",
+    "openapi",
+    "tsgonest"
+  ],
+  "devDependencies": {
+    "@nestjs/common": "^10.0.0",
+    "@nestjs/core": "^10.0.0",
+    "@types/node": "^25.3.0",
+    "reflect-metadata": "^0.2.0",
+    "rxjs": "^7.8.0",
+    "typescript": "^5.7.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tsgonest/tsgonest"
+  }
+}

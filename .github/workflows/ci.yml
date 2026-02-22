@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+          cache: true
+          cache-dependency-path: '**/go.sum'
+
+      - uses: extractions/setup-just@v2
+
+      - name: Initialize project
+        run: just init
+
+      # ── Go unit tests ────────────────────────────────────────
+      - name: Run Go unit tests
+        run: just test-unit
+
+      # ── Build binary (needed by e2e) ─────────────────────────
+      - name: Build binary
+        run: just build
+
+      # ── E2e tests ────────────────────────────────────────────
+      - uses: pnpm/action-setup@v4
+        with:
+          version: '10'
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+
+      - name: Install e2e dependencies
+        run: pnpm install --frozen-lockfile
+        working-directory: e2e
+
+      - name: Run e2e tests
+        run: just test-e2e

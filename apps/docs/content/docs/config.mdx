@@ -1,0 +1,69 @@
+---
+title: configuration
+description: Schema, defaults, and validation rules for tsgonest.config.json.
+---
+
+`tsgonest` currently loads JSON configuration from `tsgonest.config.json`.
+
+## Full shape
+
+```json
+{
+  "controllers": {
+    "include": ["src/**/*.controller.ts"],
+    "exclude": ["src/**/*.spec.ts"]
+  },
+  "transforms": {
+    "validation": true,
+    "serialization": true,
+    "exclude": ["Legacy*", "SomeInternalDto"]
+  },
+  "openapi": {
+    "output": "dist/openapi.json"
+  },
+  "nestjs": {
+    "globalPrefix": "api",
+    "versioning": {
+      "type": "URI",
+      "defaultVersion": "1",
+      "prefix": "v"
+    }
+  }
+}
+```
+
+## Defaults
+
+If fields are omitted, current defaults are:
+
+```json
+{
+  "controllers": {
+    "include": ["src/**/*.controller.ts"]
+  },
+  "transforms": {
+    "validation": true,
+    "serialization": true
+  },
+  "openapi": {
+    "output": "dist/openapi.json"
+  }
+}
+```
+
+## Validation rules
+
+`internal/config/config.go` currently enforces:
+
+- `controllers.include` must contain at least one glob.
+- `openapi.output` must be non-empty.
+- `openapi.output` must have `.json` extension.
+
+## Path resolution behavior
+
+- Relative `openapi.output` paths are resolved relative to the config file directory.
+- If `--config` is not set and `./tsgonest.config.json` exists, it is auto-loaded.
+
+:::warning
+TypeScript-based config files are planned but not currently supported.
+:::

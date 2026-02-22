@@ -1,0 +1,64 @@
+---
+title: serialization and runtime
+description: Generated serializers, manifest wiring, and @tsgonest/runtime integration.
+---
+
+When `transforms.serialization` is enabled, `tsgonest` emits fast JSON serializers as companion files.
+
+## Generated serializer companions
+
+Example:
+
+```text
+dist/src/user.dto.UserResponse.serialize.js
+```
+
+This companion exports type-specific serialization helpers such as `serializeUserResponse`.
+
+## Manifest contract
+
+After companion generation, `tsgonest` writes `__tsgonest_manifest.json` in the output directory.
+
+Manifest shape:
+
+```json
+{
+  "validators": {
+    "CreateUserDto": {
+      "file": "./user.dto.CreateUserDto.validate.js",
+      "fn": "assertCreateUserDto"
+    }
+  },
+  "serializers": {
+    "UserResponse": {
+      "file": "./user.dto.UserResponse.serialize.js",
+      "fn": "serializeUserResponse"
+    }
+  }
+}
+```
+
+## Runtime package APIs
+
+`@tsgonest/runtime` currently exports:
+
+- `TsgonestValidationPipe`
+- `TsgonestSerializationInterceptor`
+- `CompanionDiscovery`
+- `TsgonestValidationError`
+- `defineConfig` + `TsgonestConfig`
+
+## NestJS integration sketch
+
+```ts
+import { TsgonestValidationPipe, TsgonestSerializationInterceptor } from '@tsgonest/runtime';
+
+app.useGlobalPipes(new TsgonestValidationPipe({ distDir: 'dist/src' }));
+app.useGlobalInterceptors(new TsgonestSerializationInterceptor({ distDir: 'dist/src' }));
+```
+
+`CompanionDiscovery` loads the manifest and resolves companion module exports lazily.
+
+:::tip
+If you already have a prepared `CompanionDiscovery`, pass it directly to the pipe/interceptor to skip repeated manifest loading.
+:::

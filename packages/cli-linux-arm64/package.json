@@ -1,0 +1,10 @@
+{
+  "name": "@tsgonest/cli-linux-arm64",
+  "version": "0.0.1",
+  "description": "tsgonest binary for Linux ARM64",
+  "os": ["linux"],
+  "cpu": ["arm64"],
+  "repository": { "type": "git", "url": "https://github.com/tsgonest/tsgonest" },
+  "license": "MIT",
+  "files": ["bin/"]
+}

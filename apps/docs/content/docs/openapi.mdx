@@ -1,0 +1,64 @@
+---
+title: openapi generation
+description: How tsgonest produces OpenAPI 3.1 from static NestJS controller analysis.
+---
+
+`tsgonest` generates an OpenAPI 3.1 JSON document when `openapi.output` is configured.
+
+## Input discovery
+
+Controller analysis uses your configured include/exclude patterns:
+
+```json
+{
+  "controllers": {
+    "include": ["src/**/*.controller.ts"],
+    "exclude": ["src/**/*.spec.ts"]
+  }
+}
+```
+
+In fixtures like `testdata/nestjs/src/user.controller.ts`, static decorators are analyzed to produce:
+
+- Paths such as `/users` and `/users/{id}`
+- Methods (`get`, `post`, `put`, `delete`)
+- Operation IDs from method names
+- Request bodies, path/query params, and response schemas
+
+## Document characteristics
+
+Current generator output includes:
+
+- `openapi: "3.1.0"`
+- default info (`title: "API"`, `version: "1.0.0"`)
+- `paths` from controller routes
+- `components.schemas` from walked type metadata
+- tags derived from controller names
+
+## Output path
+
+If `openapi.output` is relative, it is resolved against the directory containing `tsgonest.config.json`.
+
+```json
+{
+  "openapi": {
+    "output": "dist/openapi.json"
+  }
+}
+```
+
+## Run and verify
+
+```bash
+./tsgonest --project testdata/nestjs/tsconfig.json --config testdata/nestjs/tsgonest.config.json
+```
+
+Then inspect:
+
+```bash
+cat testdata/nestjs/dist/openapi.json
+```
+
+:::tip
+Route params are normalized from NestJS `:id` style to OpenAPI `{id}` style.
+:::

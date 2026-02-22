@@ -1,0 +1,7 @@
+{
+  "include": ["src/**/*.ts"],
+  "transforms": {
+    "validation": true,
+    "serialization": true
+  }
+}

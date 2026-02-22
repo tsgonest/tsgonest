@@ -1,0 +1,91 @@
+---
+title: getting started
+description: Build and run tsgonest in this repository.
+---
+
+This repository is Go-first with local Node packages under `runtime/` and `e2e/`.
+
+## Prerequisites
+
+- Go 1.24+
+- Node.js 18+ (this repo currently runs with Node 25)
+- `pnpm` 10+
+
+## Build the binary
+
+```bash
+go build -o tsgonest ./cmd/tsgonest
+```
+
+## Run against fixtures
+
+```bash
+./tsgonest --project testdata/nestjs/tsconfig.json --config testdata/nestjs/tsgonest.config.json
+```
+
+The command emits JS via `tsgo`, then generates companion files, manifest, and OpenAPI.
+
+## Common test commands
+
+```bash
+go test ./internal/...
+```
+
+```bash
+cd e2e && pnpm run test --run
+```
+
+:::tip
+`just` is intentionally not required for this repo. Use raw `go` and `pnpm` commands.
+:::
+
+## Package manager quick commands
+
+<CodeBlockTabs defaultValue="pnpm">
+  <CodeBlockTabsList>
+    <CodeBlockTabsTrigger value="pnpm">pnpm</CodeBlockTabsTrigger>
+    <CodeBlockTabsTrigger value="npm">npm</CodeBlockTabsTrigger>
+    <CodeBlockTabsTrigger value="yarn">yarn</CodeBlockTabsTrigger>
+    <CodeBlockTabsTrigger value="bun">bun</CodeBlockTabsTrigger>
+  </CodeBlockTabsList>
+
+  <CodeBlockTab value="pnpm">
+
+```bash
+pnpm install
+pnpm --dir e2e test --run
+pnpm --dir runtime test --run
+```
+
+  </CodeBlockTab>
+
+  <CodeBlockTab value="npm">
+
+```bash
+npm install
+npm --prefix e2e run test -- --run
+npm --prefix runtime run test -- --run
+```
+
+  </CodeBlockTab>
+
+  <CodeBlockTab value="yarn">
+
+```bash
+yarn install
+yarn --cwd e2e test --run
+yarn --cwd runtime test --run
+```
+
+  </CodeBlockTab>
+
+  <CodeBlockTab value="bun">
+
+```bash
+bun install
+bun --cwd e2e run test --run
+bun --cwd runtime run test --run
+```
+
+  </CodeBlockTab>
+</CodeBlockTabs>

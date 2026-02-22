@@ -1,0 +1,28 @@
+{
+  "name": "tsgonest",
+  "version": "0.0.1",
+  "description": "TypeScript compiler with runtime validation, serialization, and OpenAPI generation for NestJS",
+  "keywords": ["typescript", "nestjs", "validation", "serialization", "openapi", "typescript-go", "tsgo"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tsgonest/tsgonest"
+  },
+  "bin": {
+    "tsgonest": "bin/tsgonest"
+  },
+  "scripts": {
+    "postinstall": "node install.js"
+  },
+  "dependencies": {
+    "@tsgonest/runtime": "workspace:*",
+    "@tsgonest/types": "workspace:*"
+  },
+  "optionalDependencies": {
+    "@tsgonest/cli-darwin-arm64": "workspace:*",
+    "@tsgonest/cli-darwin-x64": "workspace:*",
+    "@tsgonest/cli-linux-x64": "workspace:*",
+    "@tsgonest/cli-linux-arm64": "workspace:*",
+    "@tsgonest/cli-win32-x64": "workspace:*"
+  }
+}

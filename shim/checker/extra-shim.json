@@ -1,0 +1,74 @@
+{
+  "ExtraMethods": {
+    "Checker": [
+      "getBaseConstraintOfType",
+      "getDeclaredTypeOfSymbol",
+      "getBaseTypes",
+      "getSignaturesOfType",
+      "getApparentType",
+      "getIndexTypeOfType",
+      "getPropertyOfType",
+      "getPropertiesOfType",
+      "getSignaturesOfType",
+      "getPropertyNameForKnownSymbolName",
+      "getTypeFromTypeNode",
+      "isArrayOrTupleType",
+      "isArrayType",
+      "getTypeArguments",
+      "getTypeOfSymbol",
+      "getTypeOfPropertyOfType",
+      "getReturnTypeOfSignature",
+      "getResolvedSignature",
+      "getBaseTypeOfLiteralType",
+      "getWidenedType",
+      "isTypeAssignableTo",
+      "GetNonNullableType",
+      "IsNullableType",
+      "getIndexInfosOfType",
+      "isReadonlySymbol"
+    ]
+  },
+  "ExtraFields": {
+    "Type": [
+      "alias",
+      "flags",
+      "symbol",
+      "objectFlags"
+    ],
+    "TupleType": [
+      "combinedFlags",
+      "readonly",
+      "elementInfos"
+    ],
+    "IndexInfo": [
+      "keyType",
+      "valueType"
+    ],
+    "Signature": [
+      "parameters",
+      "declaration",
+      "resolvedTypePredicate"
+    ],
+    "Checker": [
+      "numberType",
+      "booleanType",
+      "globalRegExpType"
+    ],
+    "InterfaceType": [
+      "thisType"
+    ],
+    "IndexedAccessType": [
+      "objectType",
+      "indexType"
+    ],
+    "MappedType": [
+      "typeParameter",
+      "constraintType",
+      "templateType"
+    ],
+    "ConditionalType": [
+      "checkType",
+      "extendsType"
+    ]
+  }
+}

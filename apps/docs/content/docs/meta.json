@@ -1,0 +1,14 @@
+{
+  "title": "tsgonest docs",
+  "pages": [
+    "index",
+    "getting-started",
+    "cli",
+    "config",
+    "openapi",
+    "validation-deserialization",
+    "serialization-runtime",
+    "---",
+    "changelog"
+  ]
+}

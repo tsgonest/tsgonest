@@ -1,0 +1,397 @@
+@import 'tailwindcss';
+@import 'fumadocs-ui/css/neutral.css';
+@import 'fumadocs-ui/css/preset.css';
+
+/* ============================================================
+   tsgonest docs — Prisma-inspired design system
+   Primary brand: teal (#16a394 / #14b8a6)
+   ============================================================ */
+
+/* ── Layout ─────────────────────────────────────────────── */
+:root {
+  --fd-layout-width: 97rem;
+  --fd-sidebar-width: 268px;
+}
+
+/* ── Border radius scale (Prisma convention) ─────────────── */
+:root {
+  --radius:        0.5rem;
+  --radius-square: 6px;
+  --radius-high:   12px;
+  --radius-circle: 999px;
+}
+
+/* ── Semantic tokens — Light mode ────────────────────────── */
+:root {
+  /* Shadcn-compatible core tokens */
+  --background:             #ffffff;
+  --foreground:             #1d242f;
+  --card:                   #ffffff;
+  --card-foreground:        #1d242f;
+  --popover:                #ffffff;
+  --popover-foreground:     #1d242f;
+  --primary:                #16a394;
+  --primary-foreground:     #ffffff;
+  --secondary:              #f7fafc;
+  --secondary-foreground:   #1d242f;
+  --muted:                  #edf2f7;
+  --muted-foreground:       #718096;
+  --accent:                 #ccfbf1;
+  --accent-foreground:      #134e4a;
+  --destructive:            #e53e3e;
+  --border:                 #e2e8f0;
+  --input:                  #e2e8f0;
+  --ring:                   #16a394;
+
+  /* Semantic background scale */
+  --color-background-default:        #ffffff;
+  --color-background-neutral-weaker: #fcfdfd;
+  --color-background-neutral-weak:   #f9fafb;
+  --color-background-neutral:        #f3f4f6;
+  --color-background-neutral-strong: #e5e7eb;
+  --color-background-neutral-reverse: #1f2937;
+
+  /* Stroke / border scale */
+  --color-stroke-neutral:        #e2e8f0;
+  --color-stroke-neutral-strong: #d1d5db;
+  --color-stroke-neutral-weak:   #f3f4f6;
+
+  /* Foreground scale */
+  --color-foreground-neutral:         #111827;
+  --color-foreground-neutral-weak:    #6b7280;
+  --color-foreground-neutral-weaker:  #9ca3af;
+  --color-foreground-neutral-reverse: #ffffff;
+
+  /* fumadocs var overrides — after @import, so these win */
+  --color-fd-background:           var(--background);
+  --color-fd-foreground:           var(--foreground);
+  --color-fd-card:                 var(--card);
+  --color-fd-card-foreground:      var(--card-foreground);
+  --color-fd-popover:              var(--popover);
+  --color-fd-popover-foreground:   var(--popover-foreground);
+  --color-fd-primary:              var(--primary);
+  --color-fd-primary-foreground:   var(--primary-foreground);
+  --color-fd-secondary:            var(--secondary);
+  --color-fd-secondary-foreground: var(--secondary-foreground);
+  --color-fd-muted:                var(--muted);
+  --color-fd-muted-foreground:     var(--muted-foreground);
+  --color-fd-accent:               var(--accent);
+  --color-fd-accent-foreground:    var(--accent-foreground);
+  --color-fd-border:               var(--border);
+  --color-fd-ring:                 var(--ring);
+  --color-fd-overlay:              rgba(0, 0, 0, 0.32);
+}
+
+/* ── Semantic tokens — Dark mode ─────────────────────────── */
+.dark {
+  --background:             #030712;   /* Prisma's exact deep-space dark bg */
+  --foreground:             #f1f5f9;
+  --card:                   #0d1117;
+  --card-foreground:        #f1f5f9;
+  --popover:                #0d1117;
+  --popover-foreground:     #f1f5f9;
+  --primary:                #2dd4bf;
+  --primary-foreground:     #021d19;
+  --secondary:              #111827;
+  --secondary-foreground:   #f1f5f9;
+  --muted:                  #111827;
+  --muted-foreground:       #94a3b8;
+  --accent:                 #0d3a38;
+  --accent-foreground:      #5eead4;
+  --destructive:            #ef4444;
+  --border:                 #1e2937;
+  --input:                  #1e2937;
+  --ring:                   #2dd4bf;
+
+  --color-background-default:        #030712;
+  --color-background-neutral-weaker: #060b14;
+  --color-background-neutral-weak:   #0d1117;
+  --color-background-neutral:        #111827;
+  --color-background-neutral-strong: #1f2937;
+  --color-background-neutral-reverse: #f3f4f6;
+
+  --color-stroke-neutral:        #1e2937;
+  --color-stroke-neutral-strong: #374151;
+  --color-stroke-neutral-weak:   #111827;
+
+  --color-foreground-neutral:         #f9fafb;
+  --color-foreground-neutral-weak:    #9ca3af;
+  --color-foreground-neutral-weaker:  #6b7280;
+  --color-foreground-neutral-reverse: #111827;
+
+  --color-fd-background:           var(--background);
+  --color-fd-foreground:           var(--foreground);
+  --color-fd-card:                 var(--card);
+  --color-fd-card-foreground:      var(--card-foreground);
+  --color-fd-popover:              var(--popover);
+  --color-fd-popover-foreground:   var(--popover-foreground);
+  --color-fd-primary:              var(--primary);
+  --color-fd-primary-foreground:   var(--primary-foreground);
+  --color-fd-secondary:            var(--secondary);
+  --color-fd-secondary-foreground: var(--secondary-foreground);
+  --color-fd-muted:                var(--muted);
+  --color-fd-muted-foreground:     var(--muted-foreground);
+  --color-fd-accent:               var(--accent);
+  --color-fd-accent-foreground:    var(--accent-foreground);
+  --color-fd-border:               var(--border);
+  --color-fd-ring:                 var(--ring);
+  --color-fd-overlay:              rgba(0, 0, 0, 0.5);
+}
+
+/* ── Rounded-square utility class (Prisma convention) ────── */
+.rounded-square {
+  border-radius: var(--radius-square);
+}
+
+/* ============================================================
+   Base typography
+   ============================================================ */
+
+html,
+body {
+  font-family: var(--font-sans), sans-serif;
+  background: var(--color-fd-background);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+[data-page-title] {
+  font-family: var(--font-display), var(--font-sans), sans-serif;
+  letter-spacing: -0.018em;
+}
+
+code,
+pre,
+kbd,
+samp {
+  font-family: var(--font-mono), monospace;
+}
+
+/* ============================================================
+   Header / subnav  (Prisma navbar pattern)
+   ============================================================ */
+
+#nd-subnav {
+  border-bottom: 1px solid var(--color-stroke-neutral);
+}
+
+#nd-subnav [data-header-body] {
+  background: var(--color-background-default);
+}
+
+#nd-subnav [data-header-tabs] {
+  background: var(--color-background-default);
+}
+
+#nd-subnav [data-header-tabs] a,
+#nd-subnav [data-header-tabs] button {
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+/* Active tab underline — teal */
+#nd-subnav [data-header-tabs] a[data-active='true'],
+#nd-subnav [data-header-tabs] button[data-active='true'] {
+  color: var(--color-fd-primary);
+  border-color: var(--color-fd-primary);
+}
+
+/* ============================================================
+   Search dialog
+   ============================================================ */
+
+[data-search-full] {
+  border-radius: var(--radius-square);
+}
+
+/* ============================================================
+   Sidebar
+   ============================================================ */
+
+#nd-sidebar {
+  border-inline-end: 1px solid var(--color-stroke-neutral);
+  background-color: var(--color-background-neutral-weak);
+}
+
+/* Active link */
+#nd-sidebar a[data-active='true'] {
+  background: color-mix(in oklab, var(--color-fd-primary) 12%, transparent);
+  color: var(--color-fd-primary);
+  font-weight: 500;
+}
+
+#nd-sidebar a[data-active='true']:hover {
+  background: color-mix(in oklab, var(--color-fd-primary) 18%, transparent);
+}
+
+/* ============================================================
+   Page / Prose
+   ============================================================ */
+
+#nd-page {
+  padding-top: 2.25rem;
+}
+
+#nd-page .prose {
+  line-height: 1.75;
+}
+
+/* Inline code — Prisma's subtle chip */
+#nd-page .prose :not(pre) > code {
+  border: 1px solid var(--color-stroke-neutral);
+  border-radius: var(--radius-square);
+  background: var(--color-background-neutral-weak);
+  padding: 0.1rem 0.35rem;
+  font-size: 0.84em;
+  font-weight: 450;
+}
+
+/* Code blocks — white bg, subtle border, square corners */
+#nd-page .prose pre {
+  border: 1px solid var(--color-stroke-neutral);
+  border-radius: var(--radius-square);
+  background: var(--color-background-default) !important;
+  overflow: hidden;
+}
+
+#nd-page .prose pre code {
+  border: none;
+  background: transparent;
+  padding: 0;
+  font-size: 0.8125rem;
+  border-radius: 0;
+}
+
+/* Shiki / fumadocs code figure */
+figure[class*='shiki'],
+figure.shiki {
+  border: 1px solid var(--color-stroke-neutral) !important;
+  border-radius: var(--radius-square) !important;
+  overflow: hidden;
+  background: var(--color-background-default) !important;
+}
+
+/* ── Tables ───────────────────────────────────────────────── */
+#nd-page .prose table {
+  border-radius: var(--radius-square);
+  overflow: hidden;
+  border: 1px solid var(--color-stroke-neutral);
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 0.875rem;
+}
+
+#nd-page .prose th {
+  background: var(--color-background-neutral-weak);
+  border-bottom: 1px solid var(--color-stroke-neutral);
+  font-weight: 600;
+  font-size: 0.8125rem;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+#nd-page .prose td {
+  border-bottom: 1px solid var(--color-stroke-neutral-weak);
+}
+
+#nd-page .prose tr:last-child td {
+  border-bottom: none;
+}
+
+/* ── Heading anchor links ─────────────────────────────────── */
+#nd-page .prose h1 a,
+#nd-page .prose h2 a,
+#nd-page .prose h3 a,
+#nd-page .prose h4 a {
+  color: inherit;
+  text-decoration: none;
+}
+
+#nd-page .prose h1 a:hover,
+#nd-page .prose h2 a:hover,
+#nd-page .prose h3 a:hover,
+#nd-page .prose h4 a:hover {
+  color: var(--color-fd-primary);
+}
+
+/* ── TOC active ───────────────────────────────────────────── */
+#nd-toc [data-active='true'] {
+  color: var(--color-fd-primary);
+  font-weight: 500;
+}
+
+/* ── Step numbers ─────────────────────────────────────────── */
+.fd-step::before {
+  background-color: var(--color-fd-primary) !important;
+  color: var(--color-fd-primary-foreground) !important;
+  border-radius: var(--radius-circle);
+}
+
+/* ============================================================
+   Text selection
+   ============================================================ */
+
+::selection {
+  background: color-mix(in oklab, var(--primary) 22%, white 78%);
+}
+
+.dark ::selection {
+  background: color-mix(in oklab, var(--primary) 28%, #030712 72%);
+}
+
+/* ============================================================
+   Dark-mode component overrides
+   ============================================================ */
+
+.dark #nd-subnav [data-header-body],
+.dark #nd-subnav [data-header-tabs] {
+  background: var(--color-background-default);
+  border-color: var(--color-stroke-neutral);
+}
+
+.dark #nd-sidebar {
+  background-color: var(--color-background-neutral-weak);
+  border-color: var(--color-stroke-neutral);
+}
+
+.dark #nd-sidebar a[data-active='true'] {
+  background: color-mix(in oklab, var(--color-fd-primary) 16%, transparent);
+  color: var(--color-fd-primary);
+}
+
+.dark #nd-subnav [data-header-tabs] a[data-active='true'],
+.dark #nd-subnav [data-header-tabs] button[data-active='true'] {
+  color: var(--color-fd-primary);
+  border-color: var(--color-fd-primary);
+}
+
+.dark #nd-page .prose :not(pre) > code {
+  border-color: var(--color-stroke-neutral);
+  background: var(--color-background-neutral);
+}
+
+.dark #nd-page .prose pre,
+.dark figure[class*='shiki'],
+.dark figure.shiki {
+  border-color: var(--color-stroke-neutral) !important;
+  background: var(--color-background-default) !important;
+}
+
+.dark #nd-page .prose table {
+  border-color: var(--color-stroke-neutral);
+}
+
+.dark #nd-page .prose th {
+  background: var(--color-background-neutral);
+  border-color: var(--color-stroke-neutral);
+}
+
+.dark #nd-page .prose td {
+  border-color: var(--color-stroke-neutral-weak);
+}

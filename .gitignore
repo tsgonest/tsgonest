@@ -1,0 +1,28 @@
+# Build output — anchor with / so the pattern matches only root-level files,
+# not the cmd/tsgonest/ source directory.
+/tsgonest
+/tsgonest.exe
+packages/cli-*/bin/
+packages/core/bin/
+dist/
+runtime/dist/
+testdata/*/dist/
+
+# Go
+*.test
+*.prof
+
+# Node
+node_modules/
+e2e/node_modules/
+runtime/node_modules/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
