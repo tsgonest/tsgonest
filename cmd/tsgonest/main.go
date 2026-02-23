@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-const version = "0.0.1-dev"
+var version = "0.0.1-dev"
 
 func main() {
 	os.Exit(run())

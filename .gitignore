@@ -3,7 +3,7 @@
 /tsgonest
 /tsgonest.exe
 packages/cli-*/bin/
-packages/core/bin/
+packages/core/bin/tsgonest-native
 dist/
 release/
 runtime/dist/
