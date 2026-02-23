@@ -254,27 +254,12 @@ samp {
 
 /* ── Code blocks ─────────────────────────────────────────── */
 
-/* Kill ALL inner borders/backgrounds — let only the outermost
-   wrapper (figure.shiki or the tabs container) own the border. */
-#nd-page .prose pre {
-  border: none !important;
-  border-radius: 0 !important;
-  background: transparent !important;
-  box-shadow: none !important;
-  overflow: visible;
-}
-
-#nd-page .prose pre code {
-  border: none;
-  background: transparent;
-  padding: 0;
-  font-size: 0.8125rem;
-  border-radius: 0;
-}
-
-/* The figure.shiki is the single source of truth for styling */
-figure[class*='shiki'],
-figure.shiki {
+/* The figure.shiki is the single source of truth for code block
+   styling. Kill ALL borders/shadows on the figure's Tailwind
+   utility classes AND on every descendant — then restore only
+   what we actually want. */
+#nd-page figure.shiki,
+#nd-page figure[class*='shiki'] {
   border: 1px solid var(--color-stroke-neutral-strong) !important;
   border-radius: var(--radius-square) !important;
   overflow: hidden !important;
@@ -282,17 +267,38 @@ figure.shiki {
   box-shadow: none !important;
 }
 
+/* Strip borders/shadows from every child inside the figure */
+#nd-page figure.shiki > *,
+#nd-page figure[class*='shiki'] > *,
+#nd-page figure.shiki pre,
+#nd-page figure[class*='shiki'] pre,
+#nd-page figure.shiki pre code,
+#nd-page figure[class*='shiki'] pre code,
+#nd-page figure.shiki [role='region'],
+#nd-page figure[class*='shiki'] [role='region'] {
+  border: none !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+#nd-page figure.shiki pre code,
+#nd-page figure[class*='shiki'] pre code {
+  padding: 0;
+  font-size: 0.8125rem;
+}
+
 /* Title bar (shows file name like "src/user/user.dto.ts") */
-figure.shiki > div:first-child:has(figcaption),
-figure[class*='shiki'] > div:first-child:has(figcaption) {
-  border-bottom: 1px solid var(--color-stroke-neutral);
-  background: var(--color-background-neutral);
+#nd-page figure.shiki > div:first-child:has(figcaption),
+#nd-page figure[class*='shiki'] > div:first-child:has(figcaption) {
+  border-bottom: 1px solid var(--color-stroke-neutral) !important;
+  background: var(--color-background-neutral) !important;
 }
 
 /* ── Tabbed code blocks (package-install, multi-tab) ─────── */
 
 /* The tabs container is the outer wrapper — style it */
-div[class*='rounded-xl'][class*='border']:has(> [role='tablist']) {
+#nd-page div[class*='rounded-xl'][class*='border']:has(> [role='tablist']) {
   border: 1px solid var(--color-stroke-neutral-strong) !important;
   border-radius: var(--radius-square) !important;
   background: var(--color-background-neutral-weak) !important;
@@ -301,17 +307,20 @@ div[class*='rounded-xl'][class*='border']:has(> [role='tablist']) {
 }
 
 /* Tab list bar */
-div[class*='rounded-xl'][class*='border'] > [role='tablist'] {
+#nd-page div[class*='rounded-xl'][class*='border'] > [role='tablist'] {
   background: var(--color-background-neutral);
   border-bottom: 1px solid var(--color-stroke-neutral);
 }
 
-/* Figures nested inside tabs — strip their own border */
-div[class*='rounded-xl'][class*='border'] figure.shiki,
-div[class*='rounded-xl'][class*='border'] figure[class*='shiki'] {
+/* Everything inside tabs — strip borders */
+#nd-page div[class*='rounded-xl'][class*='border'] figure.shiki,
+#nd-page div[class*='rounded-xl'][class*='border'] figure[class*='shiki'],
+#nd-page div[class*='rounded-xl'][class*='border'] figure.shiki > *,
+#nd-page div[class*='rounded-xl'][class*='border'] figure[class*='shiki'] > * {
   border: none !important;
   border-radius: 0 !important;
   background: transparent !important;
+  box-shadow: none !important;
 }
 
 /* ── Tables ───────────────────────────────────────────────── */
@@ -413,24 +422,24 @@ div[class*='rounded-xl'][class*='border'] figure[class*='shiki'] {
   background: var(--color-background-neutral);
 }
 
-.dark figure[class*='shiki'],
-.dark figure.shiki {
+.dark #nd-page figure[class*='shiki'],
+.dark #nd-page figure.shiki {
   border-color: var(--color-stroke-neutral-strong) !important;
   background: var(--color-background-neutral-weak) !important;
 }
 
-.dark figure.shiki > div:first-child:has(figcaption),
-.dark figure[class*='shiki'] > div:first-child:has(figcaption) {
-  border-bottom-color: var(--color-stroke-neutral);
-  background: var(--color-background-neutral);
+.dark #nd-page figure.shiki > div:first-child:has(figcaption),
+.dark #nd-page figure[class*='shiki'] > div:first-child:has(figcaption) {
+  border-bottom-color: var(--color-stroke-neutral) !important;
+  background: var(--color-background-neutral) !important;
 }
 
-.dark div[class*='rounded-xl'][class*='border']:has(> [role='tablist']) {
+.dark #nd-page div[class*='rounded-xl'][class*='border']:has(> [role='tablist']) {
   border-color: var(--color-stroke-neutral-strong) !important;
   background: var(--color-background-neutral-weak) !important;
 }
 
-.dark div[class*='rounded-xl'][class*='border'] > [role='tablist'] {
+.dark #nd-page div[class*='rounded-xl'][class*='border'] > [role='tablist'] {
   background: var(--color-background-neutral);
   border-bottom-color: var(--color-stroke-neutral);
 }
