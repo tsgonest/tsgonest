@@ -28,7 +28,15 @@ export const docsTabs: SidebarTabWithProps[] = [
   {
     title: 'Validation',
     url: '/docs/validation',
-    urls: new Set(['/docs/validation']),
+    urls: new Set([
+      '/docs/validation',
+      '/docs/validation/jsdoc',
+      '/docs/validation/string-tags',
+      '/docs/validation/numeric-tags',
+      '/docs/validation/array-tags',
+      '/docs/validation/transforms',
+      '/docs/validation/custom',
+    ]),
   },
   {
     title: 'Serialization',
@@ -38,12 +46,15 @@ export const docsTabs: SidebarTabWithProps[] = [
   {
     title: 'OpenAPI',
     url: '/docs/openapi',
-    urls: new Set(['/docs/openapi']),
-  },
-  {
-    title: 'Type Tags',
-    url: '/docs/type-tags',
-    urls: new Set(['/docs/type-tags']),
+    urls: new Set([
+      '/docs/openapi',
+      '/docs/openapi/controllers',
+      '/docs/openapi/parameters',
+      '/docs/openapi/returns',
+      '/docs/openapi/versioning',
+      '/docs/openapi/config',
+      '/docs/openapi/migration',
+    ]),
   },
   {
     title: 'Comparisons',

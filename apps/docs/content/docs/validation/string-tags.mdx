@@ -1,0 +1,308 @@
+---
+title: String Tags
+description: Branded phantom types for string validation — formats, length, patterns, and case constraints.
+---
+
+Branded phantom types from `@tsgonest/types` provide a fully type-safe way to declare string validation constraints. They use TypeScript intersection types to "brand" a string with validation metadata that tsgonest reads at build time.
+
+```package-install
+@tsgonest/types
+```
+
+```ts title="example.dto.ts"
+import { Email, MinLength, MaxLength } from '@tsgonest/types';
+
+interface CreateUserDto {
+  email: string & Email;
+  username: string & MinLength<3> & MaxLength<20>;
+}
+```
+
+The branded types are **phantom** — they erase completely at runtime and add zero cost to your JavaScript output.
+
+## Format validation
+
+### `Format<F>`
+
+The generic format validator. `F` can be a format string or an object with a custom error message.
+
+```ts title="format-simple.dto.ts"
+import { Format } from '@tsgonest/types';
+
+interface ContactDto {
+  email: string & Format<"email">;
+  website: string & Format<"url">;
+  id: string & Format<"uuid">;
+  created: string & Format<"date-time">;
+}
+```
+
+**With custom error messages:**
+
+```ts title="format-error.dto.ts"
+import { Format } from '@tsgonest/types';
+
+interface ContactDto {
+  email: string & Format<{ type: "email"; error: "Must be a valid email address" }>;
+  website: string & Format<{ type: "url"; error: "Enter a full URL including https://" }>;
+}
+```
+
+**All supported format values:**
+
+| Category | Formats |
+| --- | --- |
+| Email | `email`, `idn-email` |
+| URL / URI | `url`, `uri`, `uri-reference`, `uri-template`, `iri`, `iri-reference` |
+| Network | `ipv4`, `ipv6`, `hostname`, `idn-hostname`, `cidrv4`, `cidrv6`, `mac` |
+| Identity | `uuid`, `nanoid`, `cuid`, `cuid2`, `ulid`, `jwt` |
+| Date / Time | `date-time`, `date`, `time`, `duration` |
+| Encoding | `byte`, `base64url`, `hex`, `json-pointer`, `relative-json-pointer` |
+| Other | `regex`, `password`, `emoji` |
+
+### Format aliases
+
+For the most common formats, `@tsgonest/types` exports direct aliases so you don't need to spell out `Format<"...">`:
+
+```ts title="aliases.dto.ts"
+import {
+  Email, Uuid, Url, Uri, IPv4, IPv6,
+  DateTime, DateOnly, Time, Duration,
+  Jwt, Ulid, Cuid, Cuid2, NanoId,
+} from '@tsgonest/types';
+
+interface IdentityDto {
+  email: string & Email;
+  id: string & Uuid;
+  website: string & Url;
+  endpoint: string & Uri;
+  serverIp: string & IPv4;
+  serverIpV6: string & IPv6;
+  createdAt: string & DateTime;
+  birthday: string & DateOnly;
+  startTime: string & Time;
+  ttl: string & Duration;
+  token: string & Jwt;
+  sortKey: string & Ulid;
+  legacyId: string & Cuid;
+  newId: string & Cuid2;
+  shortId: string & NanoId;
+}
+```
+
+:::tip
+Format aliases are just pre-configured `Format<F>` types. `Email` is identical to `Format<"email">`.
+:::
+
+## String length constraints
+
+### `MinLength<N>`
+
+Minimum string length (inclusive). The value `N` can be a number or an object with a custom error.
+
+```ts title="min-length.dto.ts"
+import { MinLength } from '@tsgonest/types';
+
+interface ProfileDto {
+  // Simple form
+  name: string & MinLength<1>;
+
+  // With custom error
+  bio: string & MinLength<{ value: 10; error: "Bio must be at least 10 characters" }>;
+}
+```
+
+### `MaxLength<N>`
+
+Maximum string length (inclusive).
+
+```ts title="max-length.dto.ts"
+import { MaxLength } from '@tsgonest/types';
+
+interface PostDto {
+  title: string & MaxLength<200>;
+  content: string & MaxLength<{ value: 10000; error: "Content exceeds maximum length" }>;
+}
+```
+
+### `Length<N>`
+
+Sets **both** `MinLength` and `MaxLength` to the same value, enforcing an exact length.
+
+```ts title="length.dto.ts"
+import { Length } from '@tsgonest/types';
+
+interface VerificationDto {
+  // Must be exactly 6 characters
+  code: string & Length<6>;
+
+  // ISO country code — exactly 2 characters
+  country: string & Length<2>;
+}
+```
+
+### `Between<{ min, max }>`
+
+Sets `MinLength` and `MaxLength` as a range in a single type.
+
+```ts title="between.dto.ts"
+import { Between } from '@tsgonest/types';
+
+interface CredentialsDto {
+  username: string & Between<{ min: 3; max: 30 }>;
+  password: string & Between<{ min: 8; max: 128 }>;
+}
+```
+
+## Pattern matching
+
+### `Pattern<P>`
+
+Validates the string against a regular expression. `P` can be a regex string or an object with a custom error.
+
+```ts title="pattern.dto.ts"
+import { Pattern } from '@tsgonest/types';
+
+interface SlugDto {
+  // Simple regex
+  slug: string & Pattern<"^[a-z0-9]+(?:-[a-z0-9]+)*$">;
+
+  // With custom error
+  hex: string & Pattern<{ value: "^#[0-9a-fA-F]{6}$"; error: "Must be a valid hex color" }>;
+}
+```
+
+### `StartsWith<S>`
+
+The string must start with the given prefix.
+
+```ts title="starts-with.dto.ts"
+import { StartsWith } from '@tsgonest/types';
+
+interface UrlDto {
+  secureUrl: string & StartsWith<"https://">;
+  apiPath: string & StartsWith<"/api/">;
+}
+```
+
+### `EndsWith<S>`
+
+The string must end with the given suffix.
+
+```ts title="ends-with.dto.ts"
+import { EndsWith } from '@tsgonest/types';
+
+interface FileDto {
+  config: string & EndsWith<".json">;
+  stylesheet: string & EndsWith<".css">;
+}
+```
+
+### `Includes<S>`
+
+The string must contain the given substring.
+
+```ts title="includes.dto.ts"
+import { Includes } from '@tsgonest/types';
+
+interface EmailDto {
+  // Must contain "@" somewhere
+  email: string & Includes<"@">;
+}
+```
+
+## Case constraints
+
+### `Uppercase`
+
+The string must be entirely uppercase.
+
+```ts title="uppercase.dto.ts"
+import { Uppercase } from '@tsgonest/types';
+
+interface CountryDto {
+  // "US" passes, "us" fails
+  code: string & Uppercase;
+
+  // With custom error
+  state: string & Uppercase<{ error: "State code must be uppercase" }>;
+}
+```
+
+### `Lowercase`
+
+The string must be entirely lowercase.
+
+```ts title="lowercase.dto.ts"
+import { Lowercase } from '@tsgonest/types';
+
+interface HandleDto {
+  // "john_doe" passes, "John_Doe" fails
+  handle: string & Lowercase;
+}
+```
+
+:::note
+`Uppercase` and `Lowercase` are **validation** constraints — they reject strings that don't match the expected case. If you want to **convert** the case before validation, use the [transform types](/docs/validation/transforms) `ToUpperCase` and `ToLowerCase` instead.
+:::
+
+## Combining constraints
+
+Intersection types compose naturally. Stack as many constraints as needed:
+
+```ts title="combined.dto.ts"
+import {
+  Email, MinLength, MaxLength, Pattern,
+  Trim, ToLowerCase, StartsWith,
+} from '@tsgonest/types';
+
+interface RegistrationDto {
+  // Trimmed, lowercased, then validated as email
+  email: string & Trim & ToLowerCase & Email;
+
+  // Length range + pattern
+  username: string & MinLength<3> & MaxLength<20> & Pattern<"^[a-z0-9_]+$">;
+
+  // Length range + specific prefix
+  website: string & MinLength<10> & MaxLength<2083> & StartsWith<"https://">;
+
+  // Exact length + uppercase
+  countryCode: string & Length<2> & Uppercase;
+}
+```
+
+Constraints are evaluated in the following order:
+
+1. **Transforms** — `Trim`, `ToLowerCase`, `ToUpperCase` (applied first, left to right)
+2. **Format** — `Email`, `Uuid`, `Format<F>`, etc.
+3. **Length** — `MinLength`, `MaxLength`, `Length`, `Between`
+4. **Pattern** — `Pattern`, `StartsWith`, `EndsWith`, `Includes`
+5. **Case** — `Uppercase`, `Lowercase`
+
+## Practical example
+
+```ts title="create-account.dto.ts"
+import {
+  Email, Trim, ToLowerCase, MinLength, MaxLength,
+  Pattern, Url, Uuid, Between,
+} from '@tsgonest/types';
+
+interface CreateAccountDto {
+  email: string & Trim & ToLowerCase & Email;
+
+  password: string & Between<{ min: 8; max: 128 }>;
+
+  displayName: string & Trim & MinLength<{ value: 1; error: "Display name is required" }> & MaxLength<50>;
+
+  slug: string
+    & Trim
+    & ToLowerCase
+    & MinLength<3>
+    & MaxLength<40>
+    & Pattern<{ value: "^[a-z0-9]+(?:-[a-z0-9]+)*$"; error: "Slug may only contain lowercase letters, numbers, and hyphens" }>;
+
+  avatarUrl?: string & Url;
+
+  referralCode?: string & Uuid;
+}
+```

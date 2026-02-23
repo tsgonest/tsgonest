@@ -1,0 +1,12 @@
+{
+  "title": "OpenAPI",
+  "pages": [
+    "index",
+    "controllers",
+    "parameters",
+    "returns",
+    "versioning",
+    "config",
+    "migration"
+  ]
+}

@@ -28,7 +28,7 @@ tsgo responsibilities:
   ✓ Incremental compilation
 
 tsgonest adds:
-  + Companion file generation (validate, assert, serialize, schema)
+  + Companion file generation (validate, assert, serialize)
   + Manifest generation for runtime discovery
   + OpenAPI 3.2 document generation from NestJS controllers
   + Watch mode with auto-restart (tsgonest dev)
@@ -49,11 +49,10 @@ tsgonest adds:
 | **Serialization codegen** | No | Yes — fast JSON serializers |
 | **OpenAPI generation** | No | Yes — OpenAPI 3.2 from NestJS controllers |
 | **Manifest** | No | Yes — `__tsgonest_manifest.json` |
-| **Standard Schema** | No | Yes — v1 wrappers |
 | **Watch mode** | No (use `--watch` flag) | Yes — `tsgonest dev` with auto-restart |
 | **NestJS integration** | No | Yes — ValidationPipe, FastInterceptor |
 | **Asset copying** | No | Yes — `--assets` flag |
-| **Config file** | `tsconfig.json` only | `tsconfig.json` + `tsgonest.config.json` |
+| **Config file** | `tsconfig.json` only | `tsconfig.json` + `tsgonest.config.ts` |
 | **Post-processing cache** | N/A | Yes — skips codegen when source unchanged |
 
 ---
@@ -106,7 +105,7 @@ This means tsgonest gets the same compilation speed as tsgo — there's no overh
 ### Build pipeline
 
 ```text
-1. Parse CLI args + tsgonest.config.json
+1. Parse CLI args + tsgonest.config.ts
 2. Create tsgo program (via linked tsgo API)     ← tsgo
 3. Type-check and gather diagnostics              ← tsgo
 4. Emit JavaScript                                ← tsgo
@@ -185,16 +184,18 @@ Same JavaScript output, plus companions, manifest, and OpenAPI — all from the 
 
 There's no need to. tsgonest **includes** tsgo — it's the same compilation engine. Using tsgonest gives you everything tsgo provides, plus the NestJS-specific features. If you don't configure companions or OpenAPI, tsgonest behaves like tsgo with watch mode.
 
-```json title="tsgonest.config.json — minimal (compiler-only mode)"
-{
-  "transforms": {
-    "validation": false,
-    "serialization": false
+```ts title="tsgonest.config.ts — minimal (compiler-only mode)"
+import { defineConfig } from '@tsgonest/runtime';
+
+export default defineConfig({
+  transforms: {
+    validation: false,
+    serialization: false,
   },
-  "openapi": {
-    "output": ""
-  }
-}
+  openapi: {
+    output: '',
+  },
+});
 ```
 
 With this config, `tsgonest build` is effectively `tsgo` with a config file and `tsgonest dev` adds watch mode on top.

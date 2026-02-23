@@ -1,0 +1,303 @@
+---
+title: Controllers & Routes
+description: How tsgonest analyzes NestJS controllers for OpenAPI generation.
+---
+
+tsgonest reads your NestJS controllers and extracts routes, HTTP methods, operation metadata, and tags — all through static analysis of standard NestJS decorators and JSDoc comments.
+
+## Controller Prefix
+
+The `@Controller()` decorator defines the base path for all routes in the controller:
+
+```ts title="users.controller.ts"
+@Controller('users')
+export class UsersController {
+  @Get()
+  findAll(): UserDto[] { ... } // GET /users
+
+  @Get(':id')
+  findOne(@Param('id') id: string): UserDto { ... } // GET /users/{id}
+}
+```
+
+Nested paths work as expected:
+
+```ts
+@Controller('organizations/:orgId/members')
+export class MembersController {
+  @Get()
+  findAll(@Param('orgId') orgId: string): MemberDto[] { ... }
+  // GET /organizations/{orgId}/members
+}
+```
+
+## HTTP Method Decorators
+
+All standard NestJS HTTP method decorators are supported:
+
+| Decorator | HTTP Method | Default Status Code |
+|---|---|---|
+| `@Get()` | GET | 200 |
+| `@Post()` | POST | **201** |
+| `@Put()` | PUT | 200 |
+| `@Delete()` | DELETE | 200 |
+| `@Patch()` | PATCH | 200 |
+| `@Head()` | HEAD | 200 |
+| `@Options()` | OPTIONS | 200 |
+| `@Sse()` | GET | 200 |
+
+Each decorator can take an optional sub-path:
+
+```ts
+@Controller('users')
+export class UsersController {
+  @Get('active')
+  findActive(): UserDto[] { ... } // GET /users/active
+
+  @Post('bulk')
+  createBulk(@Body() body: CreateUserDto[]): UserDto[] { ... } // POST /users/bulk
+}
+```
+
+## Operation IDs
+
+The **method name** becomes the `operationId` in the OpenAPI document:
+
+```ts
+@Controller('users')
+export class UsersController {
+  @Get()
+  findAll(): UserDto[] { ... }    // operationId: "findAll"
+
+  @Get(':id')
+  findOne(): UserDto { ... }      // operationId: "findOne"
+
+  @Post()
+  create(): UserDto { ... }       // operationId: "create"
+
+  @Delete(':id')
+  remove(): void { ... }          // operationId: "remove"
+}
+```
+
+:::tip
+Use descriptive method names — they serve double duty as both your code's API and the OpenAPI operation identifiers that SDK generators and documentation tools rely on.
+:::
+
+## Tags
+
+Tags are **automatically derived** from the controller class name by stripping the `Controller` suffix:
+
+| Class Name | Tag |
+|---|---|
+| `UsersController` | `Users` |
+| `AuthController` | `Auth` |
+| `OrderItemsController` | `OrderItems` |
+
+Override the tag with the `@tag` JSDoc tag:
+
+```ts
+/**
+ * @tag Authentication
+ */
+@Controller('auth')
+export class AuthController {
+  // All operations tagged "Authentication" instead of "Auth"
+}
+```
+
+You can also apply `@tag` to individual methods:
+
+```ts
+@Controller('users')
+export class UsersController {
+  /**
+   * @tag Admin
+   */
+  @Delete(':id')
+  remove(@Param('id') id: string): void { ... }
+  // Tagged "Admin" instead of "Users"
+}
+```
+
+## Custom Status Codes
+
+Use `@HttpCode()` to override the default status code:
+
+```ts
+@Controller('users')
+export class UsersController {
+  @Post()
+  @HttpCode(200) // Override POST's default 201
+  login(@Body() body: LoginDto): TokenDto { ... }
+
+  @Delete(':id')
+  @HttpCode(204) // No content
+  remove(@Param('id') id: string): void { ... }
+}
+```
+
+## JSDoc Metadata
+
+JSDoc comments on controller methods map directly to OpenAPI operation fields.
+
+### Summary and Description
+
+```ts
+/**
+ * Retrieves a paginated list of users with optional filtering.
+ *
+ * @summary List users
+ */
+@Get()
+findAll(@Query() query: PaginationDto): UserDto[] { ... }
+```
+
+- `@summary` → `summary` field in OpenAPI
+- The JSDoc body text (first paragraph) → `description` field
+- You can also use `@description` explicitly
+
+### Deprecated
+
+```ts
+/**
+ * @deprecated Use findAllV2 instead.
+ */
+@Get()
+findAll(): UserDto[] { ... }
+```
+
+Marks the operation as `deprecated: true` in the OpenAPI document.
+
+### Hidden / Exclude
+
+```ts
+/**
+ * @hidden
+ */
+@Get('internal/health')
+healthCheck(): string { ... }
+```
+
+Routes marked with `@hidden` or `@exclude` are **omitted entirely** from the generated OpenAPI document. Use this for internal endpoints that shouldn't appear in public API docs.
+
+### Security
+
+```ts
+/**
+ * @security bearer
+ */
+@Get('profile')
+getProfile(): UserDto { ... }
+```
+
+For OAuth2 scopes:
+
+```ts
+/**
+ * @security oauth2 read:users write:users
+ */
+@Get()
+findAll(): UserDto[] { ... }
+```
+
+This adds the `security` field to the operation. The referenced security scheme must be defined in your [OpenAPI config](/docs/openapi/config).
+
+### Error Responses
+
+```ts
+/**
+ * @throws {400} ValidationError
+ * @throws {404} NotFoundError
+ * @throws {403} ForbiddenError
+ */
+@Get(':id')
+findOne(@Param('id') id: string): UserDto { ... }
+```
+
+Each `@throws` tag generates an additional response entry in the operation. The syntax is `@throws {statusCode} TypeName`, where `TypeName` refers to a class or interface in your codebase.
+
+## Server-Sent Events
+
+The `@Sse()` decorator maps to a **GET** operation with `text/event-stream` content type and uses the OpenAPI 3.2 `itemSchema` field:
+
+```ts
+@Controller('notifications')
+export class NotificationsController {
+  @Sse('stream')
+  stream(): Observable<MessageEvent> { ... }
+  // GET /notifications/stream
+  // Response: text/event-stream with itemSchema
+}
+```
+
+See [Return Types — SSE Endpoints](/docs/openapi/returns#sse-endpoints) for more on how SSE response schemas are generated.
+
+## Comprehensive Example
+
+```ts title="orders.controller.ts"
+/**
+ * @tag Orders
+ */
+@Controller('orders')
+export class OrdersController {
+  /**
+   * Returns a paginated list of orders for the authenticated user.
+   *
+   * @summary List orders
+   * @security bearer
+   */
+  @Get()
+  findAll(@Query() query: OrderFilterDto): PaginatedResponse<OrderDto> {
+    // ...
+  }
+
+  /**
+   * Retrieve a single order by ID.
+   *
+   * @summary Get order
+   * @security bearer
+   * @throws {404} NotFoundError
+   */
+  @Get(':id')
+  findOne(@Param('id') id: string): OrderDto {
+    // ...
+  }
+
+  /**
+   * Place a new order.
+   *
+   * @summary Create order
+   * @security bearer
+   * @throws {400} ValidationError
+   */
+  @Post()
+  create(@Body() body: CreateOrderDto): OrderDto {
+    // ...
+  }
+
+  /**
+   * Cancel an order. Only pending orders can be cancelled.
+   *
+   * @summary Cancel order
+   * @security bearer
+   * @throws {404} NotFoundError
+   * @throws {409} ConflictError
+   */
+  @Delete(':id')
+  @HttpCode(204)
+  cancel(@Param('id') id: string): void {
+    // ...
+  }
+
+  /**
+   * @hidden
+   */
+  @Post('internal/recalculate')
+  recalculate(@Body() body: RecalculateDto): void {
+    // ...
+  }
+}
+```
+
+This produces six OpenAPI operations under the `/orders` path with proper tags, security requirements, error responses, and the internal endpoint excluded from the document.

@@ -1,0 +1,211 @@
+---
+title: Versioning
+description: Global prefix and API versioning support in OpenAPI generation.
+---
+
+tsgonest supports NestJS's global prefix and API versioning features. When configured, all generated OpenAPI paths reflect the correct prefixes and version segments.
+
+## Global Prefix
+
+Set a global prefix to prepend a path segment to all routes:
+
+```ts title="tsgonest.config.ts"
+import { defineConfig } from '@tsgonest/runtime';
+
+export default defineConfig({
+  nestjs: {
+    globalPrefix: 'api',
+  },
+});
+```
+
+| Controller Route | Generated Path |
+|---|---|
+| `/users` | `/api/users` |
+| `/users/:id` | `/api/users/{id}` |
+| `/orders` | `/api/orders` |
+
+## URI Versioning
+
+URI versioning adds a version segment to the URL path. This is the most common versioning strategy:
+
+```ts title="tsgonest.config.ts"
+import { defineConfig } from '@tsgonest/runtime';
+
+export default defineConfig({
+  nestjs: {
+    versioning: {
+      type: 'URI',
+      defaultVersion: '1',
+      prefix: 'v', // default — produces /v1/, /v2/, etc.
+    },
+  },
+});
+```
+
+| Controller Route | Generated Path |
+|---|---|
+| `/users` | `/v1/users` |
+| `/users/:id` | `/v1/users/{id}` |
+
+### Combined with Global Prefix
+
+When both `globalPrefix` and URI versioning are active, the global prefix comes first:
+
+```ts title="tsgonest.config.ts"
+import { defineConfig } from '@tsgonest/runtime';
+
+export default defineConfig({
+  nestjs: {
+    globalPrefix: 'api',
+    versioning: {
+      type: 'URI',
+      defaultVersion: '1',
+    },
+  },
+});
+```
+
+| Controller Route | Generated Path |
+|---|---|
+| `/users` | `/api/v1/users` |
+| `/users/:id` | `/api/v1/users/{id}` |
+
+## Header Versioning
+
+Header versioning passes the API version via a request header instead of the URL:
+
+```ts title="tsgonest.config.ts"
+import { defineConfig } from '@tsgonest/runtime';
+
+export default defineConfig({
+  nestjs: {
+    versioning: {
+      type: 'HEADER',
+      defaultVersion: '1',
+    },
+  },
+});
+```
+
+With header versioning, paths remain unchanged. Instead, each operation gets an `X-API-Version` header parameter with a const value matching the route's version:
+
+```json
+{
+  "parameters": [
+    {
+      "name": "X-API-Version",
+      "in": "header",
+      "required": true,
+      "schema": {
+        "type": "string",
+        "const": "1"
+      }
+    }
+  ]
+}
+```
+
+:::note
+The URL paths stay clean with header versioning — `/users` remains `/users`. The version is communicated through the `X-API-Version` header on each request.
+:::
+
+## Per-Route Versioning with @Version
+
+The `@Version()` decorator overrides the default version on specific methods or entire controllers:
+
+### On a Method
+
+```ts
+@Controller('users')
+export class UsersController {
+  @Get()
+  findAll(): UserDto[] { ... } // Uses default version (v1)
+
+  @Version('2')
+  @Get()
+  findAllV2(): UserDtoV2[] { ... } // Uses v2
+}
+```
+
+With URI versioning, this produces:
+- `GET /v1/users` → `findAll`
+- `GET /v2/users` → `findAllV2`
+
+### On a Controller
+
+```ts
+@Version('2')
+@Controller('users')
+export class UsersV2Controller {
+  @Get()
+  findAll(): UserDtoV2[] { ... } // All routes use v2
+}
+```
+
+## Complete Example
+
+Here is a full configuration with global prefix, URI versioning, and per-route version overrides:
+
+```ts title="tsgonest.config.ts"
+import { defineConfig } from '@tsgonest/runtime';
+
+export default defineConfig({
+  nestjs: {
+    globalPrefix: 'api',
+    versioning: {
+      type: 'URI',
+      defaultVersion: '1',
+      prefix: 'v',
+    },
+  },
+  openapi: {
+    output: 'dist/openapi.json',
+    title: 'My API',
+    version: '2.0.0',
+  },
+});
+```
+
+```ts title="users.controller.ts"
+@Controller('users')
+export class UsersController {
+  /**
+   * @summary List users (v1)
+   */
+  @Get()
+  findAll(): UserDto[] { ... }
+  // GET /api/v1/users
+
+  /**
+   * @summary List users (v2)
+   */
+  @Version('2')
+  @Get()
+  findAllV2(): UserDtoV2[] { ... }
+  // GET /api/v2/users
+
+  /**
+   * @summary Get user
+   */
+  @Get(':id')
+  findOne(@Param('id') id: string): UserDto { ... }
+  // GET /api/v1/users/{id}
+
+  /**
+   * @summary Create user
+   */
+  @Post()
+  create(@Body() body: CreateUserDto): UserDto { ... }
+  // POST /api/v1/users
+}
+```
+
+Generated paths in the OpenAPI document:
+
+| Method | Path | Operation |
+|---|---|---|
+| GET | `/api/v1/users` | `findAll` |
+| GET | `/api/v2/users` | `findAllV2` |
+| GET | `/api/v1/users/{id}` | `findOne` |
+| POST | `/api/v1/users` | `create` |

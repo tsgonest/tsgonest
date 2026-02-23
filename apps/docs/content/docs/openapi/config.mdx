@@ -1,0 +1,248 @@
+---
+title: OpenAPI Config
+description: Configure OpenAPI metadata — title, description, servers, security schemes, and more.
+---
+
+The OpenAPI section of your tsgonest configuration controls the metadata, servers, and security schemes that appear in the generated document.
+
+## Basic Configuration
+
+```ts title="tsgonest.config.ts"
+import { defineConfig } from '@tsgonest/runtime';
+
+export default defineConfig({
+  openapi: {
+    output: 'dist/openapi.json',
+    title: 'My API',
+    version: '1.0.0',
+    description: 'REST API for my application',
+  },
+});
+```
+
+This produces:
+
+```json
+{
+  "openapi": "3.2.0",
+  "info": {
+    "title": "My API",
+    "version": "1.0.0",
+    "description": "REST API for my application"
+  }
+}
+```
+
+## Contact and License
+
+Add contact information and license details to the API info block:
+
+```json title="tsgonest.config.json"
+{
+  "openapi": {
+    "output": "dist/openapi.json",
+    "title": "My API",
+    "version": "1.0.0",
+    "contact": {
+      "name": "API Support",
+      "url": "https://example.com/support",
+      "email": "support@example.com"
+    },
+    "license": {
+      "name": "MIT",
+      "url": "https://opensource.org/licenses/MIT"
+    }
+  }
+}
+```
+
+## Servers
+
+Define the server URLs where the API is hosted:
+
+```json title="tsgonest.config.json"
+{
+  "openapi": {
+    "servers": [
+      {
+        "url": "https://api.example.com",
+        "description": "Production"
+      },
+      {
+        "url": "https://staging-api.example.com",
+        "description": "Staging"
+      },
+      {
+        "url": "http://localhost:3000",
+        "description": "Local development"
+      }
+    ]
+  }
+}
+```
+
+## Security Schemes
+
+Define reusable security schemes that can be referenced by controller methods using the `@security` JSDoc tag:
+
+```json title="tsgonest.config.json"
+{
+  "openapi": {
+    "securitySchemes": {
+      "bearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
+      },
+      "apiKey": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-API-Key"
+      }
+    }
+  }
+}
+```
+
+Then reference them in your controllers:
+
+```ts
+/**
+ * @security bearer
+ */
+@Get('profile')
+getProfile(): UserDto { ... }
+
+/**
+ * @security apiKey
+ */
+@Get('status')
+getStatus(): StatusDto { ... }
+```
+
+### Supported Security Scheme Types
+
+| Type | Description | Example |
+|---|---|---|
+| `http` | HTTP authentication (Bearer, Basic) | `{ "type": "http", "scheme": "bearer", "bearerFormat": "JWT" }` |
+| `apiKey` | API key in header, query, or cookie | `{ "type": "apiKey", "in": "header", "name": "X-API-Key" }` |
+| `oauth2` | OAuth 2.0 flows | See below |
+| `openIdConnect` | OpenID Connect Discovery | `{ "type": "openIdConnect", "openIdConnectUrl": "https://..." }` |
+
+### OAuth2 Example
+
+```json title="tsgonest.config.json"
+{
+  "openapi": {
+    "securitySchemes": {
+      "oauth2": {
+        "type": "oauth2",
+        "flows": {
+          "authorizationCode": {
+            "authorizationUrl": "https://auth.example.com/authorize",
+            "tokenUrl": "https://auth.example.com/token",
+            "scopes": {
+              "read:users": "Read user information",
+              "write:users": "Modify user information",
+              "admin": "Full administrative access"
+            }
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+Reference with scopes in your controller:
+
+```ts
+/**
+ * @security oauth2 read:users write:users
+ */
+@Get()
+findAll(): UserDto[] { ... }
+```
+
+## Configuration Reference
+
+### OpenAPI Fields
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `output` | `string` | Yes | Output path for the generated JSON file |
+| `title` | `string` | Yes | API title in the info block |
+| `version` | `string` | Yes | API version in the info block |
+| `description` | `string` | No | API description |
+| `contact` | `object` | No | Contact info (`name`, `url`, `email`) |
+| `license` | `object` | No | License info (`name`, `url`) |
+| `servers` | `array` | No | Server URLs (`url`, `description`) |
+| `securitySchemes` | `object` | No | Named security scheme definitions |
+
+### NestJS Fields
+
+These are configured under the `nestjs` key and affect path generation. See [Versioning](/docs/openapi/versioning) for details.
+
+| Field | Type | Description |
+|---|---|---|
+| `globalPrefix` | `string` | Prefix prepended to all routes |
+| `versioning.type` | `'URI' \| 'HEADER'` | Versioning strategy |
+| `versioning.defaultVersion` | `string` | Default version for all routes |
+| `versioning.prefix` | `string` | URI version prefix (default: `'v'`) |
+
+:::note
+The TypeScript config interface (`defineConfig`) covers the most common fields: `output`, `title`, `version`, and `description`. For advanced fields like `contact`, `license`, `servers`, and `securitySchemes`, use `tsgonest.config.json`. Both formats are fully supported and can be used interchangeably.
+:::
+
+## Full Example
+
+```json title="tsgonest.config.json"
+{
+  "nestjs": {
+    "globalPrefix": "api",
+    "versioning": {
+      "type": "URI",
+      "defaultVersion": "1"
+    }
+  },
+  "openapi": {
+    "output": "dist/openapi.json",
+    "title": "Acme API",
+    "version": "2.1.0",
+    "description": "The Acme Corp public REST API",
+    "contact": {
+      "name": "Acme API Team",
+      "email": "api@acme.com",
+      "url": "https://developer.acme.com"
+    },
+    "license": {
+      "name": "Apache 2.0",
+      "url": "https://www.apache.org/licenses/LICENSE-2.0"
+    },
+    "servers": [
+      { "url": "https://api.acme.com", "description": "Production" },
+      { "url": "https://sandbox.api.acme.com", "description": "Sandbox" }
+    ],
+    "securitySchemes": {
+      "bearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
+      },
+      "oauth2": {
+        "type": "oauth2",
+        "flows": {
+          "authorizationCode": {
+            "authorizationUrl": "https://auth.acme.com/authorize",
+            "tokenUrl": "https://auth.acme.com/token",
+            "scopes": {
+              "read": "Read access",
+              "write": "Write access"
+            }
+          }
+        }
+      }
+    }
+  }
+}
+```

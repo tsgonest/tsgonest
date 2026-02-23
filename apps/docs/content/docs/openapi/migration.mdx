@@ -1,0 +1,384 @@
+---
+title: Migration from @nestjs/swagger
+description: Step-by-step guide to migrate from @nestjs/swagger to tsgonest static OpenAPI generation.
+---
+
+This guide walks through replacing `@nestjs/swagger` with tsgonest's static OpenAPI generation. The migration removes runtime overhead and decorator boilerplate while keeping your API documentation complete.
+
+## 1. Install tsgonest
+
+```package-install
+@tsgonest/runtime
+```
+
+## 2. Add OpenAPI Config
+
+Create a `tsgonest.config.ts` at the project root:
+
+```ts title="tsgonest.config.ts"
+import { defineConfig } from '@tsgonest/runtime';
+
+export default defineConfig({
+  openapi: {
+    output: 'dist/openapi.json',
+    title: 'My API',
+    version: '1.0.0',
+  },
+});
+```
+
+## 3. Remove Swagger Setup from main.ts
+
+Remove the runtime Swagger document creation and UI setup:
+
+**Before:**
+
+```ts title="main.ts"
+import { NestFactory } from '@nestjs/core';
+import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
+import { AppModule } from './app.module';
+
+async function bootstrap() {
+  const app = await NestFactory.create(AppModule);
+
+  const config = new DocumentBuilder()
+    .setTitle('My API')
+    .setVersion('1.0.0')
+    .addBearerAuth()
+    .build();
+  const document = SwaggerModule.createDocument(app, config);
+  SwaggerModule.setup('docs', app, document);
+
+  await app.listen(3000);
+}
+bootstrap();
+```
+
+**After:**
+
+```ts title="main.ts"
+import { NestFactory } from '@nestjs/core';
+import { AppModule } from './app.module';
+
+async function bootstrap() {
+  const app = await NestFactory.create(AppModule);
+  await app.listen(3000);
+}
+bootstrap();
+```
+
+:::tip
+If you still want to serve the OpenAPI document at runtime, serve the generated `dist/openapi.json` as a static file or use a lightweight JSON endpoint. The document is a plain JSON file — no special middleware is needed.
+:::
+
+## 4. Remove @ApiProperty from DTOs
+
+tsgonest reads TypeScript types directly. All `@ApiProperty` and `@ApiPropertyOptional` decorators can be removed.
+
+**Before:**
+
+```ts title="user.dto.ts"
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+
+export class CreateUserDto {
+  @ApiProperty({ description: 'User email address', example: 'user@example.com' })
+  email: string;
+
+  @ApiProperty({ description: 'User display name', minLength: 2, maxLength: 50 })
+  name: string;
+
+  @ApiPropertyOptional({ description: 'User bio', maxLength: 500 })
+  bio?: string;
+
+  @ApiProperty({ enum: ['admin', 'user', 'guest'], default: 'user' })
+  role: 'admin' | 'user' | 'guest';
+}
+```
+
+**After:**
+
+```ts title="user.dto.ts"
+export class CreateUserDto {
+  email: string;
+  name: string;
+  bio?: string;
+  role: 'admin' | 'user' | 'guest';
+}
+```
+
+tsgonest extracts the types, optionality, and union/enum values directly from TypeScript. Validation constraints from your validation library (if typed) also carry through automatically.
+
+## 5. Replace @ApiTags
+
+Tags are derived automatically from the controller class name. If you need a custom tag, use the `@tag` JSDoc tag.
+
+**Before:**
+
+```ts
+@ApiTags('User Management')
+@Controller('users')
+export class UsersController { ... }
+```
+
+**After:**
+
+```ts
+/**
+ * @tag User Management
+ */
+@Controller('users')
+export class UsersController { ... }
+```
+
+If `UsersController` → `Users` tag is acceptable, you can remove the tag entirely — it's automatic.
+
+## 6. Replace @ApiOperation
+
+Use JSDoc `@summary` and `@description` (or the JSDoc body text) instead.
+
+**Before:**
+
+```ts
+@ApiOperation({
+  summary: 'Get user by ID',
+  description: 'Retrieves a single user by their unique identifier.',
+})
+@Get(':id')
+findOne(@Param('id') id: string): UserDto { ... }
+```
+
+**After:**
+
+```ts
+/**
+ * Retrieves a single user by their unique identifier.
+ * @summary Get user by ID
+ */
+@Get(':id')
+findOne(@Param('id') id: string): UserDto { ... }
+```
+
+## 7. Replace @ApiResponse
+
+Return type annotations replace `@ApiResponse` for success responses. Use `@throws` for error responses.
+
+**Before:**
+
+```ts
+@ApiResponse({ status: 200, type: UserDto, description: 'The found user' })
+@ApiResponse({ status: 404, type: NotFoundError, description: 'User not found' })
+@Get(':id')
+findOne(@Param('id') id: string): UserDto { ... }
+```
+
+**After:**
+
+```ts
+/**
+ * @throws {404} NotFoundError
+ */
+@Get(':id')
+findOne(@Param('id') id: string): UserDto { ... }
+```
+
+The success response (200 with `UserDto`) is inferred from the return type. Error responses use `@throws`.
+
+## 8. Replace @ApiBearerAuth / @ApiSecurity
+
+Define security schemes in config, then use `@security` JSDoc on methods.
+
+**Before:**
+
+```ts
+@ApiBearerAuth()
+@Controller('users')
+export class UsersController { ... }
+```
+
+**After:**
+
+First, add the security scheme to your config:
+
+```json title="tsgonest.config.json"
+{
+  "openapi": {
+    "securitySchemes": {
+      "bearer": { "type": "http", "scheme": "bearer", "bearerFormat": "JWT" }
+    }
+  }
+}
+```
+
+Then use `@security` on individual methods or the controller class:
+
+```ts
+/**
+ * @security bearer
+ */
+@Controller('users')
+export class UsersController { ... }
+```
+
+## 9. Remove @nestjs/swagger
+
+Once all decorators are migrated, remove the dependency:
+
+```bash
+npm uninstall @nestjs/swagger swagger-ui-express
+```
+
+Also remove any `@nestjs/swagger` plugin configuration from `nest-cli.json` if present:
+
+```diff title="nest-cli.json"
+ {
+   "compilerOptions": {
+-    "plugins": ["@nestjs/swagger"]
+   }
+ }
+```
+
+## 10. Complete Before/After
+
+Here's a full controller migration:
+
+**Before:**
+
+```ts title="users.controller.ts (before)"
+import { Controller, Get, Post, Put, Delete, Body, Param, Query } from '@nestjs/common';
+import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth, ApiQuery } from '@nestjs/swagger';
+
+@ApiTags('Users')
+@ApiBearerAuth()
+@Controller('users')
+export class UsersController {
+  @ApiOperation({ summary: 'List users', description: 'Returns a paginated list of users.' })
+  @ApiQuery({ name: 'page', type: Number, required: false })
+  @ApiQuery({ name: 'limit', type: Number, required: false })
+  @ApiResponse({ status: 200, type: [UserDto] })
+  @Get()
+  findAll(
+    @Query('page') page?: number,
+    @Query('limit') limit?: number,
+  ): UserDto[] {
+    // ...
+  }
+
+  @ApiOperation({ summary: 'Get user' })
+  @ApiResponse({ status: 200, type: UserDto })
+  @ApiResponse({ status: 404, description: 'User not found' })
+  @Get(':id')
+  findOne(@Param('id') id: string): UserDto {
+    // ...
+  }
+
+  @ApiOperation({ summary: 'Create user' })
+  @ApiResponse({ status: 201, type: UserDto })
+  @ApiResponse({ status: 400, description: 'Validation failed' })
+  @Post()
+  create(@Body() body: CreateUserDto): UserDto {
+    // ...
+  }
+
+  @ApiOperation({ summary: 'Update user' })
+  @ApiResponse({ status: 200, type: UserDto })
+  @ApiResponse({ status: 404, description: 'User not found' })
+  @Put(':id')
+  update(@Param('id') id: string, @Body() body: UpdateUserDto): UserDto {
+    // ...
+  }
+
+  @ApiOperation({ summary: 'Delete user' })
+  @ApiResponse({ status: 204 })
+  @ApiResponse({ status: 404, description: 'User not found' })
+  @Delete(':id')
+  remove(@Param('id') id: string): void {
+    // ...
+  }
+}
+```
+
+**After:**
+
+```ts title="users.controller.ts (after)"
+import { Controller, Get, Post, Put, Delete, Body, Param, Query, HttpCode } from '@nestjs/common';
+
+/**
+ * @security bearer
+ */
+@Controller('users')
+export class UsersController {
+  /**
+   * Returns a paginated list of users.
+   * @summary List users
+   */
+  @Get()
+  findAll(
+    @Query('page') page?: number,
+    @Query('limit') limit?: number,
+  ): UserDto[] {
+    // ...
+  }
+
+  /**
+   * @summary Get user
+   * @throws {404} NotFoundError
+   */
+  @Get(':id')
+  findOne(@Param('id') id: string): UserDto {
+    // ...
+  }
+
+  /**
+   * @summary Create user
+   * @throws {400} ValidationError
+   */
+  @Post()
+  create(@Body() body: CreateUserDto): UserDto {
+    // ...
+  }
+
+  /**
+   * @summary Update user
+   * @throws {404} NotFoundError
+   */
+  @Put(':id')
+  update(@Param('id') id: string, @Body() body: UpdateUserDto): UserDto {
+    // ...
+  }
+
+  /**
+   * @summary Delete user
+   * @throws {404} NotFoundError
+   */
+  @Delete(':id')
+  @HttpCode(204)
+  remove(@Param('id') id: string): void {
+    // ...
+  }
+}
+```
+
+## Migration Checklist
+
+| @nestjs/swagger | tsgonest Equivalent |
+|---|---|
+| `SwaggerModule.createDocument()` | Build-time generation via config |
+| `SwaggerModule.setup()` | Serve `dist/openapi.json` statically |
+| `@ApiProperty()` | TypeScript type annotations |
+| `@ApiPropertyOptional()` | Optional property (`prop?: type`) |
+| `@ApiTags()` | Automatic from class name, or `@tag` JSDoc |
+| `@ApiOperation()` | `@summary` / `@description` JSDoc |
+| `@ApiResponse()` | Return type + `@throws` JSDoc |
+| `@ApiBearerAuth()` | `@security bearer` JSDoc + config |
+| `@ApiSecurity()` | `@security` JSDoc + config |
+| `@ApiQuery()` | `@Query()` parameter types |
+| `@ApiParam()` | `@Param()` parameter types |
+| `@ApiBody()` | `@Body()` parameter type |
+| `@ApiHeader()` | `@Headers()` parameter types |
+| `@ApiExcludeEndpoint()` | `@hidden` / `@exclude` JSDoc |
+| `@ApiExcludeController()` | `@hidden` JSDoc on class |
+| Swagger UI plugin in nest-cli.json | Remove entirely |
+
+:::warning
+After migration, run the tsgonest build and compare the generated OpenAPI document against your previous Swagger output. Verify that all paths, parameters, request bodies, and response schemas are present and correct before removing `@nestjs/swagger`.
+:::

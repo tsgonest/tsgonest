@@ -1,0 +1,336 @@
+---
+title: Custom Validators
+description: Custom validation functions, error messages, and complex type validation.
+---
+
+Beyond built-in constraints, tsgonest supports custom validation functions, global error messages, and validates complex TypeScript types including nested objects, unions, enums, and tuples.
+
+```package-install
+@tsgonest/types
+```
+
+## Custom validators
+
+### `Validate<typeof fn>`
+
+Attach a custom predicate function to any property. The function must accept a value of the property's type and return `boolean` — `true` for valid, `false` for invalid.
+
+```ts title="validators/credit-card.ts"
+export function isValidCard(value: string): boolean {
+  // Luhn algorithm check
+  let sum = 0;
+  let alternate = false;
+  for (let i = value.length - 1; i >= 0; i--) {
+    let n = parseInt(value.charAt(i), 10);
+    if (alternate) {
+      n *= 2;
+      if (n > 9) n -= 9;
+    }
+    sum += n;
+    alternate = !alternate;
+  }
+  return sum % 10 === 0;
+}
+```
+
+```ts title="payment.dto.ts"
+import { Validate, Pattern } from '@tsgonest/types';
+import { isValidCard } from './validators/credit-card';
+
+interface PaymentDto {
+  card: string & Pattern<"^[0-9]{13,19}$"> & Validate<typeof isValidCard>;
+}
+```
+
+tsgonest resolves the function's source file and emits an `import` statement in the generated companion file, so your custom logic runs at validation time.
+
+### Custom error messages on `Validate`
+
+Use the extended object form to provide a custom error message:
+
+```ts title="custom-error.dto.ts"
+import { Validate } from '@tsgonest/types';
+import { isValidCard } from './validators/credit-card';
+
+interface PaymentDto {
+  card: string & Validate<{
+    fn: typeof isValidCard;
+    error: "Invalid credit card number";
+  }>;
+}
+```
+
+### Multiple custom validators
+
+You can apply multiple `Validate` constraints to a single property. Each is checked independently:
+
+```ts title="multi-validate.dto.ts"
+import { Validate } from '@tsgonest/types';
+import { isNotDisposable } from './validators/email';
+import { isNotBlacklisted } from './validators/blacklist';
+
+interface SignupDto {
+  email: string
+    & Format<"email">
+    & Validate<{ fn: typeof isNotDisposable; error: "Disposable emails not allowed" }>
+    & Validate<{ fn: typeof isNotBlacklisted; error: "This email has been blocked" }>;
+}
+```
+
+:::warning
+Custom validator functions must be **synchronous** and **pure** — no async operations, no side effects. The function receives the value and must return `boolean` immediately.
+:::
+
+## Error messages
+
+### `Error<M>`
+
+Sets a global error message for a property. This message applies to **all** validation failures on the property unless a specific constraint provides its own error.
+
+```ts title="error.dto.ts"
+import { Error, Format, MinLength, MaxLength } from '@tsgonest/types';
+
+interface ContactDto {
+  // If any constraint fails, this message is used
+  email: string & Format<"email"> & Error<"Please enter a valid email address">;
+
+  // Global error for all name constraints
+  name: string & MinLength<1> & MaxLength<100> & Error<"Name is required and must be under 100 characters">;
+}
+```
+
+### Error precedence
+
+Per-constraint error messages take precedence over the global `Error<M>`:
+
+```ts title="precedence.dto.ts"
+import { Error, Min, Max, Int } from '@tsgonest/types';
+
+interface AgeDto {
+  age: number
+    & Int
+    & Min<{ value: 0; error: "Age cannot be negative" }>   // ← used for minimum check
+    & Max<{ value: 150; error: "Age seems unrealistic" }>   // ← used for maximum check
+    & Error<"Invalid age">;                                  // ← used for Int check (no per-constraint error)
+}
+```
+
+The resolution order is:
+
+1. **Per-constraint error** — e.g., `Min<{ value: 0; error: "..." }>` — highest priority
+2. **Global `Error<M>`** — applies when the failing constraint has no specific error
+3. **Default message** — tsgonest generates a sensible default if no error is specified
+
+## Complex type support
+
+tsgonest validates complex TypeScript types out of the box. No special configuration is needed.
+
+### Nested objects
+
+Nested object types are validated recursively. Constraints on nested properties work exactly as they do at the top level.
+
+```ts title="nested.dto.ts"
+import { MinLength, Format, Pattern } from '@tsgonest/types';
+
+interface AddressDto {
+  street: string & MinLength<1>;
+  city: string & MinLength<1>;
+  zip: string & Pattern<"^[0-9]{5}(-[0-9]{4})?$">;
+}
+
+interface CreateUserDto {
+  name: string & MinLength<1>;
+  email: string & Format<"email">;
+  address: AddressDto;           // validated recursively
+  billing?: AddressDto;          // optional — validated only if present
+}
+```
+
+### Optional properties
+
+Optional properties (`?`) are validated **only if present**. If the value is `undefined`, validation passes and the property is omitted from the output.
+
+```ts title="optional.dto.ts"
+import { MinLength, Format } from '@tsgonest/types';
+
+interface UpdateProfileDto {
+  name?: string & MinLength<1>;      // validated only if provided
+  bio?: string & MinLength<10>;      // validated only if provided
+  website?: string & Format<"url">; // validated only if provided
+}
+```
+
+### Nullable types
+
+Nullable types accept `null` as a valid value. When `null` is provided, constraint validation is skipped.
+
+```ts title="nullable.dto.ts"
+import { MinLength } from '@tsgonest/types';
+
+interface ProfileDto {
+  // Accepts a string (validated) or null (accepted as-is)
+  nickname: string & MinLength<1> | null;
+
+  // Optional AND nullable
+  avatar?: string | null;
+}
+```
+
+### Discriminated unions
+
+Discriminated unions are validated using the discriminant field via an O(1) switch. tsgonest identifies the discriminant automatically.
+
+```ts title="event.dto.ts"
+import { Min, MinLength, Format } from '@tsgonest/types';
+
+interface ClickEvent {
+  type: "click";
+  x: number & Min<0>;
+  y: number & Min<0>;
+  target: string & MinLength<1>;
+}
+
+interface NavigateEvent {
+  type: "navigate";
+  url: string & Format<"url">;
+  referrer?: string & Format<"url">;
+}
+
+interface ErrorEvent {
+  type: "error";
+  code: number;
+  message: string & MinLength<1>;
+}
+
+type AnalyticsEvent = ClickEvent | NavigateEvent | ErrorEvent;
+
+interface TrackDto {
+  events: AnalyticsEvent[];
+}
+```
+
+The generated validator for `TrackDto` switches on the `type` field to determine which variant to validate against. This is an O(1) dispatch, not a sequential try-each-variant approach.
+
+:::note
+For discriminated unions to work, every variant must share a common literal property (the discriminant). tsgonest detects common fields with literal types automatically.
+:::
+
+### Enum types
+
+TypeScript enums are validated against known values.
+
+```ts title="enum.dto.ts"
+enum Status {
+  Active = 'active',
+  Inactive = 'inactive',
+  Pending = 'pending',
+}
+
+interface UpdateStatusDto {
+  status: Status;  // validated: must be "active", "inactive", or "pending"
+}
+```
+
+### Tuple types
+
+Tuples are validated element-by-element, with each position checked against its declared type and constraints.
+
+```ts title="tuple.dto.ts"
+import { Min, Max, MinLength } from '@tsgonest/types';
+
+interface GeoDto {
+  // [latitude, longitude] — each element validated independently
+  coordinates: [number & Min<-90> & Max<90>, number & Min<-180> & Max<180>];
+}
+
+interface RangeDto {
+  // [label, min, max]
+  range: [string & MinLength<1>, number, number];
+}
+```
+
+### Literal types
+
+Literal types are validated via exact match. Union of literals works as an enum.
+
+```ts title="literal.dto.ts"
+interface ConfigDto {
+  // Must be exactly "production", "staging", or "development"
+  env: "production" | "staging" | "development";
+
+  // Boolean literal
+  enabled: true;
+
+  // Numeric literal
+  version: 1 | 2;
+}
+```
+
+## Practical example: payment system
+
+Here is a comprehensive example combining custom validators, error messages, and complex types:
+
+```ts title="validators/payment.ts"
+export function isValidExpiry(value: string): boolean {
+  const [month, year] = value.split('/').map(Number);
+  if (!month || !year) return false;
+  const expiry = new Date(2000 + year, month);
+  return expiry > new Date();
+}
+
+export function isValidCVV(value: string): boolean {
+  return /^[0-9]{3,4}$/.test(value);
+}
+```
+
+```ts title="payment.dto.ts"
+import {
+  Validate, Error, Format, Pattern, MinLength,
+  Min, Max, Step, Int, MinItems, MaxItems, Trim,
+} from '@tsgonest/types';
+import { isValidExpiry, isValidCVV } from './validators/payment';
+
+interface CardPayment {
+  method: "card";
+  cardNumber: string
+    & Pattern<"^[0-9]{13,19}$">
+    & Error<"Enter a valid card number">;
+  expiry: string
+    & Pattern<"^(0[1-9]|1[0-2])/[0-9]{2}$">
+    & Validate<{ fn: typeof isValidExpiry; error: "Card has expired" }>;
+  cvv: string
+    & Validate<{ fn: typeof isValidCVV; error: "Invalid CVV" }>;
+  name: string & Trim & MinLength<1>;
+}
+
+interface BankTransfer {
+  method: "bank";
+  iban: string & Pattern<"^[A-Z]{2}[0-9]{2}[A-Z0-9]{4}[0-9]{7}([A-Z0-9]?){0,16}$">;
+  bic?: string & Pattern<"^[A-Z]{6}[A-Z0-9]{2}([A-Z0-9]{3})?$">;
+}
+
+interface CryptoPayment {
+  method: "crypto";
+  wallet: string & MinLength<26> & Pattern<"^(0x)?[0-9a-fA-F]+$">;
+  network: "ethereum" | "bitcoin" | "solana";
+}
+
+type PaymentMethod = CardPayment | BankTransfer | CryptoPayment;
+
+interface LineItem {
+  productId: string & Format<"uuid">;
+  quantity: number & Int & Min<{ value: 1; error: "Quantity must be at least 1" }>;
+  unitPrice: number & Min<0> & Step<0.01>;
+}
+
+interface CheckoutDto {
+  payment: PaymentMethod;
+  items: LineItem[]
+    & MinItems<{ value: 1; error: "Cart is empty" }>
+    & MaxItems<100>;
+  couponCode?: string & Trim & Pattern<"^[A-Z0-9-]+$">;
+  note?: string & MaxLength<500>;
+}
+```
+
+The generated companion validates the entire `CheckoutDto` in a single pass — discriminating the payment method, validating each line item, running custom validators, and applying all constraints with structured error paths like `payment.cardNumber` or `items[0].quantity`.

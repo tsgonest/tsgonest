@@ -1,0 +1,193 @@
+---
+title: OpenAPI Generation
+description: Static OpenAPI 3.2 document generation from NestJS controllers at build time.
+---
+
+tsgonest generates a complete **OpenAPI 3.2** document from your NestJS controllers via static analysis. The entire process happens at build time — there is no runtime cost, no `reflect-metadata`, and no extra decorators beyond the standard NestJS ones you already use.
+
+## How It Works
+
+The tsgonest analyzer reads your NestJS controllers and TypeScript types at build time, producing a fully-specified OpenAPI 3.2 JSON document. Standard NestJS decorators like `@Controller`, `@Get`, `@Post`, `@Body`, `@Query`, `@Param`, and `@Headers` are all that's needed.
+
+```ts title="cats.controller.ts"
+import { Controller, Get, Post, Body, Param } from '@nestjs/common';
+
+@Controller('cats')
+export class CatsController {
+  /**
+   * List all cats.
+   * @summary List cats
+   */
+  @Get()
+  findAll(): CatDto[] {
+    // ...
+  }
+
+  /**
+   * Get a single cat by ID.
+   * @summary Get cat
+   * @throws {404} NotFoundError
+   */
+  @Get(':id')
+  findOne(@Param('id') id: string): CatDto {
+    // ...
+  }
+
+  /**
+   * Create a new cat.
+   * @summary Create cat
+   */
+  @Post()
+  create(@Body() body: CreateCatDto): CatDto {
+    // ...
+  }
+}
+```
+
+Running the build produces:
+
+```json title="dist/openapi.json"
+{
+  "openapi": "3.2.0",
+  "info": { "title": "My API", "version": "1.0.0" },
+  "paths": {
+    "/cats": {
+      "get": {
+        "operationId": "findAll",
+        "tags": ["Cat"],
+        "summary": "List cats",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": { "type": "array", "items": { "$ref": "#/components/schemas/CatDto" } }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "create",
+        "tags": ["Cat"],
+        "summary": "Create cat",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateCatDto" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/CatDto" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/cats/{id}": {
+      "get": {
+        "operationId": "findOne",
+        "tags": ["Cat"],
+        "summary": "Get cat",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/CatDto" }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/NotFoundError" }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+## Quick Setup
+
+Install the runtime package:
+
+```package-install
+@tsgonest/runtime
+```
+
+Add your OpenAPI configuration:
+
+```ts title="tsgonest.config.ts"
+import { defineConfig } from '@tsgonest/runtime';
+
+export default defineConfig({
+  openapi: {
+    output: 'dist/openapi.json',
+    title: 'My API',
+    version: '1.0.0',
+  },
+});
+```
+
+Run the build and the OpenAPI document is generated alongside your compiled output.
+
+## What Gets Generated
+
+tsgonest extracts the following from your codebase and maps them into the OpenAPI document:
+
+| Source | OpenAPI Output |
+|---|---|
+| `@Controller('path')` | Path prefixes |
+| `@Get()`, `@Post()`, etc. | Operations with HTTP methods |
+| Method name | `operationId` |
+| Controller class name | `tags` |
+| `@Param('id')` | Path parameters |
+| `@Query()` | Query parameters |
+| `@Headers()` | Header parameters |
+| `@Body()` | Request body with content type |
+| Return type annotation | Response schema |
+| JSDoc `@throws` | Error response schemas |
+| TypeScript types/interfaces | `components/schemas` |
+| Validation constraints | Schema `format`, `minimum`, `maximum`, etc. |
+
+:::tip
+Constraints from validation types (like `min`, `max`, `pattern`, `format`) automatically appear in the generated OpenAPI schemas. If your DTOs encode validation rules in their types, they carry through to the document.
+:::
+
+## Next Steps
+
+<Cards>
+  <Card title="Controllers & Routes" href="/docs/openapi/controllers">
+    How controllers, HTTP methods, tags, and JSDoc metadata are analyzed.
+  </Card>
+  <Card title="Parameters" href="/docs/openapi/parameters">
+    Query, path, body, and header parameter extraction.
+  </Card>
+  <Card title="Return Types" href="/docs/openapi/returns">
+    Response types, @Returns decorator, error responses, and SSE.
+  </Card>
+  <Card title="Versioning" href="/docs/openapi/versioning">
+    Global prefix and API versioning (URI and Header).
+  </Card>
+  <Card title="OpenAPI Config" href="/docs/openapi/config">
+    Title, servers, security schemes, and other metadata.
+  </Card>
+  <Card title="Migration from @nestjs/swagger" href="/docs/openapi/migration">
+    Step-by-step guide to replace @nestjs/swagger with tsgonest.
+  </Card>
+</Cards>

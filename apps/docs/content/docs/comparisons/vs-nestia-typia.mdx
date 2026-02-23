@@ -19,7 +19,6 @@ description: Architecture and DX comparison between tsgonest and the Nestia/Typi
 | **Setup** | ts-patch + tsconfig plugin config | Single CLI binary |
 | **NestJS integration** | `@nestia/core` decorators | `@tsgonest/runtime` pipe + interceptor |
 | **Branded types** | `typia.tags.Format<"email">` etc. | `@tsgonest/types` Email, Min, Max, etc. |
-| **Standard Schema** | Not yet supported | Built-in Standard Schema v1 |
 | **Watch mode** | External (nodemon, ts-node-dev) | Built-in `tsgonest dev` |
 
 ---
@@ -206,14 +205,16 @@ This requires:
 
 tsgonest generates OpenAPI at **build time** via static analysis:
 
-```json title="tsgonest.config.json"
-{
-  "openapi": {
-    "output": "dist/openapi.json",
-    "title": "My API",
-    "version": "1.0.0"
-  }
-}
+```ts title="tsgonest.config.ts"
+import { defineConfig } from '@tsgonest/runtime';
+
+export default defineConfig({
+  openapi: {
+    output: 'dist/openapi.json',
+    title: 'My API',
+    version: '1.0.0',
+  },
+});
 ```
 
 No application boot. No runtime cost. Standard NestJS decorators.
@@ -291,12 +292,14 @@ Requirements:
 npm install tsgonest
 ```
 
-```json title="tsgonest.config.json"
-{
-  "controllers": { "include": ["src/**/*.controller.ts"] },
-  "transforms": { "validation": true, "serialization": true },
-  "openapi": { "output": "dist/openapi.json" }
-}
+```ts title="tsgonest.config.ts"
+import { defineConfig } from '@tsgonest/runtime';
+
+export default defineConfig({
+  controllers: { include: ['src/**/*.controller.ts'] },
+  transforms: { validation: true, serialization: true },
+  openapi: { output: 'dist/openapi.json' },
+});
 ```
 
 That's it. No patches. No plugins. No tsconfig modifications. tsgonest uses its own Go-native compilation pipeline.
@@ -310,7 +313,6 @@ That's it. No patches. No plugins. No tsconfig modifications. tsgonest uses its 
 | Validation | `typia.assert<T>()` | Via `@TypedBody()` | Generated companions |
 | Serialization | `typia.json.stringify<T>()` | Via `@TypedRoute` | Generated companions |
 | OpenAPI | N/A | `@nestia/sdk` (runtime) | Static analysis (build time) |
-| Standard Schema v1 | Not yet | Not yet | Built-in |
 | Interfaces support | Yes | Yes | Yes |
 | Type aliases support | Yes | Yes | Yes |
 | Custom validators | `typia.customValidators` | Via typia | `Validate<typeof fn>` |

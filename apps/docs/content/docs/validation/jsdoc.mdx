@@ -1,0 +1,334 @@
+---
+title: JSDoc Tags
+description: Zero-dependency validation constraints using JSDoc comments.
+---
+
+JSDoc tags are the **zero-dependency** approach to defining validation constraints. Write tags directly in your JSDoc comments — no imports, no packages, no runtime overhead. tsgonest reads these tags at build time and generates the appropriate runtime checks.
+
+```ts title="example.dto.ts"
+interface CreateUserDto {
+  /** @format email */
+  email: string;
+
+  /** @minLength 8 @maxLength 128 */
+  password: string;
+
+  /** @minimum 0 @maximum 150 */
+  age: number;
+}
+```
+
+:::tip
+JSDoc tags and branded phantom types produce identical validators. Choose JSDoc when you want zero dependencies, or branded types when you prefer IDE autocompletion and type-level enforcement.
+:::
+
+## String tags
+
+### `@format <format>`
+
+Validates a string against a well-known format.
+
+```ts title="formats.dto.ts"
+interface ContactDto {
+  /** @format email */
+  email: string;
+
+  /** @format uuid */
+  id: string;
+
+  /** @format url */
+  website: string;
+
+  /** @format date-time */
+  createdAt: string;
+}
+```
+
+**Supported formats:**
+
+| Category | Formats |
+| --- | --- |
+| Email | `email`, `idn-email` |
+| URL / URI | `url`, `uri`, `uri-reference`, `uri-template`, `iri`, `iri-reference` |
+| Network | `ipv4`, `ipv6`, `hostname`, `idn-hostname`, `cidrv4`, `cidrv6`, `mac` |
+| Identity | `uuid`, `nanoid`, `cuid`, `cuid2`, `ulid`, `jwt` |
+| Date / Time | `date-time`, `date`, `time`, `duration` |
+| Encoding | `byte`, `base64url`, `hex`, `json-pointer`, `relative-json-pointer` |
+| Other | `regex`, `password`, `emoji` |
+
+### `@minLength <n>`
+
+Minimum string length (inclusive).
+
+```ts
+interface SignupDto {
+  /** @minLength 1 */
+  username: string;
+}
+```
+
+### `@maxLength <n>`
+
+Maximum string length (inclusive).
+
+```ts
+interface PostDto {
+  /** @maxLength 280 */
+  content: string;
+}
+```
+
+### `@pattern <regex>`
+
+Validates against a regular expression pattern.
+
+```ts
+interface SlugDto {
+  /** @pattern ^[a-z0-9-]+$ */
+  slug: string;
+}
+```
+
+:::warning
+The regex is tested using JavaScript's `RegExp`. Avoid lookbehind assertions if you need broad engine compatibility.
+:::
+
+## Numeric tags
+
+### `@minimum <n>`
+
+Inclusive minimum value (`>=`).
+
+```ts
+interface ProductDto {
+  /** @minimum 0 */
+  price: number;
+}
+```
+
+### `@maximum <n>`
+
+Inclusive maximum value (`<=`).
+
+```ts
+interface RatingDto {
+  /** @maximum 5 */
+  score: number;
+}
+```
+
+### `@exclusiveMinimum <n>`
+
+Exclusive minimum value (`>`). The value must be strictly greater than `n`.
+
+```ts
+interface DiscountDto {
+  /** @exclusiveMinimum 0 */
+  percentage: number;
+}
+```
+
+### `@exclusiveMaximum <n>`
+
+Exclusive maximum value (`<`). The value must be strictly less than `n`.
+
+```ts
+interface ProgressDto {
+  /** @exclusiveMaximum 100 */
+  completion: number;
+}
+```
+
+### `@multipleOf <n>`
+
+The value must be a multiple of `n`.
+
+```ts
+interface PriceDto {
+  /** @multipleOf 0.01 */
+  amount: number;
+}
+```
+
+### `@type <type>`
+
+Constrains the numeric type. This enforces that the number falls within the range and precision of the specified type.
+
+| Type | Description | Range |
+| --- | --- | --- |
+| `int32` | 32-bit signed integer | -2,147,483,648 to 2,147,483,647 |
+| `uint32` | 32-bit unsigned integer | 0 to 4,294,967,295 |
+| `int64` | Safe integer range | -(2^53 - 1) to 2^53 - 1 |
+| `uint64` | Unsigned safe integer | 0 to 2^53 - 1 |
+| `float` | Finite float | No `Infinity` or `NaN` |
+| `double` | Double precision | No `Infinity` or `NaN` |
+
+```ts
+interface CounterDto {
+  /** @type int32 */
+  count: number;
+
+  /** @type uint32 */
+  index: number;
+}
+```
+
+## Array tags
+
+### `@minItems <n>`
+
+Minimum number of items in the array.
+
+```ts
+interface TagsDto {
+  /** @minItems 1 */
+  tags: string[];
+}
+```
+
+### `@maxItems <n>`
+
+Maximum number of items in the array.
+
+```ts
+interface SelectDto {
+  /** @maxItems 5 */
+  choices: string[];
+}
+```
+
+### `@uniqueItems`
+
+All items in the array must be unique. No parameter needed.
+
+```ts
+interface PermissionsDto {
+  /** @uniqueItems */
+  scopes: string[];
+}
+```
+
+## Transform tags
+
+Transforms are applied **before** validation. They modify the input value and never fail.
+
+### `@transform trim`
+
+Trims leading and trailing whitespace.
+
+```ts
+interface LoginDto {
+  /** @transform trim @format email */
+  email: string;
+}
+```
+
+### `@transform toLowerCase`
+
+Converts the string to lowercase.
+
+```ts
+interface SearchDto {
+  /** @transform toLowerCase */
+  query: string;
+}
+```
+
+### `@transform toUpperCase`
+
+Converts the string to uppercase.
+
+```ts
+interface CountryDto {
+  /** @transform toUpperCase @pattern ^[A-Z]{2}$ */
+  code: string;
+}
+```
+
+## Other tags
+
+### `@default <value>`
+
+Sets a default value when the property is `undefined`. Only works on optional properties.
+
+```ts
+interface PaginationDto {
+  /** @default 1 @minimum 1 */
+  page?: number;
+
+  /** @default 20 @minimum 1 @maximum 100 */
+  limit?: number;
+
+  /** @default "createdAt" */
+  sortBy?: string;
+}
+```
+
+:::note
+`@default` values are parsed as JSON. Use `"string"` (with quotes) for string defaults, plain numbers for numeric defaults, and `true`/`false` for booleans.
+:::
+
+### `@coerce`
+
+Coerces string inputs to the declared type before validation. Useful for query parameters and form data where everything arrives as a string.
+
+```ts
+interface FilterDto {
+  /** @coerce @minimum 1 */
+  page: number;
+
+  /** @coerce */
+  active: boolean;
+}
+```
+
+With `@coerce`, the string `"42"` is converted to the number `42`, and `"true"` / `"false"` are converted to their boolean equivalents.
+
+## Comprehensive example
+
+Here is a complete DTO using many JSDoc tags together:
+
+```ts title="create-product.dto.ts"
+interface CreateProductDto {
+  /** @transform trim @minLength 1 @maxLength 200 */
+  name: string;
+
+  /** @transform trim @maxLength 2000 */
+  description?: string;
+
+  /**
+   * Product price in USD.
+   * @minimum 0 @multipleOf 0.01
+   */
+  price: number;
+
+  /**
+   * Stock keeping unit.
+   * @transform toUpperCase @pattern ^[A-Z0-9-]+$
+   */
+  sku: string;
+
+  /**
+   * Product tags for search.
+   * @minItems 1 @maxItems 10 @uniqueItems
+   */
+  tags: string[];
+
+  /**
+   * Stock count.
+   * @type uint32 @default 0
+   */
+  stock?: number;
+
+  /** @format url */
+  imageUrl?: string;
+
+  /**
+   * Weight in kg.
+   * @exclusiveMinimum 0 @maximum 1000
+   */
+  weight?: number;
+}
+```
+
+Running `tsgonest generate` on this file produces a companion that validates every constraint — string lengths, numeric ranges, array bounds, transforms, formats, defaults — all with zero runtime dependencies.

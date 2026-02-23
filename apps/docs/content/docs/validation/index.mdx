@@ -1,0 +1,155 @@
+---
+title: Validation
+description: Generated runtime validators from TypeScript types — JSDoc tags and branded phantom types.
+---
+
+tsgonest generates **companion files** (`.tsgonest.js` / `.tsgonest.d.ts`) alongside your compiled TypeScript output. Each companion exports runtime validation functions derived entirely from your type definitions — no schemas to write, no decorators to maintain.
+
+## Companion files
+
+When you run `tsgonest generate`, the CLI analyzes your TypeScript types and emits a companion file for each source file that contains validated types:
+
+```
+src/
+  user.dto.ts          ← your types
+  user.dto.tsgonest.js   ← generated validator + serializer
+  user.dto.tsgonest.d.ts ← generated type declarations
+```
+
+Each companion exports three functions per type:
+
+| Function    | Returns                          | On failure            |
+| ----------- | -------------------------------- | --------------------- |
+| `validate`  | `{ success, data?, errors? }`    | Returns error details |
+| `assert`    | Validated `T`                    | Throws error          |
+| `serialize` | JSON-safe object                 | —                     |
+
+## `validate` — safe parsing
+
+`validate` returns a result object and **never throws**. Use it when you need to handle errors programmatically.
+
+```ts title="usage-validate.ts"
+import { validate_CreateUserDto } from './user.dto.tsgonest.js';
+
+const result = validate_CreateUserDto(input);
+
+if (result.success) {
+  // result.data is typed as CreateUserDto
+  console.log(result.data.email);
+} else {
+  // result.errors is ValidationErrorDetail[]
+  for (const err of result.errors) {
+    console.log(`${err.path}: ${err.message}`);
+  }
+}
+```
+
+The `errors` array contains objects with the following shape:
+
+```ts title="validation-error.ts"
+interface ValidationErrorDetail {
+  path: string;      // e.g. "address.zip"
+  message: string;   // human-readable message
+  code: string;      // machine-readable error code
+  expected?: string; // what was expected
+  received?: string; // what was received
+}
+```
+
+## `assert` — throw on failure
+
+`assert` returns the validated data directly or throws a `TsgonestValidationError`. Use it in contexts where you want exceptions to propagate (e.g., inside NestJS pipes).
+
+```ts title="usage-assert.ts"
+import { assert_CreateUserDto } from './user.dto.tsgonest.js';
+
+try {
+  const user = assert_CreateUserDto(input);
+  // user is typed as CreateUserDto
+} catch (err) {
+  // err is TsgonestValidationError
+  console.log(err.errors); // ValidationErrorDetail[]
+}
+```
+
+## Two approaches to constraints
+
+tsgonest supports two complementary ways to define validation constraints on your types.
+
+### 1. JSDoc tags — zero dependencies
+
+Write constraints as JSDoc tags directly in your type comments. No imports, no packages, no runtime footprint.
+
+```ts title="user.dto.ts"
+interface CreateUserDto {
+  /** @format email */
+  email: string;
+
+  /** @minLength 8 @maxLength 128 */
+  password: string;
+
+  /** @minimum 0 @maximum 150 */
+  age: number;
+}
+```
+
+### 2. Branded phantom types — `@tsgonest/types`
+
+Install `@tsgonest/types` and use intersection types for a fully type-safe, IDE-friendly experience. The branded types are phantom — they erase at runtime and add zero cost.
+
+```package-install
+@tsgonest/types
+```
+
+```ts title="user.dto.ts"
+import { Email, MinLength, MaxLength, Min, Max } from '@tsgonest/types';
+
+interface CreateUserDto {
+  email: string & Email;
+  password: string & MinLength<8> & MaxLength<128>;
+  age: number & Min<0> & Max<150>;
+}
+```
+
+Both approaches produce identical runtime validators. You can even mix them in the same interface.
+
+## NestJS integration
+
+tsgonest ships a `TsgonestValidationPipe` that automatically wires up the generated `assert` functions for your DTOs. Apply it globally or per-controller:
+
+```ts title="main.ts"
+import { NestFactory } from '@nestjs/core';
+import { TsgonestValidationPipe } from '@tsgonest/nestjs';
+import { AppModule } from './app.module';
+
+async function bootstrap() {
+  const app = await NestFactory.create(AppModule);
+  app.useGlobalPipes(new TsgonestValidationPipe());
+  await app.listen(3000);
+}
+bootstrap();
+```
+
+The pipe intercepts incoming requests and validates `@Body()`, `@Query()`, and `@Param()` arguments against the generated companions. On failure, it returns a `400 Bad Request` with structured error details.
+
+```ts title="user.controller.ts"
+@Controller('users')
+export class UserController {
+  @Post()
+  create(@Body() dto: CreateUserDto) {
+    // dto is already validated and typed
+    return this.userService.create(dto);
+  }
+}
+```
+
+## Next steps
+
+<Cards>
+  <Card title="JSDoc Tags" href="/docs/validation/jsdoc" description="Zero-dependency validation constraints using JSDoc comments." />
+  <Card title="String Tags" href="/docs/validation/string-tags" description="Branded types for string formats, length, and patterns." />
+  <Card title="Numeric Tags" href="/docs/validation/numeric-tags" description="Branded types for numeric ranges, types, and precision." />
+  <Card title="Array Tags" href="/docs/validation/array-tags" description="Branded types for array length and uniqueness." />
+  <Card title="Transforms & Coercion" href="/docs/validation/transforms" description="Pre-validation transforms, type coercion, and defaults." />
+  <Card title="Custom Validators" href="/docs/validation/custom" description="Custom validation functions, error messages, and complex types." />
+</Cards>

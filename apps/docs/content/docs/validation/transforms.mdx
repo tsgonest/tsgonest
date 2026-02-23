@@ -1,0 +1,239 @@
+---
+title: Transforms & Coercion
+description: Pre-validation transforms, type coercion, and default values.
+---
+
+Transforms and coercion modify input values **before** validation runs. Transforms normalize strings (trim, change case), coercion converts between types (string to number), and defaults fill in missing optional values.
+
+```package-install
+@tsgonest/types
+```
+
+## Transforms
+
+Transforms are applied before any validation constraint is checked. They modify the input value in place and **never fail** — a transform always succeeds.
+
+### `Trim`
+
+Strips leading and trailing whitespace from a string.
+
+```ts title="trim.dto.ts"
+import { Trim, Email } from '@tsgonest/types';
+
+interface LoginDto {
+  // "  alice@example.com  " → "alice@example.com", then validated as email
+  email: string & Trim & Email;
+}
+```
+
+### `ToLowerCase`
+
+Converts the entire string to lowercase.
+
+```ts title="to-lower.dto.ts"
+import { ToLowerCase, MinLength } from '@tsgonest/types';
+
+interface SearchDto {
+  // "Hello World" → "hello world"
+  query: string & ToLowerCase & MinLength<1>;
+}
+```
+
+### `ToUpperCase`
+
+Converts the entire string to uppercase.
+
+```ts title="to-upper.dto.ts"
+import { ToUpperCase, Length } from '@tsgonest/types';
+
+interface CountryDto {
+  // "us" → "US"
+  code: string & ToUpperCase & Length<2>;
+}
+```
+
+### Combining transforms
+
+Transforms compose left-to-right. You can stack multiple transforms before validation constraints:
+
+```ts title="combined-transforms.dto.ts"
+import { Trim, ToLowerCase, Email, Pattern, MinLength } from '@tsgonest/types';
+
+interface RegistrationDto {
+  // 1. Trim whitespace  2. Lowercase  3. Validate as email
+  email: string & Trim & ToLowerCase & Email;
+
+  // 1. Trim  2. Lowercase  3. Check length  4. Check pattern
+  handle: string & Trim & ToLowerCase & MinLength<3> & Pattern<"^[a-z0-9_]+$">;
+}
+```
+
+:::tip
+Always place `Trim` before other transforms and validation. This ensures whitespace is removed before case conversion or constraint checking.
+:::
+
+## Coercion
+
+### `Coerce`
+
+Coerces string inputs to the declared type before validation. This is essential for query parameters, URL params, and form data where all values arrive as strings.
+
+```ts title="coerce.dto.ts"
+import { Coerce, Min, Max, Int } from '@tsgonest/types';
+
+interface FilterDto {
+  // "42" → 42, then validated as integer >= 1
+  page: number & Coerce & Int & Min<1>;
+
+  // "true" → true
+  active: boolean & Coerce;
+}
+```
+
+**Coercion rules:**
+
+| Declared type | Input | Result |
+| --- | --- | --- |
+| `number` | `"123"` | `123` |
+| `number` | `"3.14"` | `3.14` |
+| `number` | `"abc"` | Validation error |
+| `boolean` | `"true"` | `true` |
+| `boolean` | `"false"` | `false` |
+| `boolean` | `"1"` | `true` |
+| `boolean` | `"0"` | `false` |
+| `boolean` | `"yes"` | Validation error |
+
+### Auto-coercion in NestJS
+
+When using `TsgonestValidationPipe` in NestJS, tsgonest **automatically enables coercion** for `@Query()` and `@Param()` parameters typed as `number` or `boolean`. You do not need to add `Coerce` explicitly for these cases.
+
+```ts title="auto-coerce.controller.ts"
+@Controller('products')
+export class ProductController {
+  @Get()
+  findAll(
+    @Query() query: PaginationDto,  // number fields auto-coerced
+  ) {
+    return this.productService.findAll(query);
+  }
+
+  @Get(':id')
+  findOne(
+    @Param('id') id: number,  // auto-coerced from string
+  ) {
+    return this.productService.findOne(id);
+  }
+}
+```
+
+:::note
+Auto-coercion only applies to `@Query()` and `@Param()`. For `@Body()` parameters, you must use the `Coerce` type explicitly if you need string-to-type conversion.
+:::
+
+## Default values
+
+### `Default<V>`
+
+Assigns a default value when the property is `undefined`. Only works on **optional** properties (those marked with `?`).
+
+```ts title="default.dto.ts"
+import { Default, Min, Max, Int } from '@tsgonest/types';
+
+interface PaginationDto {
+  page?: number & Int & Min<1> & Default<1>;
+  limit?: number & Int & Min<1> & Max<100> & Default<20>;
+  sortBy?: string & Default<"createdAt">;
+  order?: ("asc" | "desc") & Default<"desc">;
+}
+```
+
+Defaults are applied **before** validation. If a property is `undefined`, the default value is substituted, and then all validation constraints are checked against the default.
+
+```ts title="default-behavior.ts"
+import { validate_PaginationDto } from './pagination.dto.tsgonest.js';
+
+// Input with missing fields
+const result = validate_PaginationDto({});
+
+// result.data → { page: 1, limit: 20, sortBy: "createdAt", order: "desc" }
+```
+
+:::warning
+`Default<V>` only triggers on `undefined`. If the property is explicitly set to `null`, the default is **not** applied. Use `| null` in your type if you need to accept null values.
+:::
+
+## Practical example
+
+Here is a complete query DTO combining transforms, coercion, and defaults:
+
+```ts title="search-query.dto.ts"
+import {
+  Trim, ToLowerCase, Coerce, Default,
+  MinLength, MaxLength, Min, Max, Int,
+} from '@tsgonest/types';
+
+interface SearchQueryDto {
+  /** Search term — trimmed and lowercased */
+  q: string & Trim & ToLowerCase & MinLength<1> & MaxLength<200>;
+
+  /** Page number — coerced from query string, defaults to 1 */
+  page?: number & Coerce & Int & Min<1> & Default<1>;
+
+  /** Results per page */
+  limit?: number & Coerce & Int & Min<1> & Max<100> & Default<20>;
+
+  /** Sort field */
+  sortBy?: ("relevance" | "date" | "price") & Default<"relevance">;
+
+  /** Sort direction */
+  order?: ("asc" | "desc") & Default<"desc">;
+
+  /** Minimum price filter */
+  minPrice?: number & Coerce & Min<0>;
+
+  /** Maximum price filter */
+  maxPrice?: number & Coerce & Min<0>;
+
+  /** Category filter — trimmed */
+  category?: string & Trim & MinLength<1>;
+
+  /** In-stock only flag */
+  inStock?: boolean & Coerce & Default<false>;
+}
+```
+
+Usage in a NestJS controller:
+
+```ts title="search.controller.ts"
+@Controller('search')
+export class SearchController {
+  @Get()
+  search(@Query() query: SearchQueryDto) {
+    // query.q is trimmed and lowercased
+    // query.page defaults to 1
+    // query.limit defaults to 20
+    // query.inStock defaults to false
+    // All number fields are coerced from string
+    return this.searchService.search(query);
+  }
+}
+```
+
+## JSDoc equivalent
+
+All transforms and coercion features are available via JSDoc tags as well:
+
+```ts title="jsdoc-transforms.dto.ts"
+interface SearchQueryDto {
+  /** @transform trim @transform toLowerCase @minLength 1 @maxLength 200 */
+  q: string;
+
+  /** @coerce @default 1 @minimum 1 */
+  page?: number;
+
+  /** @coerce @default 20 @minimum 1 @maximum 100 */
+  limit?: number;
+}
+```
+
+See the [JSDoc Tags](/docs/validation/jsdoc) page for full details.

@@ -32,7 +32,7 @@ export interface UserResponse {
 Run `tsgonest build` and you get:
 
 - Compiled JavaScript (via tsgo, 10x faster than `tsc`)
-- `*.tsgonest.js` companion files with `validate`, `assert`, `serialize`, and `schema` functions
+- `*.tsgonest.js` companion files with `validate`, `assert`, and `serialize` functions
 - A manifest file for automatic runtime discovery
 - A complete OpenAPI 3.2 document from your NestJS controllers
 
@@ -56,7 +56,7 @@ tsgonest replaces several tools in a typical NestJS stack:
 Every `tsgonest build` runs through this pipeline:
 
 ```text
-1. Parse CLI args + tsgonest.config.json
+1. Parse CLI args + tsgonest.config.ts
 2. Create tsgo program from tsconfig.json
 3. Type-check and emit JavaScript
 4. Walk AST with type checker -> extract type metadata
@@ -85,7 +85,7 @@ dist/
   openapi.json                              # OpenAPI 3.2 document
 ```
 
-Each companion file exports four functions:
+Each companion file exports three functions:
 
 ```ts
 // dist/user/user.dto.CreateUserDto.tsgonest.js
@@ -93,7 +93,6 @@ Each companion file exports four functions:
 export function validateCreateUserDto(input);  // returns { success, data?, errors? }
 export function assertCreateUserDto(input);    // throws on failure, returns validated data
 export function serializeCreateUserDto(input); // fast JSON string
-export function schemaCreateUserDto();         // Standard Schema v1 wrapper
 ```
 
 ## Real-world performance
@@ -160,5 +159,5 @@ Both approaches generate identical companion code. The branded types approach gi
   <Card title="Getting Started" description="Install tsgonest and build your first project" href="/docs/getting-started" />
   <Card title="CLI Reference" description="All commands, flags, and exit codes" href="/docs/cli" />
   <Card title="Validation" description="JSDoc tags, branded types, and constraint reference" href="/docs/validation" />
-  <Card title="Type Tags Reference" description="Complete @tsgonest/types API" href="/docs/type-tags" />
+  <Card title="OpenAPI" description="Static OpenAPI 3.2 generation from NestJS controllers" href="/docs/openapi" />
 </Cards>

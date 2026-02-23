@@ -252,12 +252,16 @@ samp {
   font-weight: 450;
 }
 
-/* Code blocks — white bg, subtle border, square corners */
+/* ── Code blocks ─────────────────────────────────────────── */
+
+/* Kill ALL inner borders/backgrounds — let only the outermost
+   wrapper (figure.shiki or the tabs container) own the border. */
 #nd-page .prose pre {
-  border: 1px solid var(--color-stroke-neutral);
-  border-radius: var(--radius-square);
-  background: var(--color-background-default) !important;
-  overflow: hidden;
+  border: none !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  overflow: visible;
 }
 
 #nd-page .prose pre code {
@@ -268,13 +272,46 @@ samp {
   border-radius: 0;
 }
 
-/* Shiki / fumadocs code figure */
+/* The figure.shiki is the single source of truth for styling */
 figure[class*='shiki'],
 figure.shiki {
-  border: 1px solid var(--color-stroke-neutral) !important;
+  border: 1px solid var(--color-stroke-neutral-strong) !important;
   border-radius: var(--radius-square) !important;
+  overflow: hidden !important;
+  background: var(--color-background-neutral-weak) !important;
+  box-shadow: none !important;
+}
+
+/* Title bar (shows file name like "src/user/user.dto.ts") */
+figure.shiki > div:first-child:has(figcaption),
+figure[class*='shiki'] > div:first-child:has(figcaption) {
+  border-bottom: 1px solid var(--color-stroke-neutral);
+  background: var(--color-background-neutral);
+}
+
+/* ── Tabbed code blocks (package-install, multi-tab) ─────── */
+
+/* The tabs container is the outer wrapper — style it */
+div[class*='rounded-xl'][class*='border']:has(> [role='tablist']) {
+  border: 1px solid var(--color-stroke-neutral-strong) !important;
+  border-radius: var(--radius-square) !important;
+  background: var(--color-background-neutral-weak) !important;
+  box-shadow: none !important;
   overflow: hidden;
-  background: var(--color-background-default) !important;
+}
+
+/* Tab list bar */
+div[class*='rounded-xl'][class*='border'] > [role='tablist'] {
+  background: var(--color-background-neutral);
+  border-bottom: 1px solid var(--color-stroke-neutral);
+}
+
+/* Figures nested inside tabs — strip their own border */
+div[class*='rounded-xl'][class*='border'] figure.shiki,
+div[class*='rounded-xl'][class*='border'] figure[class*='shiki'] {
+  border: none !important;
+  border-radius: 0 !important;
+  background: transparent !important;
 }
 
 /* ── Tables ───────────────────────────────────────────────── */
@@ -376,11 +413,26 @@ figure.shiki {
   background: var(--color-background-neutral);
 }
 
-.dark #nd-page .prose pre,
 .dark figure[class*='shiki'],
 .dark figure.shiki {
-  border-color: var(--color-stroke-neutral) !important;
-  background: var(--color-background-default) !important;
+  border-color: var(--color-stroke-neutral-strong) !important;
+  background: var(--color-background-neutral-weak) !important;
+}
+
+.dark figure.shiki > div:first-child:has(figcaption),
+.dark figure[class*='shiki'] > div:first-child:has(figcaption) {
+  border-bottom-color: var(--color-stroke-neutral);
+  background: var(--color-background-neutral);
+}
+
+.dark div[class*='rounded-xl'][class*='border']:has(> [role='tablist']) {
+  border-color: var(--color-stroke-neutral-strong) !important;
+  background: var(--color-background-neutral-weak) !important;
+}
+
+.dark div[class*='rounded-xl'][class*='border'] > [role='tablist'] {
+  background: var(--color-background-neutral);
+  border-bottom-color: var(--color-stroke-neutral);
 }
 
 .dark #nd-page .prose table {

@@ -1,0 +1,12 @@
+{
+  "title": "Validation",
+  "pages": [
+    "index",
+    "jsdoc",
+    "string-tags",
+    "numeric-tags",
+    "array-tags",
+    "transforms",
+    "custom"
+  ]
+}

@@ -238,17 +238,16 @@ export class UserController {
 }
 ```
 
-```json title="tsgonest.config.json"
-{
-  "openapi": {
-    "output": "dist/openapi.json",
-    "title": "My API",
-    "version": "1.0",
-    "securitySchemes": {
-      "bearer": { "type": "http", "scheme": "bearer", "bearerFormat": "JWT" }
-    }
-  }
-}
+```ts title="tsgonest.config.ts"
+import { defineConfig } from '@tsgonest/runtime';
+
+export default defineConfig({
+  openapi: {
+    output: 'dist/openapi.json',
+    title: 'My API',
+    version: '1.0',
+  },
+});
 ```
 
 The OpenAPI document is generated at **build time** via static analysis:
@@ -362,12 +361,14 @@ Migrating from the NestJS CLI ecosystem to tsgonest can be done incrementally:
 
 ### Step 2: Add tsgonest config
 
-```json title="tsgonest.config.json"
-{
-  "controllers": { "include": ["src/**/*.controller.ts"] },
-  "transforms": { "validation": true, "serialization": true },
-  "openapi": { "output": "dist/openapi.json" }
-}
+```ts title="tsgonest.config.ts"
+import { defineConfig } from '@tsgonest/runtime';
+
+export default defineConfig({
+  controllers: { include: ['src/**/*.controller.ts'] },
+  transforms: { validation: true, serialization: true },
+  openapi: { output: 'dist/openapi.json' },
+});
 ```
 
 ### Step 3: Convert DTOs gradually

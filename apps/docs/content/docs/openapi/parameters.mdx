@@ -1,0 +1,273 @@
+---
+title: Parameters
+description: Query parameters, path parameters, request bodies, and headers in OpenAPI generation.
+---
+
+tsgonest extracts parameter information from NestJS parameter decorators and maps them to OpenAPI parameters and request bodies. Type information comes directly from your TypeScript annotations.
+
+## Request Body — @Body()
+
+The `@Body()` decorator maps to `requestBody` in the OpenAPI document. The content type is **auto-detected** based on the parameter type:
+
+| Parameter Type | Content Type |
+|---|---|
+| `string` | `text/plain` |
+| Object / class / interface | `application/json` |
+
+```ts
+@Post()
+create(@Body() body: CreateUserDto): UserDto { ... }
+// requestBody → application/json with CreateUserDto schema
+
+@Post('raw')
+sendRaw(@Body() body: string): void { ... }
+// requestBody → text/plain with string schema
+```
+
+### Custom Content Type
+
+Override the auto-detected content type with the `@contentType` JSDoc tag:
+
+```ts
+/**
+ * @contentType multipart/form-data
+ */
+@Post('upload')
+upload(@Body() body: UploadDto): FileDto { ... }
+```
+
+## Query Parameters — @Query()
+
+Query parameters can be defined individually or as a whole object that gets decomposed.
+
+### Individual Parameters
+
+```ts
+@Get()
+findAll(
+  @Query('page') page: number,
+  @Query('limit') limit: number,
+  @Query('search') search?: string,
+): UserDto[] { ... }
+```
+
+Produces three individual query parameters: `page` (required), `limit` (required), and `search` (optional).
+
+### Object Decomposition
+
+When you pass an entire DTO to `@Query()`, tsgonest **auto-decomposes** it into individual query parameters:
+
+```ts
+class PaginationDto {
+  page: number;
+  limit: number;
+  search?: string;
+  sortBy?: 'name' | 'createdAt';
+}
+
+@Get()
+findAll(@Query() query: PaginationDto): UserDto[] { ... }
+```
+
+This produces the same result as defining each parameter individually — four separate query parameters in the OpenAPI document, with `page` and `limit` required, and `search` and `sortBy` optional.
+
+:::tip
+Object decomposition is the recommended approach for endpoints with many query parameters. It keeps your controller signatures clean and gives you a single DTO to validate against.
+:::
+
+### Array Parameters
+
+Array-typed query parameters automatically get `style: "form"` and `explode: true`, enabling the `?status=active&status=pending` format:
+
+```ts
+@Get()
+findAll(@Query('status') status: string[]): OrderDto[] { ... }
+```
+
+```json
+{
+  "name": "status",
+  "in": "query",
+  "schema": { "type": "array", "items": { "type": "string" } },
+  "style": "form",
+  "explode": true
+}
+```
+
+This allows clients to send `?status=active&status=pending` to filter by multiple values.
+
+### Auto-Coercion
+
+Query parameters typed as `number` or `boolean` in TypeScript automatically get coercion metadata. The OpenAPI schema reflects the actual intended type:
+
+```ts
+@Get()
+findAll(
+  @Query('page') page: number,       // schema: { type: "integer" }
+  @Query('active') active: boolean,   // schema: { type: "boolean" }
+): UserDto[] { ... }
+```
+
+:::note
+NestJS receives all query parameters as strings. tsgonest records the intended TypeScript type in the schema so that client generators and validators know to coerce `"42"` → `42` and `"true"` → `true`.
+:::
+
+## Path Parameters — @Param()
+
+Path parameters are **always required**. NestJS `:id` style placeholders are converted to OpenAPI `{id}` format:
+
+```ts
+@Get(':id')
+findOne(@Param('id') id: string): UserDto { ... }
+// GET /users/{id}
+// Parameter: { name: "id", in: "path", required: true, schema: { type: "string" } }
+```
+
+Multiple path parameters:
+
+```ts
+@Controller('organizations/:orgId/members')
+export class MembersController {
+  @Get(':memberId')
+  findOne(
+    @Param('orgId') orgId: string,
+    @Param('memberId') memberId: string,
+  ): MemberDto { ... }
+  // GET /organizations/{orgId}/members/{memberId}
+}
+```
+
+Path parameters also benefit from auto-coercion:
+
+```ts
+@Get(':id')
+findOne(@Param('id') id: number): UserDto { ... }
+// schema: { type: "integer" }
+```
+
+## Header Parameters — @Headers()
+
+Header parameters follow the same patterns as query parameters — individual or object decomposition.
+
+### Individual Headers
+
+```ts
+@Get()
+findAll(@Headers('x-api-key') apiKey: string): UserDto[] { ... }
+```
+
+```json
+{
+  "name": "x-api-key",
+  "in": "header",
+  "required": true,
+  "schema": { "type": "string" }
+}
+```
+
+### Object Decomposition
+
+```ts
+class CustomHeaders {
+  'x-request-id': string;
+  'x-correlation-id'?: string;
+}
+
+@Get()
+findAll(@Headers() headers: CustomHeaders): UserDto[] { ... }
+```
+
+Decomposes into individual header parameters, just like query object decomposition.
+
+## Custom Decorators with @in
+
+If you have custom parameter decorators created with `createParamDecorator`, you can tell tsgonest where the parameter comes from using the `@in` JSDoc tag on the decorator's declaration:
+
+```ts title="extract-id.decorator.ts"
+/** @in param */
+export const ExtractId = createParamDecorator(
+  (data: string, ctx: ExecutionContext) =>
+    ctx.switchToHttp().getRequest().params[data],
+);
+```
+
+```ts title="users.controller.ts"
+@Get(':id')
+findOne(@ExtractId('id') id: string): UserDto { ... }
+// Recognized as a path parameter named "id"
+```
+
+The `@in` tag accepts:
+
+| Value | OpenAPI `in` |
+|---|---|
+| `param` | `path` |
+| `query` | `query` |
+| `headers` | `header` |
+| `body` | `requestBody` |
+
+This allows tsgonest to correctly represent custom extraction logic in the OpenAPI document without any changes to your decorator implementation.
+
+## Skipped Decorators
+
+The following NestJS decorators are **not** treated as API parameters and are excluded from the OpenAPI document:
+
+- `@Req()` / `@Request()` — raw request object
+- `@Res()` / `@Response()` — raw response object (see [Return Types](/docs/openapi/returns) for how to document the response)
+- `@Next()` — Express next function
+- `@Session()` — session object
+- `@Ip()` — client IP
+- `@HostParam()` — host parameter
+
+These are implementation details, not part of the API contract.
+
+## Complete Example
+
+```ts title="products.controller.ts"
+@Controller('products')
+export class ProductsController {
+  /**
+   * Search products with filtering, pagination, and sorting.
+   * @summary Search products
+   */
+  @Get()
+  findAll(
+    @Query() query: ProductSearchDto,
+    @Headers('accept-language') lang?: string,
+  ): PaginatedResponse<ProductDto> { ... }
+
+  /**
+   * Get a product by ID.
+   * @summary Get product
+   * @throws {404} NotFoundError
+   */
+  @Get(':id')
+  findOne(@Param('id') id: string): ProductDto { ... }
+
+  /**
+   * Create a new product.
+   * @summary Create product
+   * @security bearer
+   */
+  @Post()
+  create(@Body() body: CreateProductDto): ProductDto { ... }
+
+  /**
+   * Upload a product image.
+   * @summary Upload image
+   * @security bearer
+   * @contentType multipart/form-data
+   */
+  @Post(':id/image')
+  uploadImage(
+    @Param('id') id: string,
+    @Body() body: ImageUploadDto,
+  ): ImageDto { ... }
+}
+```
+
+This produces:
+- `GET /products` — query params decomposed from `ProductSearchDto`, optional `accept-language` header
+- `GET /products/{id}` — required path parameter, 404 error response
+- `POST /products` — JSON request body
+- `POST /products/{id}/image` — path parameter + multipart/form-data body

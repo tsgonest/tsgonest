@@ -1,0 +1,255 @@
+---
+title: Numeric Tags
+description: Branded phantom types for numeric validation — ranges, types, and precision constraints.
+---
+
+Branded phantom types from `@tsgonest/types` let you declare numeric validation constraints directly in your TypeScript types. They compose via intersection and erase completely at runtime.
+
+```package-install
+@tsgonest/types
+```
+
+```ts title="example.dto.ts"
+import { Min, Max, Int } from '@tsgonest/types';
+
+interface ProductDto {
+  price: number & Min<0> & Max<999999>;
+  quantity: number & Int & Min<1>;
+}
+```
+
+## Range constraints
+
+### `Minimum<N>` / `Min<N>`
+
+Inclusive minimum (`>=`). `Min` is an alias for `Minimum`.
+
+```ts title="min.dto.ts"
+import { Min } from '@tsgonest/types';
+
+interface OrderDto {
+  // Simple form
+  quantity: number & Min<1>;
+
+  // With custom error
+  total: number & Min<{ value: 0; error: "Total must not be negative" }>;
+}
+```
+
+### `Maximum<N>` / `Max<N>`
+
+Inclusive maximum (`<=`). `Max` is an alias for `Maximum`.
+
+```ts title="max.dto.ts"
+import { Max } from '@tsgonest/types';
+
+interface RatingDto {
+  score: number & Max<5>;
+  discount: number & Max<{ value: 100; error: "Discount cannot exceed 100%" }>;
+}
+```
+
+### `ExclusiveMinimum<N>` / `Gt<N>`
+
+Exclusive minimum (`>`). The value must be **strictly greater** than `N`. `Gt` (greater than) is the short alias.
+
+```ts title="gt.dto.ts"
+import { Gt } from '@tsgonest/types';
+
+interface DiscountDto {
+  // Must be > 0, not >= 0
+  percentage: number & Gt<0>;
+}
+```
+
+### `ExclusiveMaximum<N>` / `Lt<N>`
+
+Exclusive maximum (`<`). The value must be **strictly less** than `N`. `Lt` (less than) is the short alias.
+
+```ts title="lt.dto.ts"
+import { Lt } from '@tsgonest/types';
+
+interface ProgressDto {
+  // Must be < 100
+  completion: number & Lt<100>;
+}
+```
+
+### `Gte<N>` / `Lte<N>`
+
+Additional aliases for clarity:
+
+- `Gte<N>` — alias for `Min<N>` (greater than or equal, `>=`)
+- `Lte<N>` — alias for `Max<N>` (less than or equal, `<=`)
+
+```ts title="aliases.dto.ts"
+import { Gte, Lte } from '@tsgonest/types';
+
+interface BoundedDto {
+  temperature: number & Gte<-273.15> & Lte<1000>;
+}
+```
+
+### `MultipleOf<N>` / `Step<N>`
+
+The value must be evenly divisible by `N`. `Step` is an alias for `MultipleOf`.
+
+```ts title="step.dto.ts"
+import { Step, MultipleOf } from '@tsgonest/types';
+
+interface PriceDto {
+  // Currency: 2 decimal places
+  amount: number & Step<0.01>;
+
+  // Grid snapping
+  positionX: number & MultipleOf<8>;
+}
+```
+
+## Numeric type constraints
+
+### `Type<T>`
+
+Constrains the number to a specific numeric type, enforcing both range and precision.
+
+```ts title="type.dto.ts"
+import { Type } from '@tsgonest/types';
+
+interface SystemDto {
+  port: number & Type<"uint32">;
+  offset: number & Type<"int64">;
+  ratio: number & Type<"float">;
+}
+```
+
+| Type | Description | Range |
+| --- | --- | --- |
+| `int32` | 32-bit signed integer | -2,147,483,648 to 2,147,483,647 |
+| `uint32` | 32-bit unsigned integer | 0 to 4,294,967,295 |
+| `int64` | Safe integer range | -(2^53 - 1) to 2^53 - 1 |
+| `uint64` | Unsigned safe integer | 0 to 2^53 - 1 |
+| `float` | Finite float | No `Infinity` or `NaN` |
+| `double` | Double precision | No `Infinity` or `NaN` |
+
+:::note
+`int64` and `uint64` use JavaScript's safe integer range (`Number.MIN_SAFE_INTEGER` to `Number.MAX_SAFE_INTEGER`), not the full 64-bit range. For values outside this range, use `bigint` in your application code.
+:::
+
+## Numeric aliases
+
+Zero-parameter aliases for common constraints. Import and use directly — no generic parameter needed.
+
+```ts title="aliases.dto.ts"
+import { Positive, NonNegative, Int, SafeInt } from '@tsgonest/types';
+
+interface MetricsDto {
+  responseTime: number & Positive;     // > 0
+  errorCount: number & NonNegative;    // >= 0
+  statusCode: number & Int;            // int32
+  timestamp: number & SafeInt;         // int64
+}
+```
+
+| Alias | Equivalent | Description |
+| --- | --- | --- |
+| `Positive` | `Gt<0>` | Strictly greater than zero |
+| `Negative` | `Lt<0>` | Strictly less than zero |
+| `NonNegative` | `Min<0>` | Zero or greater |
+| `NonPositive` | `Max<0>` | Zero or less |
+| `Int` | `Type<"int32">` | 32-bit signed integer |
+| `SafeInt` | `Type<"int64">` | Safe integer range |
+| `Finite` | `Type<"float">` | Finite float (no Infinity/NaN) |
+| `Uint` | `Type<"uint32">` | Unsigned 32-bit integer |
+| `Double` | `Type<"double">` | Double precision float |
+
+## Compound constraints
+
+### `Range<{ min, max }>`
+
+Sets both `Minimum` and `Maximum` in a single type. Optionally includes a shared error message.
+
+```ts title="range.dto.ts"
+import { Range } from '@tsgonest/types';
+
+interface SliderDto {
+  // 0 to 100, inclusive
+  volume: number & Range<{ min: 0; max: 100 }>;
+
+  // With shared error message
+  opacity: number & Range<{ min: 0; max: 1; error: "Opacity must be between 0 and 1" }>;
+}
+```
+
+## Practical examples
+
+### Age field
+
+```ts title="age.dto.ts"
+import { Int, Range } from '@tsgonest/types';
+
+interface ProfileDto {
+  age: number & Int & Range<{ min: 0; max: 150; error: "Please enter a valid age" }>;
+}
+```
+
+### Price field
+
+```ts title="price.dto.ts"
+import { Min, Max, Step } from '@tsgonest/types';
+
+interface PricingDto {
+  /** Unit price in dollars */
+  unitPrice: number & Min<{ value: 0; error: "Price cannot be negative" }> & Max<999999.99> & Step<0.01>;
+
+  /** Discount percentage */
+  discount: number & Min<0> & Max<100>;
+
+  /** Quantity must be a positive integer */
+  quantity: number & Int & Min<1>;
+}
+```
+
+### Pagination
+
+```ts title="pagination.dto.ts"
+import { Int, Min, Max, Default } from '@tsgonest/types';
+
+interface PaginationDto {
+  page?: number & Int & Min<1> & Default<1>;
+  limit?: number & Int & Min<1> & Max<100> & Default<20>;
+  offset?: number & Int & NonNegative;
+}
+```
+
+### Geolocation
+
+```ts title="geo.dto.ts"
+import { Range, Finite } from '@tsgonest/types';
+
+interface GeoPointDto {
+  latitude: number & Finite & Range<{ min: -90; max: 90 }>;
+  longitude: number & Finite & Range<{ min: -180; max: 180 }>;
+  altitude?: number & Finite;
+}
+```
+
+## Combining constraints
+
+Numeric constraints compose via intersection just like string constraints:
+
+```ts title="combined.dto.ts"
+import { Int, Min, Max, Step, Coerce } from '@tsgonest/types';
+
+interface GridConfigDto {
+  // Integer, 1-1000, coerced from string (for query params)
+  columns: number & Coerce & Int & Min<1> & Max<1000>;
+
+  // Currency amount: non-negative, 2 decimal places, max 1M
+  budget: number & Min<0> & Max<1000000> & Step<0.01>;
+
+  // Zoom level: float between 0.1 and 10
+  zoom: number & Min<0.1> & Max<10>;
+}
+```
+
+Constraints are evaluated independently — every constraint must pass for the value to be considered valid. If multiple constraints fail, all failures are reported in the `errors` array.

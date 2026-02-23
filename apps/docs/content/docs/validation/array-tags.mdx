@@ -1,0 +1,174 @@
+---
+title: Array Tags
+description: Branded phantom types for array validation — length and uniqueness constraints.
+---
+
+Branded phantom types from `@tsgonest/types` can constrain arrays for length and uniqueness. Array constraints are applied to the **array type itself** via intersection.
+
+```package-install
+@tsgonest/types
+```
+
+```ts title="example.dto.ts"
+import { MinItems, MaxItems, UniqueItems } from '@tsgonest/types';
+
+interface CreatePostDto {
+  tags: string[] & MinItems<1> & MaxItems<10> & UniqueItems;
+}
+```
+
+:::note
+Array constraints are intersected with the full array type (e.g., `string[]`), not with the element type. This is because the constraints apply to the array as a whole, not to individual items.
+:::
+
+## Constraints
+
+### `MinItems<N>`
+
+Minimum number of elements in the array. `N` can be a number or an object with a custom error message.
+
+```ts title="min-items.dto.ts"
+import { MinItems } from '@tsgonest/types';
+
+interface OrderDto {
+  // At least one item required
+  items: OrderItem[] & MinItems<1>;
+
+  // With custom error
+  recipients: string[] & MinItems<{ value: 1; error: "At least one recipient is required" }>;
+}
+```
+
+### `MaxItems<N>`
+
+Maximum number of elements in the array.
+
+```ts title="max-items.dto.ts"
+import { MaxItems } from '@tsgonest/types';
+
+interface UploadDto {
+  // No more than 10 files
+  files: FileItem[] & MaxItems<10>;
+
+  // With custom error
+  attachments: string[] & MaxItems<{ value: 5; error: "You can attach up to 5 files" }>;
+}
+```
+
+### `UniqueItems` / `Unique`
+
+All elements in the array must be unique. `Unique` is an alias for `UniqueItems`. No generic parameter is needed.
+
+```ts title="unique.dto.ts"
+import { UniqueItems, Unique } from '@tsgonest/types';
+
+interface PermissionsDto {
+  // No duplicate scopes allowed
+  scopes: string[] & UniqueItems;
+
+  // Alias — identical behavior
+  roles: string[] & Unique;
+}
+```
+
+For primitive arrays (`string[]`, `number[]`), uniqueness is checked by value. For object arrays, uniqueness is checked by deep equality.
+
+## Combining constraints
+
+Array constraints compose naturally via intersection:
+
+```ts title="combined.dto.ts"
+import { MinItems, MaxItems, UniqueItems } from '@tsgonest/types';
+
+interface TaggableDto {
+  // 1-20 unique tags
+  tags: string[] & MinItems<1> & MaxItems<20> & UniqueItems;
+}
+```
+
+You can also combine array constraints with element-level constraints. The element type carries its own validation, and the array type carries the collection-level constraints:
+
+```ts title="element-validation.dto.ts"
+import { MinItems, MaxItems, UniqueItems, Email } from '@tsgonest/types';
+
+interface InviteDto {
+  // 1-50 unique emails — each element is validated as an email
+  emails: (string & Email)[] & MinItems<1> & MaxItems<50> & UniqueItems;
+}
+```
+
+## Practical examples
+
+### Tags
+
+```ts title="tags.dto.ts"
+import { MinItems, MaxItems, UniqueItems, MinLength, MaxLength, Trim } from '@tsgonest/types';
+
+interface ArticleDto {
+  title: string & Trim & MinLength<1> & MaxLength<200>;
+
+  // Tags: 1-10 unique strings, each 1-30 chars
+  tags: (string & Trim & MinLength<1> & MaxLength<30>)[]
+    & MinItems<1>
+    & MaxItems<10>
+    & UniqueItems;
+}
+```
+
+### Roles
+
+```ts title="roles.dto.ts"
+import { MinItems, UniqueItems } from '@tsgonest/types';
+
+type Role = 'admin' | 'editor' | 'viewer';
+
+interface AssignRolesDto {
+  userId: string;
+  roles: Role[] & MinItems<{ value: 1; error: "Assign at least one role" }> & UniqueItems;
+}
+```
+
+### Order items
+
+```ts title="order.dto.ts"
+import { MinItems, MaxItems, Min, Int } from '@tsgonest/types';
+
+interface OrderItemDto {
+  productId: string;
+  quantity: number & Int & Min<1>;
+}
+
+interface CreateOrderDto {
+  items: OrderItemDto[] & MinItems<{ value: 1; error: "Order must contain at least one item" }> & MaxItems<100>;
+  note?: string;
+}
+```
+
+### Bulk operations
+
+```ts title="bulk.dto.ts"
+import { MinItems, MaxItems, Uuid } from '@tsgonest/types';
+
+interface BulkDeleteDto {
+  ids: (string & Uuid)[]
+    & MinItems<{ value: 1; error: "Select at least one item to delete" }>
+    & MaxItems<{ value: 100; error: "Cannot delete more than 100 items at once" }>;
+}
+```
+
+## Array constraints with JSDoc
+
+If you prefer the zero-dependency JSDoc approach, array constraints are supported via tags on the property:
+
+```ts title="jsdoc-array.dto.ts"
+interface CreatePostDto {
+  /**
+   * @minItems 1
+   * @maxItems 10
+   * @uniqueItems
+   */
+  tags: string[];
+}
+```
+
+See the [JSDoc Tags](/docs/validation/jsdoc) page for full details.

@@ -1,0 +1,305 @@
+---
+title: Return Types
+description: Response types, @Returns decorator, error responses, and SSE endpoints.
+---
+
+tsgonest reads your method return types to generate OpenAPI response schemas. In most cases, a TypeScript return type annotation is all you need.
+
+## Automatic Return Type Inference
+
+The method's return type annotation is used directly as the response schema:
+
+```ts
+@Get()
+findAll(): UserDto[] { ... }
+// Response: 200 with array of UserDto
+
+@Get(':id')
+findOne(@Param('id') id: string): UserDto { ... }
+// Response: 200 with UserDto
+
+@Post()
+create(@Body() body: CreateUserDto): UserDto { ... }
+// Response: 201 with UserDto (POST defaults to 201)
+```
+
+### Promise Unwrapping
+
+`Promise<T>` is automatically unwrapped to `T`:
+
+```ts
+@Get()
+async findAll(): Promise<UserDto[]> { ... }
+// Response schema: array of UserDto (Promise is stripped)
+```
+
+### Void Responses
+
+Methods that return `void` produce a response **without a content body**:
+
+```ts
+@Delete(':id')
+@HttpCode(204)
+remove(@Param('id') id: string): void { ... }
+// Response: 204 with no content
+```
+
+:::warning
+If no return type annotation is present, tsgonest falls back to TypeScript's type checker inference. This works but can be slower on large codebases. Always prefer explicit return type annotations.
+:::
+
+## The @Returns Decorator
+
+The `@Returns<T>()` decorator lets you explicitly specify the response type for OpenAPI generation. This is particularly useful for routes that use `@Res()` or need to override the inferred type.
+
+### Basic Usage
+
+```ts
+@Get(':id/avatar')
+@Returns<Buffer>({ contentType: 'image/png' })
+getAvatar(@Param('id') id: string, @Res() res: Response): void {
+  // Manual response handling
+  const buffer = this.service.getAvatar(id);
+  res.set('Content-Type', 'image/png').send(buffer);
+}
+```
+
+### With Description and Status
+
+```ts
+@Post()
+@Returns<UserDto>({ description: 'The newly created user', status: 201 })
+create(@Body() body: CreateUserDto): UserDto { ... }
+```
+
+### Options
+
+| Option | Type | Description |
+|---|---|---|
+| `contentType` | `string` | Override the response content type (default: `application/json`) |
+| `description` | `string` | Description for the response in OpenAPI |
+| `status` | `number` | Override the response status code |
+
+## @Res() and @Response() Routes
+
+When a route uses `@Res()` or `@Response()`, NestJS delegates response handling to the developer. tsgonest cannot infer the response type from the method body, so it **defaults to void** (no response body in OpenAPI).
+
+```ts
+// ⚠ OpenAPI response will be empty — tsgonest can't infer what res.json() sends
+@Get(':id/download')
+download(@Param('id') id: string, @Res() res: Response): void {
+  const file = this.service.getFile(id);
+  res.sendFile(file.path);
+}
+```
+
+To document the actual response, add `@Returns<T>()`:
+
+```ts
+// ✓ OpenAPI response correctly documents the file response
+@Get(':id/download')
+@Returns<Buffer>({ contentType: 'application/pdf', description: 'The document PDF' })
+download(@Param('id') id: string, @Res() res: Response): void {
+  const file = this.service.getFile(id);
+  res.sendFile(file.path);
+}
+```
+
+:::warning
+tsgonest emits a warning when `@Res()` is used without `@Returns`. If you intentionally handle the response manually and don't want to document it, suppress the warning with:
+
+```ts
+/**
+ * @tsgonest-ignore uses-raw-response
+ */
+@Get('health')
+health(@Res() res: Response): void { ... }
+```
+:::
+
+## Array Responses
+
+Array return types produce array schemas in the response:
+
+```ts
+@Get()
+findAll(): UserDto[] { ... }
+```
+
+```json
+{
+  "200": {
+    "description": "OK",
+    "content": {
+      "application/json": {
+        "schema": {
+          "type": "array",
+          "items": { "$ref": "#/components/schemas/UserDto" }
+        }
+      }
+    }
+  }
+}
+```
+
+Generic wrapper types work the same way:
+
+```ts
+@Get()
+findAll(): PaginatedResponse<UserDto> { ... }
+// Produces the full PaginatedResponse schema with UserDto items
+```
+
+## Error Responses via @throws
+
+Use the `@throws` JSDoc tag to document error responses:
+
+```ts
+/**
+ * @throws {400} ValidationError
+ * @throws {404} NotFoundError
+ * @throws {403} ForbiddenError
+ */
+@Get(':id')
+findOne(@Param('id') id: string): UserDto { ... }
+```
+
+Each `@throws` adds a response entry to the operation:
+
+```json
+{
+  "400": {
+    "description": "Bad Request",
+    "content": {
+      "application/json": {
+        "schema": { "$ref": "#/components/schemas/ValidationError" }
+      }
+    }
+  },
+  "404": {
+    "description": "Not Found",
+    "content": {
+      "application/json": {
+        "schema": { "$ref": "#/components/schemas/NotFoundError" }
+      }
+    }
+  },
+  "403": {
+    "description": "Forbidden",
+    "content": {
+      "application/json": {
+        "schema": { "$ref": "#/components/schemas/ForbiddenError" }
+      }
+    }
+  }
+}
+```
+
+The type name after the status code must reference a class or interface in your codebase. tsgonest resolves it and generates the corresponding schema in `components/schemas`.
+
+## SSE Endpoints
+
+Routes decorated with `@Sse()` map to **GET** operations with `text/event-stream` response content type and use the OpenAPI 3.2 `itemSchema` field:
+
+```ts
+@Sse('events')
+stream(): Observable<MessageEvent> { ... }
+```
+
+```json
+{
+  "200": {
+    "description": "OK",
+    "content": {
+      "text/event-stream": {
+        "schema": {
+          "type": "string",
+          "format": "event-stream",
+          "itemSchema": { "$ref": "#/components/schemas/MessageEvent" }
+        }
+      }
+    }
+  }
+}
+```
+
+### Custom SSE Types
+
+If you return a custom DTO instead of the built-in `MessageEvent`, tsgonest adds `contentMediaType` and `contentSchema` to describe the event data payload:
+
+```ts
+interface OrderUpdate {
+  orderId: string;
+  status: 'pending' | 'shipped' | 'delivered';
+  updatedAt: string;
+}
+
+@Sse('orders/updates')
+orderUpdates(): Observable<OrderUpdate> { ... }
+```
+
+This gives clients and code generators full type information about the SSE event data structure.
+
+## Complete Example
+
+```ts title="documents.controller.ts"
+@Controller('documents')
+export class DocumentsController {
+  /**
+   * List all documents for the current user.
+   * @summary List documents
+   * @security bearer
+   */
+  @Get()
+  findAll(@Query() query: DocumentFilterDto): DocumentDto[] { ... }
+
+  /**
+   * Get document metadata.
+   * @summary Get document
+   * @security bearer
+   * @throws {404} NotFoundError
+   */
+  @Get(':id')
+  findOne(@Param('id') id: string): DocumentDto { ... }
+
+  /**
+   * Download the document file.
+   * @summary Download document
+   * @security bearer
+   * @throws {404} NotFoundError
+   */
+  @Get(':id/download')
+  @Returns<Buffer>({ contentType: 'application/pdf', description: 'The document file' })
+  download(@Param('id') id: string, @Res() res: Response): void {
+    const doc = this.service.getDocument(id);
+    res.set('Content-Type', doc.mimeType).send(doc.buffer);
+  }
+
+  /**
+   * Create a new document.
+   * @summary Create document
+   * @security bearer
+   * @throws {400} ValidationError
+   */
+  @Post()
+  create(@Body() body: CreateDocumentDto): DocumentDto { ... }
+
+  /**
+   * Subscribe to real-time document updates.
+   * @summary Document update stream
+   * @security bearer
+   */
+  @Sse(':id/updates')
+  updates(@Param('id') id: string): Observable<DocumentUpdate> { ... }
+
+  /**
+   * Delete a document permanently.
+   * @summary Delete document
+   * @security bearer
+   * @throws {404} NotFoundError
+   */
+  @Delete(':id')
+  @HttpCode(204)
+  remove(@Param('id') id: string): void { ... }
+}
+```

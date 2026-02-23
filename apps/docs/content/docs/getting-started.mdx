@@ -29,24 +29,26 @@ tsgonest ships pre-built native binaries for macOS (ARM64, x64), Linux (ARM64, x
 
 ### 1. Create a configuration file
 
-Create `tsgonest.config.json` in your project root:
+Create `tsgonest.config.ts` in your project root:
 
-```json title="tsgonest.config.json"
-{
-  "controllers": {
-    "include": ["src/**/*.controller.ts"]
+```ts title="tsgonest.config.ts"
+import { defineConfig } from '@tsgonest/runtime';
+
+export default defineConfig({
+  controllers: {
+    include: ['src/**/*.controller.ts'],
   },
-  "transforms": {
-    "validation": true,
-    "serialization": true
+  transforms: {
+    validation: true,
+    serialization: true,
   },
-  "openapi": {
-    "output": "dist/openapi.json"
-  }
-}
+  openapi: {
+    output: 'dist/openapi.json',
+  },
+});
 ```
 
-This is the minimal config. tsgonest will auto-detect this file if it exists in your working directory.
+The `defineConfig()` helper provides full autocomplete and type checking. tsgonest auto-detects this file in your working directory.
 
 ### 2. Define your DTOs
 
@@ -147,7 +149,7 @@ You should see output like:
 ```text
 tsgonest v0.1.1 build
   tsconfig: tsconfig.json
-  config:   tsgonest.config.json
+  config:   tsgonest.config.ts
 
   emit:        142ms
   companions:  38ms  (4 files)
@@ -245,7 +247,7 @@ You should see:
 
 <Cards>
   <Card title="CLI Reference" description="All build and dev flags" href="/docs/cli" />
-  <Card title="Configuration" description="Full tsgonest.config.json schema" href="/docs/config" />
+  <Card title="Configuration" description="Type-safe tsgonest.config.ts reference" href="/docs/config" />
   <Card title="Validation" description="All constraints, formats, and transforms" href="/docs/validation" />
   <Card title="Serialization & Runtime" description="ValidationPipe, FastInterceptor, and manifest" href="/docs/serialization-runtime" />
 </Cards>

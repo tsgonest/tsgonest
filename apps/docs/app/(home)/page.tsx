@@ -75,7 +75,7 @@ const coreFeatures = [
     label: 'Config',
     title: 'Configuration reference',
     description:
-      'Complete `tsgonest.config.json` schema with controllers, transforms, OpenAPI, NestJS versioning, and more.',
+      'Type-safe `tsgonest.config.ts` with `defineConfig()`, controllers, transforms, OpenAPI, and NestJS versioning.',
     icon: (
       <svg
         xmlns="http://www.w3.org/2000/svg"
@@ -101,7 +101,7 @@ const deepDiveFeatures = [
     label: 'Validation',
     title: 'Validation & constraints',
     description:
-      'JSDoc tags, branded types, string formats, transforms, coercion, custom validators, discriminated unions, and Standard Schema.',
+      'JSDoc tags, branded types, string formats, transforms, coercion, custom validators, and discriminated unions.',
     accent: 'text-teal-600 bg-teal-50 dark:bg-teal-950/40 dark:text-teal-400',
   },
   {
@@ -321,7 +321,7 @@ export default function HomePage() {
         </p>
         <ol className="flex flex-col gap-2 text-sm">
           {[
-            'Parse CLI args + tsgonest.config.json',
+            'Parse CLI args + tsgonest.config.ts',
             'Create tsgo program from tsconfig',
             'Type-check and emit JavaScript',
             'Walk AST with type checker \u2192 extract type metadata',
