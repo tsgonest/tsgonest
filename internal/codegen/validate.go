@@ -35,8 +35,13 @@ func GenerateCompanionSelective(typeName string, meta *metadata.Metadata, regist
 	}
 
 	if includeSerialization {
-		// Serialization helper — must be before any serialize function that uses it
-		e.Block("function __jsonStr(s)")
+		// Serialization helpers — must be before any serialize function that uses them.
+		// __esc: regex matching JSON-special chars (control chars, quote, backslash).
+		// __s: fast string serializer — skips JSON.stringify for the common case where
+		// no escaping is needed (regex.test is a single native call, much faster).
+		e.Line("var __esc = /[\\x00-\\x1f\"\\\\]/;")
+		e.Block("function __s(s)")
+		e.Line("if (!__esc.test(s)) return '\"' + s + '\"';")
 		e.Line("return JSON.stringify(s);")
 		e.EndBlock()
 		e.Blank()

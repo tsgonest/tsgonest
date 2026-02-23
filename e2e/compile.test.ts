@@ -137,7 +137,7 @@ describe("tsgonest companion file generation", () => {
 
     const content = readFileSync(companionFile, "utf-8");
     expect(content).toContain("export function serializeUserResponse");
-    expect(content).toContain("__jsonStr");
+    expect(content).toContain("__s(");
   });
 
   it("should handle optional properties in UpdateUserDto", () => {

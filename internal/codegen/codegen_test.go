@@ -202,7 +202,7 @@ func TestSerializeSimpleObject(t *testing.T) {
 
 	code := GenerateCompanionSelective("UserResponse", meta, reg, false, true)
 	assertContains(t, code, "export function serializeUserResponse(input)")
-	assertContains(t, code, "__jsonStr(input.name)")
+	assertContains(t, code, "__s(input.name)")
 	assertContains(t, code, `\"id\"`)
 }
 
@@ -230,8 +230,10 @@ func TestSerializeArray(t *testing.T) {
 	}
 
 	code := GenerateCompanionSelective("Result", meta, reg, false, true)
-	assertContains(t, code, ".map(")
-	assertContains(t, code, ".join(\",\")")
+	// Array serialization uses for-loop IIFE instead of .map().join()
+	assertContains(t, code, "for (var")
+	assertContains(t, code, `+= ","`)
+	assertContains(t, code, `+ "]"`)
 }
 
 func TestSerializeOptionalProps(t *testing.T) {
@@ -252,9 +254,10 @@ func TestSerializeOptionalProps(t *testing.T) {
 	// Should have conditional key inclusion
 	assertContains(t, code, "input.name !== undefined")
 	assertContains(t, code, "input.age !== undefined")
-	// Should produce push-based approach
-	assertContains(t, code, ".push(")
-	assertContains(t, code, ".join(\",\")")
+	// Should use string accumulation with separator flag
+	assertContains(t, code, `_r0 +=`)
+	assertContains(t, code, `_c0 = ","`)
+
 }
 
 func TestSerializeMixedOptionalRequired(t *testing.T) {
@@ -271,9 +274,9 @@ func TestSerializeMixedOptionalRequired(t *testing.T) {
 
 	code := GenerateCompanionSelective("Profile", meta, reg, false, true)
 
-	// Required props should always be pushed (without conditional)
-	assertContains(t, code, `_p0.push("\"id\":`)
-	assertContains(t, code, `_p0.push("\"name\":`)
+	// Required props should use string accumulation (no conditional)
+	assertContains(t, code, `"\"id\":"`)
+	assertContains(t, code, `"\"name\":"`)
 	// Optional prop should have conditional check
 	assertContains(t, code, "input.bio !== undefined")
 }
@@ -298,7 +301,7 @@ func TestSerializeNestedObject(t *testing.T) {
 	}
 
 	code := GenerateCompanionSelective("User", meta, reg, false, true)
-	assertContains(t, code, "__jsonStr(input.address.city)")
+	assertContains(t, code, "__s(input.address.city)")
 }
 
 func TestCompanionPath(t *testing.T) {
@@ -2234,6 +2237,133 @@ func TestValidateCustomFn_StripsTsExtension(t *testing.T) {
 }
 
 // --- Helper ---
+
+// ── Union serialization tests ──────────────────────────────────────────
+
+func TestSerializeDiscriminatedUnion(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+	cardMeta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Properties: []metadata.Property{
+			{Name: "type", Type: metadata.Metadata{Kind: metadata.KindLiteral, LiteralValue: "card"}, Required: true},
+			{Name: "last4", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+		},
+	}
+	bankMeta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Properties: []metadata.Property{
+			{Name: "type", Type: metadata.Metadata{Kind: metadata.KindLiteral, LiteralValue: "bank"}, Required: true},
+			{Name: "routing", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+		},
+	}
+	reg.Register("CardPayment", cardMeta)
+	reg.Register("BankPayment", bankMeta)
+
+	meta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Properties: []metadata.Property{
+			{Name: "payment", Type: metadata.Metadata{
+				Kind: metadata.KindUnion,
+				UnionMembers: []metadata.Metadata{
+					{Kind: metadata.KindRef, Ref: "CardPayment"},
+					{Kind: metadata.KindRef, Ref: "BankPayment"},
+				},
+				Discriminant: &metadata.Discriminant{
+					Property: "type",
+					Mapping:  map[string]int{"card": 0, "bank": 1},
+				},
+			}, Required: true},
+		},
+	}
+
+	code := GenerateCompanionSelective("Order", meta, reg, false, true)
+
+	// Should use switch on discriminant for each branch
+	assertContains(t, code, `switch (`)
+	assertContains(t, code, `["type"]`)
+	assertContains(t, code, `case "card"`)
+	assertContains(t, code, `case "bank"`)
+	// Each case should serialize properly (not just JSON.stringify the whole union)
+	assertContains(t, code, `__s(input.payment.last4)`)
+	assertContains(t, code, `__s(input.payment.routing)`)
+}
+
+func TestSerializeLiteralUnion(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+	meta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Properties: []metadata.Property{
+			{Name: "role", Type: metadata.Metadata{
+				Kind: metadata.KindUnion,
+				UnionMembers: []metadata.Metadata{
+					{Kind: metadata.KindLiteral, LiteralValue: "admin"},
+					{Kind: metadata.KindLiteral, LiteralValue: "user"},
+					{Kind: metadata.KindLiteral, LiteralValue: "guest"},
+				},
+			}, Required: true},
+		},
+	}
+
+	code := GenerateCompanionSelective("User", meta, reg, false, true)
+
+	// All-string literal union should use __s() directly
+	assertContains(t, code, "__s(input.role)")
+	assertNotContains(t, code, "JSON.stringify(input.role)")
+}
+
+func TestSerializeNullableUnion(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+	addrMeta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Properties: []metadata.Property{
+			{Name: "city", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+		},
+	}
+	reg.Register("Address", addrMeta)
+
+	meta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Properties: []metadata.Property{
+			{Name: "address", Type: metadata.Metadata{
+				Kind: metadata.KindUnion,
+				UnionMembers: []metadata.Metadata{
+					{Kind: metadata.KindRef, Ref: "Address"},
+					{Kind: metadata.KindLiteral, LiteralValue: nil},
+				},
+			}, Required: true},
+		},
+	}
+
+	code := GenerateCompanionSelective("User", meta, reg, false, true)
+
+	// Should use null check, not JSON.stringify fallback
+	assertContains(t, code, `== null ? "null"`)
+	assertContains(t, code, `__s(input.address.city)`)
+	assertNotContains(t, code, "JSON.stringify(input.address)")
+}
+
+func TestSerializeAtomicUnion(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+	meta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Properties: []metadata.Property{
+			{Name: "value", Type: metadata.Metadata{
+				Kind: metadata.KindUnion,
+				UnionMembers: []metadata.Metadata{
+					{Kind: metadata.KindAtomic, Atomic: "string"},
+					{Kind: metadata.KindAtomic, Atomic: "number"},
+				},
+			}, Required: true},
+		},
+	}
+
+	code := GenerateCompanionSelective("Flexible", meta, reg, false, true)
+
+	// Should use typeof dispatch, not JSON.stringify
+	assertContains(t, code, `typeof input.value === "string"`)
+	assertContains(t, code, `__s(input.value)`)
+	assertNotContains(t, code, "JSON.stringify(input.value)")
+}
 
 func assertContains(t *testing.T, haystack string, needle string) {
 	t.Helper()
