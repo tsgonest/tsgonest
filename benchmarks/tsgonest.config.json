@@ -1,0 +1,13 @@
+{
+  "controllers": {
+    "include": ["src/**/*.controller.ts"]
+  },
+  "transforms": {
+    "validation": true,
+    "serialization": true,
+    "include": ["src/**/*.dto.ts"]
+  },
+  "openapi": {
+    "output": "dist/openapi.json"
+  }
+}

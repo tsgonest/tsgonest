@@ -1,0 +1,19 @@
+{
+  "name": "tsgonest-benchmarks",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "../tsgonest build --project tsconfig.json --config tsgonest.config.json --clean",
+    "bench:validation": "tsx --tsconfig bench/tsconfig.json bench/validation.ts",
+    "bench:serialization": "tsx --tsconfig bench/tsconfig.json bench/serialization.ts",
+    "bench:compile": "bash bench/compilation.sh",
+    "bench": "pnpm run build && pnpm run bench:validation && pnpm run bench:serialization"
+  },
+  "dependencies": {
+    "class-validator": "^0.14.1",
+    "class-transformer": "^0.5.1",
+    "reflect-metadata": "^0.2.2",
+    "tinybench": "^3.0.8",
+    "tsx": "^4.21.0"
+  }
+}
