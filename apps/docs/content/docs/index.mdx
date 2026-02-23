@@ -47,7 +47,7 @@ tsgonest replaces several tools in a typical NestJS stack:
 | **Compilation** | `tsc` or `nest build` | `tsgonest build` (powered by tsgo) |
 | **Watch mode** | `nest start --watch` | `tsgonest dev` |
 | **Validation** | `class-validator` + `class-transformer` | Generated companion validators |
-| **Serialization** | `class-transformer` + `ClassSerializerInterceptor` | Generated fast JSON serializers (2-5x faster) |
+| **Serialization** | `class-transformer` + `ClassSerializerInterceptor` | Generated fast JSON serializers |
 | **OpenAPI docs** | `@nestjs/swagger` + decorators | Static analysis, zero decorators |
 | **Type safety** | Runtime decorators (can diverge from types) | Types **are** the source of truth |
 
@@ -95,7 +95,19 @@ export function assertCreateUserDto(input);    // throws on failure, returns val
 export function serializeCreateUserDto(input); // fast JSON string
 ```
 
-## Real-world performance
+## Performance
+
+### Benchmarks
+
+Measured on Apple Silicon, Node.js 25 ([source](https://github.com/user/tsgonest/tree/main/benchmarks)):
+
+| Metric | Result |
+| --- | --- |
+| **Validation** vs class-validator | **25-84x faster** |
+| **Serialization** vs JSON.stringify | **~1.4x faster** (simple DTOs) |
+| **Compilation** vs tsc | **~4x faster** (full pipeline including companions + OpenAPI) |
+
+### Real-world scale
 
 tsgonest has been tested on **ecom-bot** — a production NestJS project with:
 
@@ -107,8 +119,8 @@ tsgonest has been tested on **ecom-bot** — a production NestJS project with:
 | --- | --- |
 | Cold build | ~19 seconds |
 | Warm build (cached) | ~1.1 seconds |
-| Go unit tests | 546+ passing |
-| E2E tests | 97 passing |
+| Go unit tests | 560+ passing |
+| E2E tests | 101 passing |
 
 ## Packages
 

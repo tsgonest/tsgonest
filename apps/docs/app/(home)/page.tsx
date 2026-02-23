@@ -109,7 +109,7 @@ const deepDiveFeatures = [
     label: 'Serialization',
     title: 'Serialization & runtime',
     description:
-      'Fast generated serializers (2-5x faster than JSON.stringify), manifest-driven discovery, ValidationPipe, and FastInterceptor.',
+      'Fast generated serializers (~1.4x faster than JSON.stringify), 25-84x faster validation than class-validator, manifest-driven discovery, ValidationPipe, and FastInterceptor.',
     accent: 'text-sky-600 bg-sky-50 dark:bg-sky-950/40 dark:text-sky-400',
   },
   {

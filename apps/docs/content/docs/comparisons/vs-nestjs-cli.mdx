@@ -9,7 +9,7 @@ This page compares tsgonest with the standard NestJS development setup: `@nestjs
 
 | Feature | NestJS CLI + ecosystem | tsgonest |
 | --- | --- | --- |
-| **Compiler** | `tsc` (TypeScript) | `tsgo` (Go, ~10x faster) |
+| **Compiler** | `tsc` (TypeScript) | `tsgo` (Go, ~10x faster raw compilation) |
 | **Watch mode** | `nest start --watch` (tsc --watch + nodemon) | `tsgonest dev` (native watcher) |
 | **Validation** | `class-validator` decorators | Generated from types |
 | **Serialization** | `class-transformer` + `ClassSerializerInterceptor` | Generated fast JSON serializers |
@@ -22,7 +22,14 @@ This page compares tsgonest with the standard NestJS development setup: `@nestjs
 
 ## Build speed
 
-tsgonest uses Microsoft's `typescript-go` (tsgo) — a native Go port of the TypeScript compiler that is roughly **10x faster** than `tsc`.
+tsgonest uses Microsoft's `typescript-go` (tsgo) — a native Go port of the TypeScript compiler. Raw tsgo compilation is roughly **10x faster** than `tsc`. The full tsgonest pipeline (compile + companion generation + OpenAPI) is about **~4x faster** than `tsc` alone — while doing significantly more work.
+
+**Measured benchmark** (realworld fixture, 7 controllers, 41 routes):
+
+| Tool | Time | What it does |
+| --- | --- | --- |
+| `tsc` | 559ms | Compile only |
+| `tsgonest build` | 128ms | Compile + companions + manifest + OpenAPI |
 
 | Project size | `nest build` (tsc) | `tsgonest build` (tsgo) |
 | --- | --- | --- |
@@ -307,7 +314,9 @@ export interface UserResponse {
 app.useGlobalInterceptors(new TsgonestFastInterceptor({ distDir: 'dist' }));
 ```
 
-The generated serializer uses string concatenation with known property names — **2-5x faster** than `JSON.stringify`. Only declared properties are included in the output (no `@Exclude` needed — if it's not in the type, it's not serialized).
+The generated serializer uses string concatenation with known property names — **~1.4x faster** than `JSON.stringify` for simple DTOs (benchmarked: 13.2M ops/s vs 9.8M ops/s). For complex nested objects the performance is comparable to `JSON.stringify`. Only declared properties are included in the output (no `@Exclude` needed — if it's not in the type, it's not serialized).
+
+**Validation performance** is where the biggest gains are: tsgonest's generated validators are **25-84x faster** than `class-validator` (benchmarked: 16.8M ops/s vs 345K ops/s for a simple DTO).
 
 ---
 

@@ -19,9 +19,9 @@
 
 **tsgonest** is a Go CLI that wraps Microsoft's [typescript-go](https://github.com/microsoft/typescript-go) (tsgo) and augments it with everything a NestJS backend needs:
 
-- **10x faster compilation** via tsgo (Go port of the TypeScript compiler)
+- **~4x faster full pipeline** via tsgo (Go port of the TypeScript compiler) — ~10x raw compilation speed
 - **Generated validators** from your TypeScript types — no `class-validator` decorators
-- **Fast JSON serializers** (2-5x faster than `JSON.stringify`) — no `class-transformer`
+- **Fast JSON serializers** (~1.4x faster than `JSON.stringify`) — no `class-transformer`
 - **OpenAPI 3.2** from static analysis of NestJS controllers — no `@nestjs/swagger` decorators
 - **Watch mode** with auto-restart — replaces `nest start --watch`
 - **Standard Schema v1** wrappers for 60+ framework interop

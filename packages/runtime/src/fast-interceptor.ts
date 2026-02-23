@@ -50,7 +50,7 @@ export interface FastInterceptorOptions {
  * The route map is populated at build time by tsgonest's static analysis of
  * NestJS controllers, making this zero-config and guaranteed to work.
  *
- * Performance: 2-5x faster JSON serialization compared to JSON.stringify,
+ * Performance: ~1.4x faster JSON serialization compared to JSON.stringify for simple DTOs,
  * because the generated serializers use string concatenation with known
  * property names and types, avoiding the overhead of generic object traversal.
  *

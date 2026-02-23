@@ -144,7 +144,7 @@ The code within `./shim/` is generated. **Do not edit it.** Regenerate with `jus
 - **Branded types**: `@tsgonest/types` package with `__tsgonest_*` phantom properties, also detects typia's `"typia.tag"` for migration
 - **Output**: Companion files (`*.tsgonest.js` + `*.tsgonest.d.ts`) alongside tsgo output — each companion exports validate, assert, serialize, and schema functions
 - **OpenAPI**: 3.2 only, static analysis (no runtime/reflect-metadata)
-- **Config**: JSON now (`tsgonest.config.json`), TypeScript config support planned
+- **Config**: `tsgonest.config.ts` (recommended, evaluated via Node.js) or `tsgonest.config.json`
 - **Runtime**: `@tsgonest/runtime` npm package provides `TsgonestValidationPipe` + `TsgonestSerializationInterceptor`
 - **Standard Schema**: v1 wrappers for 60+ framework interop
 - **CLI replacement**: `tsgonest dev` + `tsgonest build` replace `nest start --watch` + `nest build`
@@ -314,7 +314,7 @@ pnpm --filter docs start   # Serve the static export locally
 
 ## Testing Strategy
 
-### Go Unit Tests (~546+ tests)
+### Go Unit Tests (~560+ tests)
 
 - Config parsing: `internal/config/config_test.go`
 - Type walker: `internal/analyzer/type_walker_test.go` (JSDoc, branded types, discriminants)
@@ -327,7 +327,7 @@ pnpm --filter docs start   # Serve the static export locally
 - Build cache: `internal/buildcache/cache_test.go`
 - Each test uses fixtures from `testdata/`
 
-### E2e Tests (Vitest, 97 tests)
+### E2e Tests (Vitest, 101 tests)
 
 - `e2e/compile.test.ts` — Full pipeline: compilation, companions, manifest, OpenAPI, constraint validation, realworld fixture, branded types, diagnostics, exit codes, incremental, post-processing cache, @Returns decorator
 - Run the `tsgonest` binary as a subprocess

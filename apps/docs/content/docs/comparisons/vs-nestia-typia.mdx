@@ -10,7 +10,7 @@ description: Architecture and DX comparison between tsgonest and the Nestia/Typi
 | Feature | Nestia + Typia | tsgonest |
 | --- | --- | --- |
 | **Language** | TypeScript (ts-patch compiler plugin) | Go (wraps typescript-go) |
-| **Compilation** | `tsc` with `ts-patch` transform plugin | `tsgo` (~10x faster than tsc) |
+| **Compilation** | `tsc` with `ts-patch` transform plugin | `tsgo` (~10x raw compilation, ~4x full pipeline) |
 | **Code generation** | TypeScript compiler plugin (ts-patch) | Go-native AST analysis |
 | **Validation** | `typia.assert<T>()` calls | Generated companion files |
 | **Serialization** | `typia.json.stringify<T>()` calls | Generated companion files |
@@ -74,7 +74,7 @@ The companion files are loaded on demand at runtime via the manifest — your ap
 | Bundle size impact | Inline code at every call site | Single companion per type |
 | NestJS integration | `@nestia/core` decorators replace NestJS ones | Drop-in pipe/interceptor, keep standard decorators |
 | Build tooling | Requires ts-patch, plugin config in tsconfig | Single `tsgonest build` command |
-| Build speed | tsc speed (with plugin overhead) | tsgo speed (~10x faster) |
+| Build speed | tsc speed (with plugin overhead) | tsgo speed (~4x faster full pipeline, ~10x raw compilation) |
 | Incremental builds | Via tsc incremental | Built-in caching |
 
 ---
@@ -323,7 +323,7 @@ That's it. No patches. No plugins. No tsconfig modifications. tsgonest uses its 
 | Per-constraint errors | Not supported | Not supported | `Min<{ value: 0, error: "..." }>` |
 | Discriminated union optimization | Yes | Via typia | Yes (O(1) switch) |
 | Watch mode | External tooling | External tooling | Built-in `tsgonest dev` |
-| Build speed | tsc speed | tsc speed | ~10x faster (tsgo) |
+| Build speed | tsc speed | tsc speed | ~4x faster full pipeline (tsgo) |
 | NestJS decorators | Replaced by Nestia | Custom decorators | Standard NestJS decorators |
 | Compiler requirement | ts-patch | ts-patch | None (standalone binary) |
 

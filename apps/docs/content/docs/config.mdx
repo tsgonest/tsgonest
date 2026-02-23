@@ -209,15 +209,38 @@ interface TsgonestConfig {
   transforms?: {
     validation?: boolean;
     serialization?: boolean;
+    include?: string[];
+    exclude?: string[];
   };
   openapi?: {
     output?: string;
     title?: string;
     version?: string;
     description?: string;
+    contact?: OpenAPIContact;
+    license?: OpenAPILicense;
+    servers?: OpenAPIServer[];
+    securitySchemes?: Record<string, OpenAPISecurityScheme>;
   };
+  nestjs?: {
+    globalPrefix?: string;
+    versioning?: VersioningConfig;
+  };
+  entryFile?: string;
+  sourceRoot?: string;
+  deleteOutDir?: boolean;
+  manualRestart?: boolean;
 }
 ```
+
+## TypeScript config evaluation
+
+When loading a `.ts` config file, tsgonest evaluates it via Node.js with a fallback chain:
+
+1. `node --import tsx` (if [tsx](https://tsx.is) is installed)
+2. `node --experimental-strip-types` (Node.js 22.6+)
+
+The config file must use `export default` with `defineConfig()`. If your Node.js version supports `--experimental-strip-types`, no additional tooling is needed.
 
 ---
 

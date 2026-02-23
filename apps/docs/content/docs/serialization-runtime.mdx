@@ -7,16 +7,22 @@ tsgonest generates fast, schema-aware JSON serializers alongside validators, and
 
 ## Generated serializers
 
-When `transforms.serialization` is enabled, each companion file includes a `serialize*` function that converts a typed object to a JSON string using **string concatenation with known property names** — 2-5x faster than `JSON.stringify`:
+When `transforms.serialization` is enabled, each companion file includes a `serialize*` function that converts a typed object to a JSON string using **string concatenation with known property names** — faster than `JSON.stringify` for typical API payloads:
 
-```ts
+```js
 // Generated in dist/user.dto.UserResponse.tsgonest.js
+var __esc = /[\x00-\x1f"\\]/;
+function __s(s) {
+  if (!__esc.test(s)) return '"' + s + '"';
+  return JSON.stringify(s);
+}
+
 export function serializeUserResponse(input) {
-  return '{"id":' + __jsonStr(input.id)
-    + ',"name":' + __jsonStr(input.name)
-    + ',"email":' + __jsonStr(input.email)
+  return '{"id":' + __s(input.id)
+    + ',"name":' + __s(input.name)
+    + ',"email":' + __s(input.email)
     + ',"age":' + input.age
-    + ',"createdAt":' + __jsonStr(input.createdAt) + '}';
+    + ',"createdAt":' + __s(input.createdAt) + '}';
 }
 ```
 
@@ -29,34 +35,56 @@ export function serializeUserResponse(input) {
 
 tsgonest serializers skip all of that — they know the exact shape at build time and generate direct string concatenation. This is the same technique used by [fast-json-stringify](https://github.com/fastify/fast-json-stringify).
 
+The `__s()` helper uses a regex fast-path: most strings in API responses don't contain special characters (quotes, backslashes, control characters). A single `regex.test()` call detects this common case and avoids `JSON.stringify` entirely, wrapping the string directly in quotes.
+
+### Performance
+
+Benchmarked on Apple Silicon, Node.js 25:
+
+| Scenario | tsgonest | JSON.stringify | Speedup |
+| --- | --- | --- | --- |
+| Simple DTO (5 fields, clean strings) | 13.2M ops/s | 9.8M ops/s | **1.4x** |
+| Simple DTO (strings needing escaping) | 7.1M ops/s | 7.4M ops/s | ~1x |
+| Complex DTO (nested + 2-item array) | 1.5M ops/s | 2.4M ops/s | ~0.6x |
+| Complex DTO (nested + 10-item array) | 496K ops/s | 470K ops/s | ~1x |
+
+tsgonest serialization wins on simple, flat objects (the vast majority of API DTOs). For deeply nested objects with many optional fields, V8's native `JSON.stringify` implementation is highly optimized and can be faster.
+
 ### Supported types
 
 | Type | Serialization strategy |
 | --- | --- |
-| `string` | JSON string escaping |
+| `string` | `__s()` regex fast-path (avoids JSON.stringify when no special chars) |
 | `number`, `bigint` | Direct concatenation |
 | `boolean` | `"true"` / `"false"` |
 | `null` | `"null"` |
 | Objects | Property-by-property concatenation |
-| Arrays | `.map(serialize).join(",")` |
+| Arrays | For-loop string accumulation (no intermediate array allocation) |
 | Tuples | Element-by-element serialization |
 | Enums | Value serialization |
-| Optionals | Conditional key inclusion |
-| Unions | Falls back to `JSON.stringify` |
+| Optionals | String accumulation with separator flag (no parts array) |
+| Discriminated unions | O(1) switch on discriminant property, per-branch serialization |
+| Literal unions | Direct `__s()` for all-string; typeof dispatch for mixed |
+| Nullable unions | Null check + inner serialization |
+| Atomic unions | typeof chain (string/number/boolean) |
+| Complex unions | Falls back to `JSON.stringify` |
 | Nested objects | Recursive serialization calls |
 
 ### Optional property handling
 
-For objects with optional properties, the serializer uses a parts array to conditionally include keys:
+For objects with optional properties, the serializer uses string accumulation with a separator flag — avoiding array allocation entirely:
 
-```ts
-export interface UpdateUserDto {
-  name?: string;
-  email?: string;
-  age?: number;
+```js
+// Generated for { name?: string; email?: string; age?: number }
+export function serializeUpdateUserDto(input) {
+  return (function() {
+    var _r = "{", _c = "";
+    if (input.name !== undefined) { _r += _c + '"name":' + __s(input.name); _c = ","; }
+    if (input.email !== undefined) { _r += _c + '"email":' + __s(input.email); _c = ","; }
+    if (input.age !== undefined) { _r += _c + '"age":' + input.age; _c = ","; }
+    return _r + "}";
+  })();
 }
-
-// Generated serializer only includes properties that are defined
 ```
 
 ---
