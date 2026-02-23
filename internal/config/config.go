@@ -1,10 +1,14 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
+	"time"
 )
 
 // Config represents the tsgonest configuration.
@@ -105,9 +109,39 @@ func DefaultConfig() Config {
 	}
 }
 
+// Discover searches for a tsgonest config file in the given directory.
+// Checks in priority order: tsgonest.config.ts > tsgonest.config.json.
+// Returns the full path to the config file, or empty string if none found.
+func Discover(dir string) string {
+	candidates := []string{
+		filepath.Join(dir, "tsgonest.config.ts"),
+		filepath.Join(dir, "tsgonest.config.json"),
+	}
+	for _, p := range candidates {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return ""
+}
+
 // Load reads and parses a tsgonest config file.
-// Currently supports JSON format only. TypeScript config support will be added later.
+// Supports both JSON (.json) and TypeScript (.ts) formats.
+// TypeScript configs are evaluated via Node.js to extract the config object.
 func Load(path string) (*Config, error) {
+	ext := filepath.Ext(path)
+	switch ext {
+	case ".ts":
+		return LoadTS(path)
+	case ".json":
+		return LoadJSON(path)
+	default:
+		return nil, fmt.Errorf("unsupported config file extension %q (expected .ts or .json)", ext)
+	}
+}
+
+// LoadJSON reads and parses a JSON config file.
+func LoadJSON(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read config file %q: %w", path, err)
@@ -123,6 +157,93 @@ func Load(path string) (*Config, error) {
 	}
 
 	return &config, nil
+}
+
+// LoadTS evaluates a TypeScript config file via Node.js and parses the result.
+//
+// The config file is expected to have a default export (e.g., export default defineConfig({...})).
+// The function tries multiple Node.js strategies in order:
+//  1. node --import tsx (tsx loader — works with any Node.js version)
+//  2. node --experimental-strip-types (Node.js 22.6+ built-in TS support)
+//
+// Falls back to a clear error message if neither works.
+func LoadTS(path string) (*Config, error) {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve config path %q: %w", path, err)
+	}
+
+	// Node.js eval script: dynamic import + print JSON to stdout
+	// Use file:// URL for cross-platform compatibility (Windows paths with backslashes)
+	fileURL := "file://" + absPath
+	if os.PathSeparator == '\\' {
+		// Windows: convert backslashes to forward slashes
+		fileURL = "file:///" + strings.ReplaceAll(absPath, "\\", "/")
+	}
+	evalScript := fmt.Sprintf(
+		`import(%q).then(m => {const c = m.default; if (c === undefined || c === null || typeof c !== "object" || Object.keys(c).length === 0) { process.stderr.write("error: config file must have a non-empty default export (export default { ... })\\n"); process.exit(1); } process.stdout.write(JSON.stringify(c));}).catch(e => { process.stderr.write("error: " + e.message + "\\n"); process.exit(1); })`,
+		fileURL,
+	)
+
+	configDir := filepath.Dir(absPath)
+
+	// Strategy 1: node --import tsx
+	jsonData, err := execNode(configDir, []string{"--import", "tsx", "--input-type=module", "-e", evalScript})
+	if err != nil {
+		// Strategy 2: node --experimental-strip-types (Node.js 22.6+)
+		jsonData, err = execNode(configDir, []string{"--experimental-strip-types", "--no-warnings", "--input-type=module", "-e", evalScript})
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to evaluate TypeScript config %q: %w\nhint: install tsx (npm i -D tsx) or use Node.js 22.6+ for native TypeScript support", path, err)
+	}
+
+	config := DefaultConfig()
+	if err := json.Unmarshal(jsonData, &config); err != nil {
+		return nil, fmt.Errorf("failed to parse config from %q: %w", path, err)
+	}
+
+	if err := config.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid config in %q: %w", path, err)
+	}
+
+	return &config, nil
+}
+
+// execNode runs node with the given arguments and returns stdout bytes.
+// Returns an error if the command fails or exits non-zero.
+func execNode(dir string, args []string) ([]byte, error) {
+	nodePath, err := exec.LookPath("node")
+	if err != nil {
+		return nil, fmt.Errorf("node not found in PATH: %w", err)
+	}
+
+	cmd := exec.Command(nodePath, args...)
+	cmd.Dir = dir
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	// Set a timeout to prevent hanging
+	done := make(chan error, 1)
+	go func() {
+		done <- cmd.Run()
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			errMsg := strings.TrimSpace(stderr.String())
+			if errMsg != "" {
+				return nil, fmt.Errorf("%s", errMsg)
+			}
+			return nil, err
+		}
+		return stdout.Bytes(), nil
+	case <-time.After(10 * time.Second):
+		cmd.Process.Kill()
+		return nil, fmt.Errorf("timed out after 10 seconds")
+	}
 }
 
 // Validate checks the config for logical errors.

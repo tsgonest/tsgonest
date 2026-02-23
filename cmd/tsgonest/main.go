@@ -54,7 +54,7 @@ func printUsage() {
 	fmt.Println()
 	fmt.Println("Build Flags:")
 	fmt.Println("  --project, -p <path>   Path to tsconfig.json (default: tsconfig.json)")
-	fmt.Println("  --config <path>        Path to tsgonest.config.json")
+	fmt.Println("  --config <path>        Path to tsgonest config file (.ts or .json)")
 	fmt.Println("  --dump-metadata        Dump type metadata as JSON to stdout (debug)")
 	fmt.Println("  --clean                Clean output directory before building")
 	fmt.Println("  --assets <glob>        Glob pattern for static assets to copy to output")
@@ -64,6 +64,6 @@ func printUsage() {
 	fmt.Println("  tsgonest build")
 	fmt.Println("  tsgonest build --project tsconfig.build.json")
 	fmt.Println("  tsgonest build --clean --assets '**/*.json'")
-	fmt.Println("  tsgonest --config tsgonest.config.json --project tsconfig.json")
+	fmt.Println("  tsgonest --config tsgonest.config.ts --project tsconfig.json")
 	fmt.Println()
 }

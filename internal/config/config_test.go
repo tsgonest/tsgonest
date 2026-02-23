@@ -2,7 +2,9 @@ package config
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -205,5 +207,257 @@ func TestConfig_NestJSDefaults(t *testing.T) {
 	}
 	if cfg.NestJS.Versioning != nil {
 		t.Errorf("expected nil versioning by default, got %v", cfg.NestJS.Versioning)
+	}
+}
+
+// requireNode skips the test if node is not available.
+func requireNode(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node not found in PATH, skipping TypeScript config test")
+	}
+}
+
+func TestDiscover_TSPriority(t *testing.T) {
+	dir := t.TempDir()
+
+	// No config files → empty string
+	result := Discover(dir)
+	if result != "" {
+		t.Fatalf("expected empty string for no config, got %q", result)
+	}
+
+	// Only .json → returns .json
+	jsonPath := filepath.Join(dir, "tsgonest.config.json")
+	os.WriteFile(jsonPath, []byte(`{"controllers":{"include":["src/**/*.controller.ts"]},"openapi":{"output":"dist/openapi.json"}}`), 0o644)
+	result = Discover(dir)
+	if result != jsonPath {
+		t.Fatalf("expected %q, got %q", jsonPath, result)
+	}
+
+	// Both .ts and .json → returns .ts (higher priority)
+	tsPath := filepath.Join(dir, "tsgonest.config.ts")
+	os.WriteFile(tsPath, []byte(`export default {}`), 0o644)
+	result = Discover(dir)
+	if result != tsPath {
+		t.Fatalf("expected .ts to take priority, got %q", result)
+	}
+}
+
+func TestDiscover_OnlyTS(t *testing.T) {
+	dir := t.TempDir()
+
+	tsPath := filepath.Join(dir, "tsgonest.config.ts")
+	os.WriteFile(tsPath, []byte(`export default {}`), 0o644)
+	result := Discover(dir)
+	if result != tsPath {
+		t.Fatalf("expected %q, got %q", tsPath, result)
+	}
+}
+
+func TestLoad_DispatchesByExtension(t *testing.T) {
+	// .json should work as before
+	dir := t.TempDir()
+	jsonPath := filepath.Join(dir, "tsgonest.config.json")
+	os.WriteFile(jsonPath, []byte(`{
+		"controllers": { "include": ["src/**/*.controller.ts"] },
+		"openapi": { "output": "dist/openapi.json" }
+	}`), 0o644)
+
+	cfg, err := Load(jsonPath)
+	if err != nil {
+		t.Fatalf("unexpected error loading .json: %v", err)
+	}
+	if cfg.Controllers.Include[0] != "src/**/*.controller.ts" {
+		t.Fatalf("unexpected include: %v", cfg.Controllers.Include)
+	}
+
+	// Unsupported extension should error
+	yamlPath := filepath.Join(dir, "tsgonest.config.yaml")
+	os.WriteFile(yamlPath, []byte(""), 0o644)
+	_, err = Load(yamlPath)
+	if err == nil {
+		t.Fatal("expected error for .yaml extension")
+	}
+	if !strings.Contains(err.Error(), "unsupported config file extension") {
+		t.Fatalf("unexpected error message: %v", err)
+	}
+}
+
+func TestLoadTS_PlainExport(t *testing.T) {
+	requireNode(t)
+
+	dir := t.TempDir()
+	tsPath := filepath.Join(dir, "tsgonest.config.ts")
+	content := `export default {
+  controllers: {
+    include: ["src/**/*.controller.ts"],
+  },
+  transforms: {
+    validation: true,
+    serialization: false,
+  },
+  openapi: {
+    output: "dist/openapi.json",
+    title: "My API",
+  },
+};
+`
+	os.WriteFile(tsPath, []byte(content), 0o644)
+
+	cfg, err := LoadTS(tsPath)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if cfg.Controllers.Include[0] != "src/**/*.controller.ts" {
+		t.Fatalf("unexpected include: %v", cfg.Controllers.Include)
+	}
+	if !cfg.Transforms.Validation {
+		t.Fatal("expected validation=true")
+	}
+	if cfg.Transforms.Serialization {
+		t.Fatal("expected serialization=false")
+	}
+	if cfg.OpenAPI.Title != "My API" {
+		t.Fatalf("expected title='My API', got %q", cfg.OpenAPI.Title)
+	}
+}
+
+func TestLoadTS_WithDefaults(t *testing.T) {
+	requireNode(t)
+
+	dir := t.TempDir()
+	tsPath := filepath.Join(dir, "tsgonest.config.ts")
+	// Partial config — should merge with defaults
+	content := `export default {
+  openapi: {
+    output: "out/api.json",
+  },
+};
+`
+	os.WriteFile(tsPath, []byte(content), 0o644)
+
+	cfg, err := LoadTS(tsPath)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Defaults should be applied
+	if cfg.Controllers.Include[0] != "src/**/*.controller.ts" {
+		t.Fatalf("expected default include, got %v", cfg.Controllers.Include)
+	}
+	if !cfg.Transforms.Validation {
+		t.Fatal("expected default validation=true")
+	}
+	if cfg.OpenAPI.Output != "out/api.json" {
+		t.Fatalf("expected output='out/api.json', got %q", cfg.OpenAPI.Output)
+	}
+}
+
+func TestLoadTS_WithNestJSConfig(t *testing.T) {
+	requireNode(t)
+
+	dir := t.TempDir()
+	tsPath := filepath.Join(dir, "tsgonest.config.ts")
+	content := `export default {
+  controllers: {
+    include: ["src/**/*.controller.ts"],
+  },
+  openapi: {
+    output: "dist/openapi.json",
+  },
+  nestjs: {
+    globalPrefix: "api",
+    versioning: {
+      type: "URI",
+      defaultVersion: "1",
+      prefix: "v",
+    },
+  },
+};
+`
+	os.WriteFile(tsPath, []byte(content), 0o644)
+
+	cfg, err := LoadTS(tsPath)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if cfg.NestJS.GlobalPrefix != "api" {
+		t.Errorf("expected globalPrefix='api', got %q", cfg.NestJS.GlobalPrefix)
+	}
+	if cfg.NestJS.Versioning == nil {
+		t.Fatal("expected versioning to be set")
+	}
+	if cfg.NestJS.Versioning.Type != "URI" {
+		t.Errorf("expected type='URI', got %q", cfg.NestJS.Versioning.Type)
+	}
+}
+
+func TestLoadTS_NoDefaultExport(t *testing.T) {
+	requireNode(t)
+
+	dir := t.TempDir()
+	tsPath := filepath.Join(dir, "tsgonest.config.ts")
+	content := `const config = { controllers: { include: ["src/**/*.controller.ts"] } };
+`
+	os.WriteFile(tsPath, []byte(content), 0o644)
+
+	_, err := LoadTS(tsPath)
+	if err == nil {
+		t.Fatal("expected error for missing default export")
+	}
+}
+
+func TestLoadTS_InvalidConfig(t *testing.T) {
+	requireNode(t)
+
+	dir := t.TempDir()
+	tsPath := filepath.Join(dir, "tsgonest.config.ts")
+	// Valid syntax but fails validation (empty controllers.include)
+	content := `export default {
+  controllers: {
+    include: [],
+  },
+  openapi: {
+    output: "dist/openapi.json",
+  },
+};
+`
+	os.WriteFile(tsPath, []byte(content), 0o644)
+
+	_, err := LoadTS(tsPath)
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+	if !strings.Contains(err.Error(), "controllers.include") {
+		t.Fatalf("expected validation error about controllers.include, got: %v", err)
+	}
+}
+
+func TestLoadTS_ViaLoadDispatch(t *testing.T) {
+	requireNode(t)
+
+	dir := t.TempDir()
+	tsPath := filepath.Join(dir, "tsgonest.config.ts")
+	content := `export default {
+  controllers: {
+    include: ["src/**/*.controller.ts"],
+  },
+  openapi: {
+    output: "dist/openapi.json",
+  },
+};
+`
+	os.WriteFile(tsPath, []byte(content), 0o644)
+
+	// Load() should dispatch to LoadTS for .ts files
+	cfg, err := Load(tsPath)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Controllers.Include[0] != "src/**/*.controller.ts" {
+		t.Fatalf("unexpected include: %v", cfg.Controllers.Include)
 	}
 }

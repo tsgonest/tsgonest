@@ -43,7 +43,7 @@ func runBuild(args []string) int {
 		noCheck      bool
 	)
 
-	buildFlags.StringVar(&configPath, "config", "", "Path to tsgonest config file (tsgonest.config.json)")
+	buildFlags.StringVar(&configPath, "config", "", "Path to tsgonest config file (tsgonest.config.ts or .json)")
 	buildFlags.StringVar(&tsconfigPath, "project", "tsconfig.json", "Path to tsconfig.json (or use -p)")
 	buildFlags.StringVar(&tsconfigPath, "p", "tsconfig.json", "Path to tsconfig.json (shorthand for --project)")
 	buildFlags.BoolVar(&dumpMetadata, "dump-metadata", false, "Dump type metadata as JSON to stdout (debug)")
@@ -87,22 +87,16 @@ func runBuild(args []string) int {
 		configDir = filepath.Dir(resolvedConfigPath)
 		fmt.Fprintf(os.Stderr, "loaded config from %s\n", configPath)
 	} else {
-		// Try default config file
-		defaultPaths := []string{
-			filepath.Join(cwd, "tsgonest.config.json"),
-		}
-		for _, p := range defaultPaths {
-			if _, statErr := os.Stat(p); statErr == nil {
-				cfg, err = config.Load(p)
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "error: %v\n", err)
-					return 1
-				}
-				resolvedConfigPath = p
-				configDir = filepath.Dir(p)
-				fmt.Fprintf(os.Stderr, "loaded config from %s\n", filepath.Base(p))
-				break
+		// Auto-discover config file: tsgonest.config.ts > tsgonest.config.json
+		if p := config.Discover(cwd); p != "" {
+			cfg, err = config.Load(p)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "error: %v\n", err)
+				return 1
 			}
+			resolvedConfigPath = p
+			configDir = filepath.Dir(p)
+			fmt.Fprintf(os.Stderr, "loaded config from %s\n", filepath.Base(p))
 		}
 	}
 

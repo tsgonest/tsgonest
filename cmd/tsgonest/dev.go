@@ -85,10 +85,9 @@ func runDev(args []string) int {
 			return 1
 		}
 	} else {
-		// Try default config file
-		defaultPath := filepath.Join(cwd, "tsgonest.config.json")
-		if _, statErr := os.Stat(defaultPath); statErr == nil {
-			cfg, err = config.Load(defaultPath)
+		// Auto-discover config file: tsgonest.config.ts > tsgonest.config.json
+		if p := config.Discover(cwd); p != "" {
+			cfg, err = config.Load(p)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "error: %v\n", err)
 				return 1
