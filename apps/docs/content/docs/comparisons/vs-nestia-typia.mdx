@@ -1,0 +1,400 @@
+---
+title: tsgonest vs Nestia + Typia
+description: Architecture and DX comparison between tsgonest and the Nestia/Typia ecosystem.
+---
+
+[Nestia](https://nestia.io) and [Typia](https://typia.io) are TypeScript libraries by Samchon that take a similar "types as source of truth" approach to validation and serialization. This page compares tsgonest with the Nestia + Typia stack.
+
+## At a glance
+
+| Feature | Nestia + Typia | tsgonest |
+| --- | --- | --- |
+| **Language** | TypeScript (ts-patch compiler plugin) | Go (wraps typescript-go) |
+| **Compilation** | `tsc` with `ts-patch` transform plugin | `tsgo` (~10x faster than tsc) |
+| **Code generation** | TypeScript compiler plugin (ts-patch) | Go-native AST analysis |
+| **Validation** | `typia.assert<T>()` calls | Generated companion files |
+| **Serialization** | `typia.json.stringify<T>()` calls | Generated companion files |
+| **OpenAPI** | `@nestia/swagger` + runtime analysis | Static analysis at build time |
+| **Runtime cost** | Transformed at compile time, runs at runtime | Generated at build time, loaded on demand |
+| **Setup** | ts-patch + tsconfig plugin config | Single CLI binary |
+| **NestJS integration** | `@nestia/core` decorators | `@tsgonest/runtime` pipe + interceptor |
+| **Branded types** | `typia.tags.Format<"email">` etc. | `@tsgonest/types` Email, Min, Max, etc. |
+| **Standard Schema** | Not yet supported | Built-in Standard Schema v1 |
+| **Watch mode** | External (nodemon, ts-node-dev) | Built-in `tsgonest dev` |
+
+---
+
+## Architecture difference
+
+This is the fundamental distinction between the two approaches.
+
+### Typia: compiler plugin
+
+Typia works as a **TypeScript compiler plugin** via [ts-patch](https://github.com/nonunicorn/ts-patch). It transforms `typia.assert<T>(input)` calls into inline validation code during compilation:
+
+```ts
+// Source code (what you write)
+import typia from 'typia';
+
+const user = typia.assert<CreateUserDto>(input);
+```
+
+```ts
+// Compiled output (what ts-patch generates)
+const user = ((input) => {
+  if (typeof input !== 'object' || input === null) throw new Error('...');
+  if (typeof input.name !== 'string') throw new Error('...');
+  if (input.name.length < 1) throw new Error('...');
+  // ... inline validation code
+  return input;
+})(input);
+```
+
+The validation code is **inlined** at each call site. There is no separate companion file.
+
+### tsgonest: Go-native code generation
+
+tsgonest works at a higher level — it analyzes your entire project's types and generates **companion files** alongside the compiled output:
+
+```text
+dist/
+  user.dto.js                             # tsgo output
+  user.dto.CreateUserDto.tsgonest.js      # validate + assert + serialize + schema
+  user.dto.CreateUserDto.tsgonest.d.ts    # type declarations
+  __tsgonest_manifest.json                # manifest for runtime discovery
+  openapi.json                            # OpenAPI 3.2 document
+```
+
+The companion files are loaded on demand at runtime via the manifest — your application code doesn't need to import them directly.
+
+### What this means in practice
+
+| Aspect | Typia (plugin) | tsgonest (codegen) |
+| --- | --- | --- |
+| Explicit calls needed | Yes — `typia.assert<T>()` at every use site | No — discovered via manifest |
+| Bundle size impact | Inline code at every call site | Single companion per type |
+| NestJS integration | `@nestia/core` decorators replace NestJS ones | Drop-in pipe/interceptor, keep standard decorators |
+| Build tooling | Requires ts-patch, plugin config in tsconfig | Single `tsgonest build` command |
+| Build speed | tsc speed (with plugin overhead) | tsgo speed (~10x faster) |
+| Incremental builds | Via tsc incremental | Built-in caching |
+
+---
+
+## DX comparison
+
+### Defining DTOs
+
+Both approaches let you use plain TypeScript types. The branded type syntax differs slightly:
+
+```ts
+// Typia
+import typia, { tags } from 'typia';
+
+interface CreateUserDto {
+  name: string & tags.MinLength<1> & tags.MaxLength<255>;
+  email: string & tags.Format<"email">;
+  age: number & tags.Minimum<0> & tags.Maximum<150>;
+}
+```
+
+```ts
+// tsgonest
+import { Min, Max, Email } from '@tsgonest/types';
+
+interface CreateUserDto {
+  name: string & Min<1> & Max<255>;
+  email: string & Email;
+  age: number & Min<0> & Max<150>;
+}
+```
+
+tsgonest offers shorter aliases (`Min` vs `Minimum`, `Email` vs `Format<"email">`) and compound types like `Range`, `Between`, and `Length`.
+
+:::tip
+tsgonest also recognizes typia's `"typia.tag"` branded type convention. If you're migrating from typia, your existing branded types will be detected automatically.
+:::
+
+### Validation
+
+```ts
+// Typia — explicit calls required
+import typia from 'typia';
+
+@Controller('users')
+export class UserController {
+  @Post()
+  create(@Body() input: CreateUserDto) {
+    const dto = typia.assert<CreateUserDto>(input); // must call explicitly
+    return this.userService.create(dto);
+  }
+}
+```
+
+```ts
+// tsgonest — automatic via pipe
+import { TsgonestValidationPipe } from '@tsgonest/runtime';
+
+// In main.ts — one line, applies to all routes:
+app.useGlobalPipes(new TsgonestValidationPipe({ distDir: 'dist' }));
+
+// Controller — no validation code needed:
+@Controller('users')
+export class UserController {
+  @Post()
+  create(@Body() dto: CreateUserDto) {
+    // dto is already validated
+    return this.userService.create(dto);
+  }
+}
+```
+
+### Nestia vs standard NestJS decorators
+
+Nestia replaces NestJS's standard decorators with its own:
+
+```ts
+// Nestia — replaces @Body, @Query, @Param etc.
+import { TypedBody, TypedRoute } from '@nestia/core';
+
+@Controller('users')
+export class UserController {
+  @TypedRoute.Post()
+  create(@TypedBody() dto: CreateUserDto): UserResponse {
+    return this.userService.create(dto);
+  }
+}
+```
+
+```ts
+// tsgonest — uses standard NestJS decorators
+import { Controller, Post, Body } from '@nestjs/common';
+
+@Controller('users')
+export class UserController {
+  @Post()
+  create(@Body() dto: CreateUserDto): UserResponse {
+    return this.userService.create(dto);
+  }
+}
+```
+
+tsgonest works with **standard NestJS decorators** — you don't need to learn or migrate to a different API.
+
+---
+
+## OpenAPI generation
+
+### Nestia
+
+Nestia generates OpenAPI at **runtime** using `@nestia/swagger`:
+
+```ts
+import { NestiaSwaggerComposer } from '@nestia/sdk';
+
+const document = await NestiaSwaggerComposer.document(app, {
+  openapi: '3.1',
+  output: 'dist/swagger.json',
+});
+```
+
+This requires:
+- Booting the NestJS application
+- Runtime reflection of decorated controllers
+- Nestia-specific decorators (`@TypedRoute`, `@TypedBody`, etc.)
+
+### tsgonest
+
+tsgonest generates OpenAPI at **build time** via static analysis:
+
+```json title="tsgonest.config.json"
+{
+  "openapi": {
+    "output": "dist/openapi.json",
+    "title": "My API",
+    "version": "1.0.0"
+  }
+}
+```
+
+No application boot. No runtime cost. Standard NestJS decorators.
+
+---
+
+## Serialization
+
+### Typia
+
+```ts
+import typia from 'typia';
+
+// Explicit call at each use site
+const json = typia.json.stringify<UserResponse>(user);
+```
+
+Or with Nestia:
+
+```ts
+@TypedRoute.Get()
+findAll(): UserResponse[] {
+  // Nestia handles serialization via @TypedRoute
+  return this.userService.findAll();
+}
+```
+
+### tsgonest
+
+```ts
+// Automatic via interceptor — one line in main.ts
+app.useGlobalInterceptors(new TsgonestFastInterceptor({ distDir: 'dist' }));
+
+// Controller — no serialization code needed
+@Get()
+findAll(): UserResponse[] {
+  return this.userService.findAll();
+}
+```
+
+Both approaches generate fast string-concatenation-based serializers. The difference is that tsgonest wires serialization automatically via the manifest route map, while typia/nestia requires explicit calls or Nestia-specific decorators.
+
+---
+
+## Setup and tooling
+
+### Typia + Nestia setup
+
+```bash
+npm install typia @nestia/core @nestia/sdk
+npx ts-patch install
+```
+
+```json title="tsconfig.json"
+{
+  "compilerOptions": {
+    "plugins": [
+      { "transform": "typia/lib/transform" },
+      { "transform": "@nestia/core/lib/transform" }
+    ]
+  }
+}
+```
+
+Requirements:
+- `ts-patch` must be installed and patching the TypeScript compiler
+- Plugin entries must be added to `tsconfig.json`
+- Must use the patched `tsc` — standard `tsc` won't work
+- IDE support requires ts-patch's language service plugin
+- Can conflict with other TypeScript tooling (SWC, esbuild)
+
+### tsgonest setup
+
+```bash
+npm install tsgonest
+```
+
+```json title="tsgonest.config.json"
+{
+  "controllers": { "include": ["src/**/*.controller.ts"] },
+  "transforms": { "validation": true, "serialization": true },
+  "openapi": { "output": "dist/openapi.json" }
+}
+```
+
+That's it. No patches. No plugins. No tsconfig modifications. tsgonest uses its own Go-native compilation pipeline.
+
+---
+
+## Feature comparison table
+
+| Feature | Typia | Nestia | tsgonest |
+| --- | --- | --- | --- |
+| Validation | `typia.assert<T>()` | Via `@TypedBody()` | Generated companions |
+| Serialization | `typia.json.stringify<T>()` | Via `@TypedRoute` | Generated companions |
+| OpenAPI | N/A | `@nestia/sdk` (runtime) | Static analysis (build time) |
+| Standard Schema v1 | Not yet | Not yet | Built-in |
+| Interfaces support | Yes | Yes | Yes |
+| Type aliases support | Yes | Yes | Yes |
+| Custom validators | `typia.customValidators` | Via typia | `Validate<typeof fn>` |
+| Branded types | `typia.tags.*` | Via typia tags | `@tsgonest/types` |
+| Transforms (trim, etc.) | Not built-in | Not built-in | `Trim`, `ToLowerCase`, `ToUpperCase` |
+| Coercion | Not built-in | Not built-in | `Coerce` type tag |
+| Default values | Not built-in | Not built-in | `Default<V>` type tag |
+| Per-constraint errors | Not supported | Not supported | `Min<{ value: 0, error: "..." }>` |
+| Discriminated union optimization | Yes | Via typia | Yes (O(1) switch) |
+| Watch mode | External tooling | External tooling | Built-in `tsgonest dev` |
+| Build speed | tsc speed | tsc speed | ~10x faster (tsgo) |
+| NestJS decorators | Replaced by Nestia | Custom decorators | Standard NestJS decorators |
+| Compiler requirement | ts-patch | ts-patch | None (standalone binary) |
+
+---
+
+## Migration from Nestia + Typia
+
+### Step 1: Install tsgonest
+
+```bash
+npm install tsgonest
+npm uninstall @nestia/core @nestia/sdk typia ts-patch
+```
+
+### Step 2: Remove ts-patch plugin config
+
+```diff title="tsconfig.json"
+  "compilerOptions": {
+-   "plugins": [
+-     { "transform": "typia/lib/transform" },
+-     { "transform": "@nestia/core/lib/transform" }
+-   ]
+  }
+```
+
+### Step 3: Replace Nestia decorators
+
+```diff
+- import { TypedBody, TypedRoute } from '@nestia/core';
++ import { Controller, Post, Body } from '@nestjs/common';
+
+  @Controller('users')
+  export class UserController {
+-   @TypedRoute.Post()
+-   create(@TypedBody() dto: CreateUserDto): UserResponse {
++   @Post()
++   create(@Body() dto: CreateUserDto): UserResponse {
+      return this.userService.create(dto);
+    }
+  }
+```
+
+### Step 4: Update branded types (optional)
+
+Your existing typia branded types are auto-detected. But for better DX, you can migrate:
+
+```diff
+- import { tags } from 'typia';
++ import { Min, Max, Email } from '@tsgonest/types';
+
+  interface CreateUserDto {
+-   name: string & tags.MinLength<1> & tags.MaxLength<255>;
+-   email: string & tags.Format<"email">;
+-   age: number & tags.Minimum<0> & tags.Maximum<150>;
++   name: string & Min<1> & Max<255>;
++   email: string & Email;
++   age: number & Min<0> & Max<150>;
+  }
+```
+
+### Step 5: Remove explicit typia calls
+
+```diff
+- import typia from 'typia';
+
+  @Controller('users')
+  export class UserController {
+    @Post()
+-   create(@Body() input: CreateUserDto) {
+-     const dto = typia.assert<CreateUserDto>(input);
++   create(@Body() dto: CreateUserDto) {
++     // Validated automatically by TsgonestValidationPipe
+      return this.userService.create(dto);
+    }
+  }
+```

@@ -26,19 +26,33 @@ export const docsTabs: SidebarTabWithProps[] = [
     urls: new Set(['/docs/config']),
   },
   {
-    title: 'OpenAPI',
-    url: '/docs/openapi',
-    urls: new Set(['/docs/openapi']),
-  },
-  {
     title: 'Validation',
-    url: '/docs/validation-deserialization',
-    urls: new Set(['/docs/validation-deserialization']),
+    url: '/docs/validation',
+    urls: new Set(['/docs/validation']),
   },
   {
     title: 'Serialization',
     url: '/docs/serialization-runtime',
     urls: new Set(['/docs/serialization-runtime']),
+  },
+  {
+    title: 'OpenAPI',
+    url: '/docs/openapi',
+    urls: new Set(['/docs/openapi']),
+  },
+  {
+    title: 'Type Tags',
+    url: '/docs/type-tags',
+    urls: new Set(['/docs/type-tags']),
+  },
+  {
+    title: 'Comparisons',
+    url: '/docs/comparisons/vs-nestjs-cli',
+    urls: new Set([
+      '/docs/comparisons/vs-nestjs-cli',
+      '/docs/comparisons/vs-nestia-typia',
+      '/docs/comparisons/vs-tsgo',
+    ]),
   },
 ];
 

@@ -1,48 +1,164 @@
 ---
-title: tsgonest overview
-description: Native-speed TypeScript compilation plus generated validation, serialization, and OpenAPI.
+title: Overview
+description: Native-speed TypeScript compilation with generated validation, serialization, and OpenAPI for NestJS.
 ---
 
-`tsgonest` is a Go CLI that wraps `typescript-go` (`tsgo`) and augments emit output for NestJS-heavy backends.
+**tsgonest** is a production-ready Go CLI that wraps Microsoft's [typescript-go](https://github.com/microsoft/typescript-go) (`tsgo`) and augments it with everything a NestJS backend needs — generated validators, fast JSON serializers, and OpenAPI 3.2 documentation — all from static analysis of your existing TypeScript types.
 
-## What it does
+## Why tsgonest?
 
-1. Compiles TypeScript using `tsgo`.
-2. Generates companion validators and serializers beside emitted JS.
-3. Builds an OpenAPI 3.1 document from static NestJS controller analysis.
-4. Writes a manifest (`__tsgonest_manifest.json`) so runtime utilities can discover companions.
-5. Provides `@tsgonest/runtime` with `TsgonestValidationPipe` and `TsgonestSerializationInterceptor`.
+NestJS projects typically rely on a fragile stack of runtime libraries — `class-validator`, `class-transformer`, `@nestjs/swagger` — each requiring its own set of decorators, runtime reflection, and manual synchronization. Types defined once in TypeScript get re-declared three or four times across these layers.
+
+tsgonest eliminates that redundancy. You write **plain TypeScript types** and tsgonest generates everything else at compile time:
+
+```ts title="src/user/user.dto.ts"
+import { Min, Max, Email, Trim } from '@tsgonest/types';
+
+export interface CreateUserDto {
+  name: string & Trim & Min<1> & Max<255>;
+  email: string & Email;
+  age: number & Min<0> & Max<150>;
+}
+
+export interface UserResponse {
+  id: string;
+  name: string;
+  email: string;
+  age: number;
+  createdAt: string;
+}
+```
+
+Run `tsgonest build` and you get:
+
+- Compiled JavaScript (via tsgo, 10x faster than `tsc`)
+- `*.tsgonest.js` companion files with `validate`, `assert`, `serialize`, and `schema` functions
+- A manifest file for automatic runtime discovery
+- A complete OpenAPI 3.2 document from your NestJS controllers
+
+No decorators on every property. No `reflect-metadata`. No runtime overhead.
+
+## What it replaces
+
+tsgonest replaces several tools in a typical NestJS stack:
+
+| Concern | Traditional NestJS | tsgonest |
+| --- | --- | --- |
+| **Compilation** | `tsc` or `nest build` | `tsgonest build` (powered by tsgo) |
+| **Watch mode** | `nest start --watch` | `tsgonest dev` |
+| **Validation** | `class-validator` + `class-transformer` | Generated companion validators |
+| **Serialization** | `class-transformer` + `ClassSerializerInterceptor` | Generated fast JSON serializers (2-5x faster) |
+| **OpenAPI docs** | `@nestjs/swagger` + decorators | Static analysis, zero decorators |
+| **Type safety** | Runtime decorators (can diverge from types) | Types **are** the source of truth |
 
 ## Compilation pipeline
 
+Every `tsgonest build` runs through this pipeline:
+
 ```text
-CLI args + config load
-  -> tsgo program creation
-  -> JavaScript emit
-  -> type metadata walk
-  -> companion generation
-  -> manifest generation
-  -> OpenAPI generation
+1. Parse CLI args + tsgonest.config.json
+2. Create tsgo program from tsconfig.json
+3. Type-check and emit JavaScript
+4. Walk AST with type checker -> extract type metadata
+5. Generate companion files (*.tsgonest.js + *.tsgonest.d.ts)
+6. Write __tsgonest_manifest.json
+7. Generate openapi.json from NestJS controllers
 ```
+
+Steps 4-7 are cached — if your source files haven't changed, companions are not regenerated.
 
 ## Output artifacts
 
-Given a DTO file such as `src/user.dto.ts`, `tsgonest` can generate:
+Given a project with `src/user/user.dto.ts` and `src/user/user.controller.ts`, tsgonest produces:
 
-- `dist/src/user.dto.CreateUserDto.validate.js`
-- `dist/src/user.dto.UserResponse.serialize.js`
-- `dist/src/__tsgonest_manifest.json`
-- `dist/openapi.json`
+```text
+dist/
+  user/
+    user.dto.js                             # tsgo output
+    user.dto.CreateUserDto.tsgonest.js      # companion: validate + assert + serialize + schema
+    user.dto.CreateUserDto.tsgonest.d.ts    # companion type declarations
+    user.dto.UserResponse.tsgonest.js       # companion for response type
+    user.dto.UserResponse.tsgonest.d.ts
+    user.controller.js                      # tsgo output (no companion - controllers are skipped)
+    user.module.js
+  __tsgonest_manifest.json                  # manifest for runtime discovery
+  openapi.json                              # OpenAPI 3.2 document
+```
 
-:::note
-The current CLI is `tsgonest [flags]`. `tsgonest dev` and `tsgonest build` are planned phases, not current commands.
-:::
+Each companion file exports four functions:
 
-## Next
+```ts
+// dist/user/user.dto.CreateUserDto.tsgonest.js
+
+export function validateCreateUserDto(input);  // returns { success, data?, errors? }
+export function assertCreateUserDto(input);    // throws on failure, returns validated data
+export function serializeCreateUserDto(input); // fast JSON string
+export function schemaCreateUserDto();         // Standard Schema v1 wrapper
+```
+
+## Real-world performance
+
+tsgonest has been tested on **ecom-bot** — a production NestJS project with:
+
+- 120 controllers
+- 838 routes
+- 2,376 companion files generated
+
+| Metric | Result |
+| --- | --- |
+| Cold build | ~19 seconds |
+| Warm build (cached) | ~1.1 seconds |
+| Go unit tests | 546+ passing |
+| E2E tests | 97 passing |
+
+## Packages
+
+tsgonest ships as three npm packages:
+
+| Package | Description |
+| --- | --- |
+| [`tsgonest`](https://www.npmjs.com/package/tsgonest) | The CLI binary — installs the correct platform binary automatically |
+| [`@tsgonest/runtime`](https://www.npmjs.com/package/@tsgonest/runtime) | NestJS `ValidationPipe`, `FastInterceptor`, and `CompanionDiscovery` |
+| [`@tsgonest/types`](https://www.npmjs.com/package/@tsgonest/types) | Zero-runtime branded phantom types for type-safe constraints |
+
+## Two ways to define constraints
+
+tsgonest supports **two approaches** to defining validation constraints — use whichever fits your team:
+
+### JSDoc tags (zero dependencies)
+
+```ts title="src/user.dto.ts"
+export interface CreateUserDto {
+  /** @minLength 1 @maxLength 255 */
+  name: string;
+
+  /** @format email */
+  email: string;
+
+  /** @minimum 0 @maximum 150 */
+  age: number;
+}
+```
+
+### Branded phantom types (type-safe, with autocomplete)
+
+```ts title="src/user.dto.ts"
+import { Min, Max, Email, Trim } from '@tsgonest/types';
+
+export interface CreateUserDto {
+  name: string & Trim & Min<1> & Max<255>;
+  email: string & Email;
+  age: number & Min<0> & Max<150>;
+}
+```
+
+Both approaches generate identical companion code. The branded types approach gives you IDE autocomplete and compile-time type checking of your constraints.
+
+## Next steps
 
 <Cards>
-  <Card title="Get started" href="/docs/getting-started" />
-  <Card title="CLI reference" href="/docs/cli" />
-  <Card title="Validation & deserialization" href="/docs/validation-deserialization" />
-  <Card title="Serialization & runtime" href="/docs/serialization-runtime" />
+  <Card title="Getting Started" description="Install tsgonest and build your first project" href="/docs/getting-started" />
+  <Card title="CLI Reference" description="All commands, flags, and exit codes" href="/docs/cli" />
+  <Card title="Validation" description="JSDoc tags, branded types, and constraint reference" href="/docs/validation" />
+  <Card title="Type Tags Reference" description="Complete @tsgonest/types API" href="/docs/type-tags" />
 </Cards>

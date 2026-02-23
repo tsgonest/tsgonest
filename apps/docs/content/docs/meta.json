@@ -5,9 +5,12 @@
     "getting-started",
     "cli",
     "config",
-    "openapi",
-    "validation-deserialization",
+    "validation",
     "serialization-runtime",
+    "openapi",
+    "type-tags",
+    "---",
+    "comparisons",
     "---",
     "changelog"
   ]

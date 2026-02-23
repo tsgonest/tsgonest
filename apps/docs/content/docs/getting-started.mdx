@@ -1,91 +1,251 @@
 ---
-title: getting started
-description: Build and run tsgonest in this repository.
+title: Getting Started
+description: Install tsgonest and compile your first NestJS project in minutes.
 ---
 
-This repository is Go-first with local Node packages under `runtime/` and `e2e/`.
+This guide walks you through installing tsgonest, configuring it for a NestJS project, and running your first build.
 
 ## Prerequisites
 
-- Go 1.24+
-- Node.js 18+ (this repo currently runs with Node 25)
-- `pnpm` 10+
+- **Node.js** 18 or later
+- An existing **NestJS** project (or any TypeScript project)
+- A package manager: `npm`, `pnpm`, `yarn`, or `bun`
 
-## Build the binary
+## Installation
 
-```bash
-go build -o tsgonest ./cmd/tsgonest
+Install tsgonest and its companion packages:
+
+```package-install
+tsgonest
 ```
 
-## Run against fixtures
-
-```bash
-./tsgonest --project testdata/nestjs/tsconfig.json --config testdata/nestjs/tsgonest.config.json
-```
-
-The command emits JS via `tsgo`, then generates companion files, manifest, and OpenAPI.
-
-## Common test commands
-
-```bash
-go test ./internal/...
-```
-
-```bash
-cd e2e && pnpm run test --run
-```
+The `tsgonest` package includes the CLI binary and automatically installs `@tsgonest/runtime` and `@tsgonest/types` as dependencies.
 
 :::tip
-`just` is intentionally not required for this repo. Use raw `go` and `pnpm` commands.
+tsgonest ships pre-built native binaries for macOS (ARM64, x64), Linux (ARM64, x64), and Windows (x64). The correct binary is selected automatically during `npm install`.
 :::
 
-## Package manager quick commands
+## Project setup
 
-<CodeBlockTabs defaultValue="pnpm">
-  <CodeBlockTabsList>
-    <CodeBlockTabsTrigger value="pnpm">pnpm</CodeBlockTabsTrigger>
-    <CodeBlockTabsTrigger value="npm">npm</CodeBlockTabsTrigger>
-    <CodeBlockTabsTrigger value="yarn">yarn</CodeBlockTabsTrigger>
-    <CodeBlockTabsTrigger value="bun">bun</CodeBlockTabsTrigger>
-  </CodeBlockTabsList>
+### 1. Create a configuration file
 
-  <CodeBlockTab value="pnpm">
+Create `tsgonest.config.json` in your project root:
 
-```bash
-pnpm install
-pnpm --dir e2e test --run
-pnpm --dir runtime test --run
+```json title="tsgonest.config.json"
+{
+  "controllers": {
+    "include": ["src/**/*.controller.ts"]
+  },
+  "transforms": {
+    "validation": true,
+    "serialization": true
+  },
+  "openapi": {
+    "output": "dist/openapi.json"
+  }
+}
 ```
 
-  </CodeBlockTab>
+This is the minimal config. tsgonest will auto-detect this file if it exists in your working directory.
 
-  <CodeBlockTab value="npm">
+### 2. Define your DTOs
 
-```bash
-npm install
-npm --prefix e2e run test -- --run
-npm --prefix runtime run test -- --run
+Create a DTO file with validation constraints. You can use either **JSDoc tags** or **branded types**:
+
+```ts title="src/user/user.dto.ts"
+import { Min, Max, Email, Trim } from '@tsgonest/types';
+
+export interface CreateUserDto {
+  name: string & Trim & Min<1> & Max<255>;
+  email: string & Email;
+  age: number & Min<0> & Max<150>;
+}
+
+export interface UserResponse {
+  id: string;
+  name: string;
+  email: string;
+  age: number;
+  createdAt: string;
+}
 ```
 
-  </CodeBlockTab>
+Or with JSDoc tags (no `@tsgonest/types` dependency):
 
-  <CodeBlockTab value="yarn">
+```ts title="src/user/user.dto.ts"
+export interface CreateUserDto {
+  /**
+   * @transform trim
+   * @minLength 1
+   * @maxLength 255
+   */
+  name: string;
 
-```bash
-yarn install
-yarn --cwd e2e test --run
-yarn --cwd runtime test --run
+  /** @format email */
+  email: string;
+
+  /**
+   * @minimum 0
+   * @maximum 150
+   */
+  age: number;
+}
+
+export interface UserResponse {
+  id: string;
+  name: string;
+  email: string;
+  age: number;
+  createdAt: string;
+}
 ```
 
-  </CodeBlockTab>
+### 3. Create a controller
 
-  <CodeBlockTab value="bun">
+```ts title="src/user/user.controller.ts"
+import { Controller, Get, Post, Body, Param } from '@nestjs/common';
+import { CreateUserDto, UserResponse } from './user.dto';
 
-```bash
-bun install
-bun --cwd e2e run test --run
-bun --cwd runtime run test --run
+@Controller('users')
+export class UserController {
+  @Post()
+  create(@Body() dto: CreateUserDto): UserResponse {
+    // tsgonest generates validation for CreateUserDto
+    // and serialization for UserResponse automatically
+    return {
+      id: '1',
+      name: dto.name,
+      email: dto.email,
+      age: dto.age,
+      createdAt: new Date().toISOString(),
+    };
+  }
+
+  @Get(':id')
+  findOne(@Param('id') id: string): UserResponse {
+    return {
+      id,
+      name: 'John',
+      email: 'john@example.com',
+      age: 30,
+      createdAt: new Date().toISOString(),
+    };
+  }
+}
 ```
 
-  </CodeBlockTab>
-</CodeBlockTabs>
+### 4. Build
+
+```bash
+npx tsgonest build
+```
+
+This compiles your TypeScript, generates companion files, writes the manifest, and produces the OpenAPI document — all in one command.
+
+You should see output like:
+
+```text
+tsgonest v0.1.1 build
+  tsconfig: tsconfig.json
+  config:   tsgonest.config.json
+
+  emit:        142ms
+  companions:  38ms  (4 files)
+  manifest:    1ms
+  openapi:     12ms
+
+  total: 193ms
+```
+
+### 5. Integrate with NestJS
+
+Wire tsgonest's validation pipe and serialization interceptor into your NestJS app:
+
+```ts title="src/main.ts"
+import { NestFactory } from '@nestjs/core';
+import {
+  TsgonestValidationPipe,
+  TsgonestFastInterceptor,
+} from '@tsgonest/runtime';
+import { AppModule } from './app.module';
+
+async function bootstrap() {
+  const app = await NestFactory.create(AppModule);
+
+  // Use generated validators for request validation
+  app.useGlobalPipes(
+    new TsgonestValidationPipe({ distDir: 'dist' }),
+  );
+
+  // Use generated serializers for fast JSON responses
+  app.useGlobalInterceptors(
+    new TsgonestFastInterceptor({ distDir: 'dist' }),
+  );
+
+  await app.listen(3000);
+}
+bootstrap();
+```
+
+That's it. Incoming request bodies are validated against the generated companions, and outgoing responses are serialized using the fast JSON serializers — all discovered automatically via the manifest.
+
+## Development mode
+
+Use `tsgonest dev` for watch-mode development with automatic rebuild and restart:
+
+```bash
+npx tsgonest dev
+```
+
+This watches your source files, rebuilds on changes, and restarts your Node.js process automatically. It replaces `nest start --watch`.
+
+```bash
+# With a custom entry point
+npx tsgonest dev --entry src/main.ts
+
+# With environment files
+npx tsgonest dev --env-file .env --env-file .env.local
+
+# With Node.js inspector for debugging
+npx tsgonest dev --debug
+```
+
+Type `rs` and press Enter to manually restart during development (if `manualRestart` is enabled in your config).
+
+## Update package.json scripts
+
+Replace your existing build and dev scripts:
+
+```json title="package.json"
+{
+  "scripts": {
+    "build": "tsgonest build",
+    "start:dev": "tsgonest dev",
+    "start:prod": "node dist/main.js"
+  }
+}
+```
+
+## Verify the output
+
+After building, check your `dist/` directory:
+
+```bash
+ls dist/
+```
+
+You should see:
+
+- Your compiled JavaScript files
+- `*.tsgonest.js` and `*.tsgonest.d.ts` companion files alongside each DTO
+- `__tsgonest_manifest.json` at the root of the output directory
+- `openapi.json` with your complete API documentation
+
+## What's next
+
+<Cards>
+  <Card title="CLI Reference" description="All build and dev flags" href="/docs/cli" />
+  <Card title="Configuration" description="Full tsgonest.config.json schema" href="/docs/config" />
+  <Card title="Validation" description="All constraints, formats, and transforms" href="/docs/validation" />
+  <Card title="Serialization & Runtime" description="ValidationPipe, FastInterceptor, and manifest" href="/docs/serialization-runtime" />
+</Cards>

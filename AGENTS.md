@@ -55,7 +55,7 @@ apps/
 
 packages/
   core/                    tsgonest — main npm package (name: "tsgonest")
-                             • installs the correct platform binary via postinstall
+                             • Node.js launcher (esbuild pattern) resolves platform binary at runtime
                              • workspace:* deps on @tsgonest/runtime and @tsgonest/types
   runtime/                 @tsgonest/runtime — NestJS ValidationPipe, SerializationInterceptor,
                              FastInterceptor, CompanionDiscovery
@@ -63,8 +63,9 @@ packages/
                              (string & tags.Email, tags.MinLength<1>, …)
   cli-darwin-arm64/        @tsgonest/cli-darwin-arm64 — macOS Apple Silicon binary
   cli-darwin-x64/          @tsgonest/cli-darwin-x64  — macOS Intel binary
-  cli-linux-arm64/         @tsgonest/cli-linux-arm64  — Linux ARM64 binary
-  cli-linux-x64/           @tsgonest/cli-linux-x64   — Linux x64 binary
+  cli-linux-arm64/         @tsgonest/cli-linux-arm64  — Linux ARM64 binary (static, works on glibc + musl/Alpine)
+  cli-linux-x64/           @tsgonest/cli-linux-x64   — Linux x64 binary (static, works on glibc + musl/Alpine)
+  cli-win32-arm64/         @tsgonest/cli-win32-arm64  — Windows ARM64 binary
   cli-win32-x64/           @tsgonest/cli-win32-x64   — Windows x64 binary
 
 # ── Go source (repo root) ────────────────────────────────────
@@ -192,11 +193,21 @@ tsgonest uses the same shim pattern as tsgolint to access tsgo's internal APIs:
 
 ### packages/core — Binary Distribution
 
-`packages/core` is the `tsgonest` npm package users install. Its `install.js`
-postinstall script detects `process.platform + process.arch` and copies the
-correct pre-built binary from the matching `@tsgonest/cli-*` optional dep into
-`packages/core/bin/tsgonest`. This is the standard pattern used by tools like
-esbuild and @biomejs/biome.
+`packages/core` is the `tsgonest` npm package users install. Its `bin/tsgonest`
+entry is a Node.js launcher script (esbuild pattern) that resolves the correct
+platform binary from `@tsgonest/cli-<platform>` at runtime via `require.resolve`
+and `execFileSync`. No postinstall script needed.
+
+Supported platforms (6):
+- `darwin-arm64` — macOS Apple Silicon
+- `darwin-x64` — macOS Intel
+- `linux-arm64` — Linux ARM64 (static binary, works on glibc + musl/Alpine)
+- `linux-x64` — Linux x64 (static binary, works on glibc + musl/Alpine)
+- `win32-arm64` — Windows ARM64
+- `win32-x64` — Windows x64
+
+Linux binaries are built with `CGO_ENABLED=0` to produce fully static binaries
+that work on both glibc and musl (Alpine) without separate platform packages.
 
 In the workspace, the `@tsgonest/cli-*` optional deps are resolved via
 `workspace:*` (linked locally). When publishing to npm they are replaced by

@@ -21,8 +21,9 @@
   "optionalDependencies": {
     "@tsgonest/cli-darwin-arm64": "workspace:*",
     "@tsgonest/cli-darwin-x64": "workspace:*",
-    "@tsgonest/cli-linux-x64": "workspace:*",
     "@tsgonest/cli-linux-arm64": "workspace:*",
+    "@tsgonest/cli-linux-x64": "workspace:*",
+    "@tsgonest/cli-win32-arm64": "workspace:*",
     "@tsgonest/cli-win32-x64": "workspace:*"
   }
 }

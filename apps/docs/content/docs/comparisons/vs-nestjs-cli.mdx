@@ -1,0 +1,406 @@
+---
+title: tsgonest vs NestJS CLI
+description: How tsgonest compares to the standard NestJS CLI and its ecosystem of runtime libraries.
+---
+
+This page compares tsgonest with the standard NestJS development setup: `@nestjs/cli` for building, `class-validator` + `class-transformer` for validation, and `@nestjs/swagger` for OpenAPI documentation.
+
+## At a glance
+
+| Feature | NestJS CLI + ecosystem | tsgonest |
+| --- | --- | --- |
+| **Compiler** | `tsc` (TypeScript) | `tsgo` (Go, ~10x faster) |
+| **Watch mode** | `nest start --watch` (tsc --watch + nodemon) | `tsgonest dev` (native watcher) |
+| **Validation** | `class-validator` decorators | Generated from types |
+| **Serialization** | `class-transformer` + `ClassSerializerInterceptor` | Generated fast JSON serializers |
+| **OpenAPI** | `@nestjs/swagger` + decorators | Static analysis, zero decorators |
+| **Type safety** | Decorators can diverge from types | Types are the single source of truth |
+| **Runtime dependencies** | 5+ packages | 1 lightweight runtime package |
+| **Build output** | JavaScript only | JS + companions + manifest + OpenAPI |
+
+---
+
+## Build speed
+
+tsgonest uses Microsoft's `typescript-go` (tsgo) — a native Go port of the TypeScript compiler that is roughly **10x faster** than `tsc`.
+
+| Project size | `nest build` (tsc) | `tsgonest build` (tsgo) |
+| --- | --- | --- |
+| Small (~50 files) | ~2s | ~0.3s |
+| Medium (~200 files) | ~8s | ~1s |
+| Large (120 controllers, 838 routes) | ~60s+ | ~19s (cold), ~1.1s (cached) |
+
+tsgonest also caches the post-processing step (companion generation, manifest, OpenAPI). If your source files haven't changed, only the tsgo emit runs.
+
+---
+
+## Validation comparison
+
+### NestJS CLI approach
+
+With the standard NestJS stack, validation requires multiple packages and extensive decorator usage:
+
+```bash
+npm install class-validator class-transformer
+```
+
+```ts title="src/user/create-user.dto.ts"
+import { IsString, IsEmail, IsNumber, Min, Max, MinLength, MaxLength } from 'class-validator';
+import { Transform } from 'class-transformer';
+
+export class CreateUserDto {
+  @IsString()
+  @MinLength(1)
+  @MaxLength(255)
+  @Transform(({ value }) => value?.trim())
+  name: string;
+
+  @IsEmail()
+  email: string;
+
+  @IsNumber()
+  @Min(0)
+  @Max(150)
+  age: number;
+}
+```
+
+```ts title="src/main.ts"
+import { ValidationPipe } from '@nestjs/common';
+
+app.useGlobalPipes(new ValidationPipe({ transform: true, whitelist: true }));
+```
+
+Problems with this approach:
+- Every property needs **both** a TypeScript type **and** decorators — they can diverge
+- `class-validator` validates at runtime using `reflect-metadata`
+- `class-transformer` is needed for transformation (trim, type coercion)
+- DTOs must be **classes** (not interfaces or type aliases)
+- Performance overhead from runtime reflection
+
+### tsgonest approach
+
+```ts title="src/user/create-user.dto.ts"
+import { Min, Max, Email, Trim } from '@tsgonest/types';
+
+export interface CreateUserDto {
+  name: string & Trim & Min<1> & Max<255>;
+  email: string & Email;
+  age: number & Min<0> & Max<150>;
+}
+```
+
+```ts title="src/main.ts"
+import { TsgonestValidationPipe } from '@tsgonest/runtime';
+
+app.useGlobalPipes(new TsgonestValidationPipe({ distDir: 'dist' }));
+```
+
+Advantages:
+- **Types are the source of truth** — no duplication
+- Works with **interfaces** and **type aliases** — not just classes
+- Validators are **generated at build time** — no runtime reflection
+- Zero-runtime type annotations — `@tsgonest/types` produces no JS
+- Transforms (trim, toLowerCase) are built into the generated code
+
+### Side-by-side comparison
+
+```ts
+// ❌ NestJS CLI: decorator soup, type duplication
+export class CreateUserDto {
+  @IsString()
+  @MinLength(1)
+  @MaxLength(255)
+  @Transform(({ value }) => value?.trim())
+  name: string;
+
+  @IsEmail()
+  @Transform(({ value }) => value?.toLowerCase())
+  email: string;
+
+  @IsNumber()
+  @Min(0)
+  @Max(150)
+  age: number;
+
+  @IsOptional()
+  @IsString()
+  @Matches(/^https?:\/\//)
+  website?: string;
+}
+```
+
+```ts
+// ✅ tsgonest: types express everything
+import { Min, Max, Email, Trim, ToLowerCase, Pattern } from '@tsgonest/types';
+
+export interface CreateUserDto {
+  name: string & Trim & Min<1> & Max<255>;
+  email: string & ToLowerCase & Email;
+  age: number & Min<0> & Max<150>;
+  website?: string & Pattern<"^https?:\\/\\/">;
+}
+```
+
+---
+
+## OpenAPI comparison
+
+### NestJS CLI approach
+
+With `@nestjs/swagger`, every DTO property needs additional decorators:
+
+```bash
+npm install @nestjs/swagger swagger-ui-express
+```
+
+```ts title="src/user/create-user.dto.ts"
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+
+export class CreateUserDto {
+  @ApiProperty({ description: 'User name', minLength: 1, maxLength: 255 })
+  @IsString()
+  @MinLength(1)
+  @MaxLength(255)
+  name: string;
+
+  @ApiProperty({ description: 'Email address', format: 'email' })
+  @IsEmail()
+  email: string;
+
+  @ApiProperty({ description: 'Age', minimum: 0, maximum: 150 })
+  @IsNumber()
+  @Min(0)
+  @Max(150)
+  age: number;
+
+  @ApiPropertyOptional({ description: 'Website URL' })
+  @IsOptional()
+  @IsString()
+  website?: string;
+}
+```
+
+```ts title="src/user/user.controller.ts"
+import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth } from '@nestjs/swagger';
+
+@ApiTags('users')
+@ApiBearerAuth()
+@Controller('users')
+export class UserController {
+  @Post()
+  @ApiOperation({ summary: 'Create a user' })
+  @ApiResponse({ status: 201, type: UserResponse })
+  create(@Body() dto: CreateUserDto): UserResponse {
+    // ...
+  }
+}
+```
+
+```ts title="src/main.ts"
+import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
+
+const config = new DocumentBuilder()
+  .setTitle('My API')
+  .setVersion('1.0')
+  .addBearerAuth()
+  .build();
+const document = SwaggerModule.createDocument(app, config);
+SwaggerModule.setup('api-docs', app, document);
+```
+
+This approach has significant drawbacks:
+- **Triple declaration**: Each property is declared as a TS type, a class-validator decorator, and an `@ApiProperty`
+- **Runtime overhead**: Document is generated at startup via reflection
+- **Startup time**: `SwaggerModule.createDocument` scans all controllers at boot
+- **Drift risk**: Swagger decorators can easily get out of sync with validators
+
+### tsgonest approach
+
+```ts title="src/user/create-user.dto.ts"
+import { Min, Max, Email, Trim } from '@tsgonest/types';
+
+export interface CreateUserDto {
+  name: string & Trim & Min<1> & Max<255>;
+  email: string & Email;
+  age: number & Min<0> & Max<150>;
+  website?: string;
+}
+```
+
+```ts title="src/user/user.controller.ts"
+@Controller('users')
+export class UserController {
+  @Post()
+  create(@Body() dto: CreateUserDto): UserResponse {
+    // That's it. No swagger decorators needed.
+  }
+}
+```
+
+```json title="tsgonest.config.json"
+{
+  "openapi": {
+    "output": "dist/openapi.json",
+    "title": "My API",
+    "version": "1.0",
+    "securitySchemes": {
+      "bearer": { "type": "http", "scheme": "bearer", "bearerFormat": "JWT" }
+    }
+  }
+}
+```
+
+The OpenAPI document is generated at **build time** via static analysis:
+- Zero runtime cost
+- Constraints from types are automatically reflected in the schema
+- No additional decorators needed
+- Tags derived from controller names
+- Operation IDs from method names
+- Route params, query params, and request bodies inferred from decorator types
+
+---
+
+## Serialization comparison
+
+### NestJS CLI approach
+
+```ts
+import { Exclude, Expose, Type } from 'class-transformer';
+
+export class UserResponse {
+  @Expose()
+  id: string;
+
+  @Expose()
+  name: string;
+
+  @Expose()
+  email: string;
+
+  @Exclude()
+  password: string; // hidden from responses
+
+  @Expose()
+  @Type(() => Date)
+  createdAt: Date;
+}
+```
+
+```ts
+app.useGlobalInterceptors(new ClassSerializerInterceptor(app.get(Reflector)));
+```
+
+This uses `reflect-metadata` at runtime and `JSON.stringify` for serialization — the slowest possible path.
+
+### tsgonest approach
+
+```ts
+export interface UserResponse {
+  id: string;
+  name: string;
+  email: string;
+  createdAt: string;
+}
+```
+
+```ts
+app.useGlobalInterceptors(new TsgonestFastInterceptor({ distDir: 'dist' }));
+```
+
+The generated serializer uses string concatenation with known property names — **2-5x faster** than `JSON.stringify`. Only declared properties are included in the output (no `@Exclude` needed — if it's not in the type, it's not serialized).
+
+---
+
+## Dependencies
+
+### NestJS CLI ecosystem
+
+```json
+{
+  "dependencies": {
+    "class-validator": "^0.14",
+    "class-transformer": "^0.5",
+    "@nestjs/swagger": "^7.0",
+    "swagger-ui-express": "^5.0",
+    "reflect-metadata": "^0.2"
+  }
+}
+```
+
+5+ additional runtime dependencies, each with their own transitive dependencies.
+
+### tsgonest
+
+```json
+{
+  "dependencies": {
+    "tsgonest": "^0.1"
+  }
+}
+```
+
+One package. `@tsgonest/runtime` and `@tsgonest/types` are included as dependencies of `tsgonest`.
+
+---
+
+## Migration path
+
+Migrating from the NestJS CLI ecosystem to tsgonest can be done incrementally:
+
+### Step 1: Replace the build
+
+```diff title="package.json"
+  "scripts": {
+-   "build": "nest build",
+-   "start:dev": "nest start --watch",
++   "build": "tsgonest build",
++   "start:dev": "tsgonest dev",
+    "start:prod": "node dist/main.js"
+  }
+```
+
+### Step 2: Add tsgonest config
+
+```json title="tsgonest.config.json"
+{
+  "controllers": { "include": ["src/**/*.controller.ts"] },
+  "transforms": { "validation": true, "serialization": true },
+  "openapi": { "output": "dist/openapi.json" }
+}
+```
+
+### Step 3: Convert DTOs gradually
+
+You can convert DTOs one at a time. tsgonest's `TsgonestValidationPipe` passes through types that don't have companions, so your existing `class-validator` decorators continue working alongside tsgonest-generated validators.
+
+```ts
+// Before: class-validator
+export class CreateUserDto {
+  @IsString()
+  @MinLength(1)
+  name: string;
+}
+
+// After: tsgonest
+export interface CreateUserDto {
+  name: string & Min<1>;
+}
+```
+
+### Step 4: Replace global pipes/interceptors
+
+```diff title="src/main.ts"
+- import { ValidationPipe } from '@nestjs/common';
++ import { TsgonestValidationPipe, TsgonestFastInterceptor } from '@tsgonest/runtime';
+
+- app.useGlobalPipes(new ValidationPipe({ transform: true }));
++ app.useGlobalPipes(new TsgonestValidationPipe({ distDir: 'dist' }));
++ app.useGlobalInterceptors(new TsgonestFastInterceptor({ distDir: 'dist' }));
+```
+
+### Step 5: Remove old dependencies
+
+```bash
+npm uninstall class-validator class-transformer @nestjs/swagger swagger-ui-express
+```

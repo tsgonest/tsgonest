@@ -98,12 +98,16 @@ jobs:
             || git commit -m "chore(release): update changelog for ${{ github.ref_name }}"
           git push origin HEAD:refs/heads/main
 
-      # ── 3. Cross-compile all five platform binaries ──────────
+      # ── 3. Cross-compile all six platform binaries ───────────
       #
       # Go's cross-compiler handles all platforms from Linux.
       # Build cache is keyed per GOOS/GOARCH, so each target compiles from
       # scratch. Run 2 at a time to balance speed vs the 7 GB RAM limit on
       # standard GitHub Actions runners (5 at once OOMs).
+      #
+      # CGO_ENABLED=0 on Linux builds ensures fully static binaries that
+      # work on both glibc (Debian/Ubuntu) and musl (Alpine) without
+      # needing separate platform packages.
       - name: Build all platform binaries
         env:
           VERSION: ${{ steps.version.outputs.VERSION }}
@@ -114,25 +118,29 @@ jobs:
             packages/cli-darwin-x64/bin  \
             packages/cli-linux-arm64/bin  \
             packages/cli-linux-x64/bin   \
+            packages/cli-win32-arm64/bin \
             packages/cli-win32-x64/bin
 
-          # Batch 1 (2 parallel)
+          # Batch 1 — macOS (2 parallel)
           GOOS=darwin  GOARCH=arm64 go build -ldflags "${LDFLAGS}" \
             -o packages/cli-darwin-arm64/bin/tsgonest   ./cmd/tsgonest &
           GOOS=darwin  GOARCH=amd64 go build -ldflags "${LDFLAGS}" \
             -o packages/cli-darwin-x64/bin/tsgonest    ./cmd/tsgonest &
           wait
 
-          # Batch 2 (2 parallel)
-          GOOS=linux   GOARCH=arm64 go build -ldflags "${LDFLAGS}" \
+          # Batch 2 — Linux, static binaries for glibc + musl (2 parallel)
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags "${LDFLAGS}" \
             -o packages/cli-linux-arm64/bin/tsgonest   ./cmd/tsgonest &
-          GOOS=linux   GOARCH=amd64 go build -ldflags "${LDFLAGS}" \
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "${LDFLAGS}" \
             -o packages/cli-linux-x64/bin/tsgonest     ./cmd/tsgonest &
           wait
 
-          # Batch 3 (1 remaining)
+          # Batch 3 — Windows (2 parallel)
+          GOOS=windows GOARCH=arm64 go build -ldflags "${LDFLAGS}" \
+            -o packages/cli-win32-arm64/bin/tsgonest.exe ./cmd/tsgonest &
           GOOS=windows GOARCH=amd64 go build -ldflags "${LDFLAGS}" \
-            -o packages/cli-win32-x64/bin/tsgonest.exe ./cmd/tsgonest
+            -o packages/cli-win32-x64/bin/tsgonest.exe ./cmd/tsgonest &
+          wait
 
           chmod +x \
             packages/cli-darwin-arm64/bin/tsgonest \
@@ -152,6 +160,7 @@ jobs:
           cp packages/cli-darwin-x64/bin/tsgonest    release/tsgonest-darwin-x64
           cp packages/cli-linux-arm64/bin/tsgonest   release/tsgonest-linux-arm64
           cp packages/cli-linux-x64/bin/tsgonest     release/tsgonest-linux-x64
+          cp packages/cli-win32-arm64/bin/tsgonest.exe release/tsgonest-windows-arm64.exe
           cp packages/cli-win32-x64/bin/tsgonest.exe release/tsgonest-windows-x64.exe
 
       # ── 4. Bump version in every packages/*/package.json ─────
@@ -216,4 +225,5 @@ jobs:
             release/tsgonest-darwin-x64
             release/tsgonest-linux-arm64
             release/tsgonest-linux-x64
+            release/tsgonest-windows-arm64.exe
             release/tsgonest-windows-x64.exe

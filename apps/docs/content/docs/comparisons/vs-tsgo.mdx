@@ -1,0 +1,200 @@
+---
+title: tsgonest vs tsgo
+description: What tsgonest adds on top of Microsoft's typescript-go compiler.
+---
+
+[typescript-go](https://github.com/microsoft/typescript-go) (`tsgo`) is Microsoft's official Go port of the TypeScript compiler. It provides dramatically faster TypeScript compilation — roughly **10x faster** than `tsc`. tsgonest wraps tsgo and extends it with features specifically designed for NestJS backends.
+
+## What is tsgo?
+
+tsgo is a **1:1 port** of the TypeScript compiler from JavaScript to Go. It produces identical output to `tsc` — the same JavaScript, the same type checking, the same diagnostics. The difference is speed: Go's native compilation, goroutine-based parallelism, and efficient memory management make it significantly faster.
+
+```bash
+# Using tsgo directly
+npx @aspect-build/tsgo --project tsconfig.json
+```
+
+tsgo is a **compiler only**. It compiles TypeScript to JavaScript and performs type checking. Nothing more.
+
+## What tsgonest adds
+
+tsgonest uses tsgo as its compilation engine, then runs additional passes on your code:
+
+```text
+tsgo responsibilities:
+  ✓ Parse TypeScript source files
+  ✓ Type checking and diagnostics
+  ✓ Emit JavaScript output
+  ✓ Incremental compilation
+
+tsgonest adds:
+  + Companion file generation (validate, assert, serialize, schema)
+  + Manifest generation for runtime discovery
+  + OpenAPI 3.2 document generation from NestJS controllers
+  + Watch mode with auto-restart (tsgonest dev)
+  + Post-processing cache
+  + Asset copying
+  + Path alias resolution for error messages
+```
+
+### Feature comparison
+
+| Feature | tsgo | tsgonest |
+| --- | --- | --- |
+| TypeScript compilation | Yes | Yes (uses tsgo internally) |
+| Type checking | Yes | Yes |
+| JavaScript emit | Yes | Yes |
+| Incremental builds | Yes | Yes |
+| **Validation codegen** | No | Yes — companion files with validate/assert |
+| **Serialization codegen** | No | Yes — fast JSON serializers |
+| **OpenAPI generation** | No | Yes — OpenAPI 3.2 from NestJS controllers |
+| **Manifest** | No | Yes — `__tsgonest_manifest.json` |
+| **Standard Schema** | No | Yes — v1 wrappers |
+| **Watch mode** | No (use `--watch` flag) | Yes — `tsgonest dev` with auto-restart |
+| **NestJS integration** | No | Yes — ValidationPipe, FastInterceptor |
+| **Asset copying** | No | Yes — `--assets` flag |
+| **Config file** | `tsconfig.json` only | `tsconfig.json` + `tsgonest.config.json` |
+| **Post-processing cache** | N/A | Yes — skips codegen when source unchanged |
+
+---
+
+## When to use which
+
+### Use tsgo when
+
+- You have a **non-NestJS** TypeScript project and just want faster compilation
+- You don't need validation, serialization, or OpenAPI generation
+- You want a drop-in replacement for `tsc` with no additional features
+- You're building a library, frontend app, or CLI tool
+
+```bash
+# Drop-in tsc replacement
+npx @aspect-build/tsgo --project tsconfig.json
+```
+
+### Use tsgonest when
+
+- You're building a **NestJS backend** (or any server with typed request/response)
+- You want **generated validators** from your TypeScript types
+- You want **fast JSON serializers** (2-5x faster than JSON.stringify)
+- You want **OpenAPI documentation** without decorator overhead
+- You want **watch mode** with automatic rebuild and restart
+- You want a **single tool** that replaces `tsc` + `class-validator` + `class-transformer` + `@nestjs/swagger`
+
+```bash
+# NestJS development
+tsgonest dev
+
+# Production build
+tsgonest build
+```
+
+---
+
+## How tsgonest uses tsgo
+
+tsgonest doesn't shell out to tsgo as a subprocess. Instead, it **links directly** to tsgo's Go packages using Go's `go:linkname` directive. This gives tsgonest full access to tsgo's internal APIs:
+
+- **Parser**: Read and traverse the AST
+- **Checker**: Resolve types, walk type information, read JSDoc tags
+- **Emitter**: Emit JavaScript output
+- **Scanner**: Token-level analysis
+- **Compiler options**: Parse tsconfig.json
+
+This means tsgonest gets the same compilation speed as tsgo — there's no overhead from inter-process communication or re-parsing.
+
+### Build pipeline
+
+```text
+1. Parse CLI args + tsgonest.config.json
+2. Create tsgo program (via linked tsgo API)     ← tsgo
+3. Type-check and gather diagnostics              ← tsgo
+4. Emit JavaScript                                ← tsgo
+5. Walk AST with type checker                     ← tsgo checker + tsgonest analyzer
+6. Extract type metadata                          ← tsgonest
+7. Generate companion files                       ← tsgonest
+8. Write manifest                                 ← tsgonest
+9. Generate OpenAPI document                      ← tsgonest
+```
+
+Steps 2-4 are pure tsgo. Steps 5-9 are tsgonest's additions, using tsgo's checker for type information.
+
+---
+
+## Performance
+
+Since tsgonest uses tsgo internally, compilation speed is equivalent to tsgo. The additional passes (companion generation, manifest, OpenAPI) add minimal overhead:
+
+| Phase | Time (120 controllers, 838 routes) |
+| --- | --- |
+| tsgo emit | ~15s |
+| Companion generation | ~3s |
+| Manifest + OpenAPI | ~1s |
+| **Total cold build** | **~19s** |
+| **Warm build (cached)** | **~1.1s** |
+
+The post-processing cache means that on subsequent builds where only a few files changed, tsgonest skips companion regeneration entirely — achieving near-instant rebuilds.
+
+---
+
+## Example: tsgo vs tsgonest output
+
+### tsgo output
+
+```bash
+npx @aspect-build/tsgo --project tsconfig.json
+```
+
+```text
+dist/
+  user/
+    user.dto.js
+    user.controller.js
+    user.module.js
+  main.js
+```
+
+Just compiled JavaScript — exactly what `tsc` would produce, but faster.
+
+### tsgonest output
+
+```bash
+tsgonest build
+```
+
+```text
+dist/
+  user/
+    user.dto.js                             # tsgo output
+    user.dto.CreateUserDto.tsgonest.js      # generated companion
+    user.dto.CreateUserDto.tsgonest.d.ts    # companion types
+    user.dto.UserResponse.tsgonest.js       # generated companion
+    user.dto.UserResponse.tsgonest.d.ts     # companion types
+    user.controller.js                      # tsgo output
+    user.module.js                          # tsgo output
+  main.js                                   # tsgo output
+  __tsgonest_manifest.json                  # manifest
+  openapi.json                              # OpenAPI 3.2
+```
+
+Same JavaScript output, plus companions, manifest, and OpenAPI — all from the same build command.
+
+---
+
+## Can I use both?
+
+There's no need to. tsgonest **includes** tsgo — it's the same compilation engine. Using tsgonest gives you everything tsgo provides, plus the NestJS-specific features. If you don't configure companions or OpenAPI, tsgonest behaves like tsgo with watch mode.
+
+```json title="tsgonest.config.json — minimal (compiler-only mode)"
+{
+  "transforms": {
+    "validation": false,
+    "serialization": false
+  },
+  "openapi": {
+    "output": ""
+  }
+}
+```
+
+With this config, `tsgonest build` is effectively `tsgo` with a config file and `tsgonest dev` adds watch mode on top.

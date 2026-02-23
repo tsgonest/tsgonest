@@ -22,7 +22,7 @@ export const metadata: Metadata = {
   },
 };
 
-/* ── Feature sections ──────────────────────────────────────── */
+/* -- Feature sections -------------------------------------------------- */
 
 const coreFeatures = [
   {
@@ -30,7 +30,7 @@ const coreFeatures = [
     label: 'Getting Started',
     title: 'Get up and running fast',
     description:
-      'Build the binary, run tests, and compile your first NestJS project with native-speed tsgo in minutes.',
+      'Install tsgonest, configure your project, and build your first NestJS app with native-speed tsgo in minutes.',
     icon: (
       <svg
         xmlns="http://www.w3.org/2000/svg"
@@ -52,7 +52,7 @@ const coreFeatures = [
     label: 'CLI Reference',
     title: 'Full CLI reference',
     description:
-      'Every flag, the operational pipeline, and usage examples for the `tsgonest` command-line tool.',
+      'Every flag for `tsgonest build` and `tsgonest dev`, the operational pipeline, exit codes, and usage examples.',
     icon: (
       <svg
         xmlns="http://www.w3.org/2000/svg"
@@ -75,7 +75,7 @@ const coreFeatures = [
     label: 'Config',
     title: 'Configuration reference',
     description:
-      'Complete `tsgonest.config.json` schema, defaults, validation rules, and path-resolution behaviour.',
+      'Complete `tsgonest.config.json` schema with controllers, transforms, OpenAPI, NestJS versioning, and more.',
     icon: (
       <svg
         xmlns="http://www.w3.org/2000/svg"
@@ -97,19 +97,11 @@ const coreFeatures = [
 
 const deepDiveFeatures = [
   {
-    href: '/docs/openapi',
-    label: 'OpenAPI',
-    title: 'OpenAPI 3.1 generation',
-    description:
-      'Static analysis of NestJS controllers produces a fully-compliant OpenAPI 3.1 document — no decorators required at runtime.',
-    accent: 'text-violet-500 bg-violet-50 dark:bg-violet-950/40 dark:text-violet-400',
-  },
-  {
-    href: '/docs/validation-deserialization',
+    href: '/docs/validation',
     label: 'Validation',
-    title: 'Validation & deserialization',
+    title: 'Validation & constraints',
     description:
-      'Generated `*.validate.js` companions provide `validate*`, `assert*`, and `deserialize*` functions with full JSDoc constraint support.',
+      'JSDoc tags, branded types, string formats, transforms, coercion, custom validators, discriminated unions, and Standard Schema.',
     accent: 'text-teal-600 bg-teal-50 dark:bg-teal-950/40 dark:text-teal-400',
   },
   {
@@ -117,18 +109,53 @@ const deepDiveFeatures = [
     label: 'Serialization',
     title: 'Serialization & runtime',
     description:
-      'Fast generated serializers plus the `@tsgonest/runtime` NestJS pipe and interceptor, wired via a manifest-driven discovery mechanism.',
+      'Fast generated serializers (2-5x faster than JSON.stringify), manifest-driven discovery, ValidationPipe, and FastInterceptor.',
     accent: 'text-sky-600 bg-sky-50 dark:bg-sky-950/40 dark:text-sky-400',
+  },
+  {
+    href: '/docs/openapi',
+    label: 'OpenAPI',
+    title: 'OpenAPI 3.2 generation',
+    description:
+      'Static analysis of NestJS controllers produces a fully-compliant OpenAPI 3.2 document with zero runtime decorators.',
+    accent: 'text-violet-500 bg-violet-50 dark:bg-violet-950/40 dark:text-violet-400',
   },
 ];
 
-/* ── Page ──────────────────────────────────────────────────── */
+const comparisonFeatures = [
+  {
+    href: '/docs/comparisons/vs-nestjs-cli',
+    label: 'vs NestJS CLI',
+    title: 'tsgonest vs NestJS CLI',
+    description:
+      'Build speed, validation, serialization, and OpenAPI compared to the standard NestJS ecosystem.',
+    accent: 'text-rose-500 bg-rose-50 dark:bg-rose-950/40 dark:text-rose-400',
+  },
+  {
+    href: '/docs/comparisons/vs-nestia-typia',
+    label: 'vs Nestia + Typia',
+    title: 'tsgonest vs Nestia + Typia',
+    description:
+      'Architecture differences, DX comparison, and migration path from the Nestia/Typia ecosystem.',
+    accent: 'text-amber-600 bg-amber-50 dark:bg-amber-950/40 dark:text-amber-400',
+  },
+  {
+    href: '/docs/comparisons/vs-tsgo',
+    label: 'vs tsgo',
+    title: 'tsgonest vs tsgo',
+    description:
+      'What tsgonest adds on top of Microsoft\'s typescript-go compiler: companions, manifest, OpenAPI, and dev mode.',
+    accent: 'text-blue-600 bg-blue-50 dark:bg-blue-950/40 dark:text-blue-400',
+  },
+];
+
+/* -- Page -------------------------------------------------------------- */
 
 export default function HomePage() {
   return (
     <main className="mx-auto flex w-full max-w-[min(calc(var(--fd-layout-width,97rem)-268px),1000px)] flex-1 flex-col gap-16 px-4 py-14 md:px-8 md:py-16 xl:py-20">
 
-      {/* ── Hero ─────────────────────────────────────────────── */}
+      {/* -- Hero --------------------------------------------------------- */}
       <section className="flex flex-col gap-5">
         <div className="flex items-center gap-3">
           <Image
@@ -150,7 +177,7 @@ export default function HomePage() {
             <code className="rounded-square border border-[var(--color-stroke-neutral)] bg-[var(--color-background-neutral-weak)] px-1.5 py-0.5 text-sm font-medium text-fd-foreground">
               tsgo
             </code>
-            , generated runtime validators and serializers, and static OpenAPI 3.1
+            , generated runtime validators and serializers, and static OpenAPI 3.2
             analysis for NestJS.
           </p>
         </div>
@@ -184,7 +211,7 @@ export default function HomePage() {
         </div>
       </section>
 
-      {/* ── Core feature cards ───────────────────────────────── */}
+      {/* -- Core feature cards --------------------------------------------- */}
       <section className="flex flex-col gap-4">
         <h2 className="text-xs font-semibold uppercase tracking-wider text-fd-muted-foreground">
           Explore the docs
@@ -215,7 +242,7 @@ export default function HomePage() {
         </div>
       </section>
 
-      {/* ── Deep-dive section ────────────────────────────────── */}
+      {/* -- Deep-dive section ---------------------------------------------- */}
       <section className="flex flex-col gap-4">
         <h2 className="text-xs font-semibold uppercase tracking-wider text-fd-muted-foreground">
           Deep dive
@@ -245,7 +272,37 @@ export default function HomePage() {
         </div>
       </section>
 
-      {/* ── Compilation pipeline callout ─────────────────────── */}
+      {/* -- Comparisons section -------------------------------------------- */}
+      <section className="flex flex-col gap-4">
+        <h2 className="text-xs font-semibold uppercase tracking-wider text-fd-muted-foreground">
+          Comparisons
+        </h2>
+        <div className="grid gap-3 sm:grid-cols-3">
+          {comparisonFeatures.map((item) => (
+            <Link
+              key={item.href}
+              href={item.href}
+              className="group flex flex-col gap-3 rounded-square border border-[var(--color-stroke-neutral)] bg-[var(--color-background-default)] p-5 transition-colors hover:border-[var(--color-stroke-neutral-strong)] hover:bg-[var(--color-background-neutral-weak)]"
+            >
+              <span
+                className={`inline-flex w-fit items-center rounded-square px-2 py-0.5 text-xs font-semibold ${item.accent}`}
+              >
+                {item.label}
+              </span>
+              <div>
+                <p className="mb-1 font-semibold tracking-tight text-fd-foreground">
+                  {item.title}
+                </p>
+                <p className="text-sm leading-relaxed text-fd-muted-foreground">
+                  {item.description}
+                </p>
+              </div>
+            </Link>
+          ))}
+        </div>
+      </section>
+
+      {/* -- Compilation pipeline callout ----------------------------------- */}
       <section className="rounded-square border border-[var(--color-stroke-neutral)] bg-[var(--color-background-neutral-weak)] p-6 md:p-8">
         <h2 className="mb-2 text-lg font-semibold tracking-tight">
           Compilation pipeline
@@ -266,10 +323,10 @@ export default function HomePage() {
           {[
             'Parse CLI args + tsgonest.config.json',
             'Create tsgo program from tsconfig',
-            'Emit JS via the tsgo emitter',
-            'Walk AST with type checker → extract type metadata',
-            'Generate *.validate.js and *.serialize.js companions',
-            'Emit tsgonest.manifest.json',
+            'Type-check and emit JavaScript',
+            'Walk AST with type checker \u2192 extract type metadata',
+            'Generate *.tsgonest.js + *.tsgonest.d.ts companions',
+            'Write __tsgonest_manifest.json',
             'Generate openapi.json from NestJS controllers',
           ].map((step, i) => (
             <li key={i} className="flex items-start gap-3">

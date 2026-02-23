@@ -1,42 +1,15 @@
 ---
-title: configuration
-description: Schema, defaults, and validation rules for tsgonest.config.json.
+title: Configuration
+description: Complete reference for tsgonest.config.json — all fields, defaults, and validation rules.
 ---
 
-`tsgonest` currently loads JSON configuration from `tsgonest.config.json`.
+tsgonest is configured via a `tsgonest.config.json` file in your project root. The CLI auto-detects this file, or you can specify a path with `--config`.
 
-## Full shape
+## Minimal configuration
 
-```json
-{
-  "controllers": {
-    "include": ["src/**/*.controller.ts"],
-    "exclude": ["src/**/*.spec.ts"]
-  },
-  "transforms": {
-    "validation": true,
-    "serialization": true,
-    "exclude": ["Legacy*", "SomeInternalDto"]
-  },
-  "openapi": {
-    "output": "dist/openapi.json"
-  },
-  "nestjs": {
-    "globalPrefix": "api",
-    "versioning": {
-      "type": "URI",
-      "defaultVersion": "1",
-      "prefix": "v"
-    }
-  }
-}
-```
+Most NestJS projects only need:
 
-## Defaults
-
-If fields are omitted, current defaults are:
-
-```json
+```json title="tsgonest.config.json"
 {
   "controllers": {
     "include": ["src/**/*.controller.ts"]
@@ -51,19 +24,243 @@ If fields are omitted, current defaults are:
 }
 ```
 
+These are also the default values — if you omit any of these fields, tsgonest uses the defaults shown above.
+
+## Full configuration reference
+
+```json title="tsgonest.config.json"
+{
+  "controllers": {
+    "include": ["src/**/*.controller.ts"],
+    "exclude": ["src/**/*.spec.ts"]
+  },
+  "transforms": {
+    "validation": true,
+    "serialization": true,
+    "include": ["src/**/*.dto.ts", "src/**/*.entity.ts"],
+    "exclude": ["LegacyDto", "InternalResponse"]
+  },
+  "openapi": {
+    "output": "dist/openapi.json",
+    "title": "My API",
+    "version": "1.0.0",
+    "description": "My NestJS API documentation",
+    "contact": {
+      "name": "API Support",
+      "url": "https://example.com/support",
+      "email": "support@example.com"
+    },
+    "license": {
+      "name": "MIT",
+      "url": "https://opensource.org/licenses/MIT"
+    },
+    "servers": [
+      {
+        "url": "https://api.example.com",
+        "description": "Production"
+      },
+      {
+        "url": "https://staging-api.example.com",
+        "description": "Staging"
+      }
+    ],
+    "securitySchemes": {
+      "bearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "JWT Bearer token"
+      },
+      "apiKey": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-API-Key",
+        "description": "API key authentication"
+      }
+    }
+  },
+  "nestjs": {
+    "globalPrefix": "api",
+    "versioning": {
+      "type": "URI",
+      "defaultVersion": "1",
+      "prefix": "v"
+    }
+  },
+  "entryFile": "main",
+  "sourceRoot": "src",
+  "deleteOutDir": false,
+  "manualRestart": false
+}
+```
+
+---
+
+## Field reference
+
+### `controllers`
+
+Controls which files are analyzed for NestJS controller routes (used for OpenAPI generation and route mapping).
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `include` | `string[]` | `["src/**/*.controller.ts"]` | Glob patterns for controller files |
+| `exclude` | `string[]` | `[]` | Glob patterns to exclude |
+
+```json
+{
+  "controllers": {
+    "include": ["src/**/*.controller.ts"],
+    "exclude": ["src/**/*.spec.ts", "src/**/health.controller.ts"]
+  }
+}
+```
+
+### `transforms`
+
+Controls companion file generation (validators and serializers).
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `validation` | `boolean` | `true` | Generate `validate` and `assert` functions |
+| `serialization` | `boolean` | `true` | Generate `serialize` functions |
+| `include` | `string[]` | `[]` | Glob patterns for source files to generate companions for |
+| `exclude` | `string[]` | `[]` | Type name patterns to exclude from codegen |
+
+```json
+{
+  "transforms": {
+    "validation": true,
+    "serialization": true,
+    "include": ["src/**/*.dto.ts"],
+    "exclude": ["LegacyUserDto", "Internal*"]
+  }
+}
+```
+
+:::tip
+The `exclude` field in `transforms` accepts **type name patterns** (not file paths). Use `*` as a wildcard. For example, `"Internal*"` skips any type whose name starts with "Internal".
+:::
+
+### `openapi`
+
+Controls OpenAPI document generation.
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `output` | `string` | `"dist/openapi.json"` | Output path for the OpenAPI document |
+| `title` | `string` | `"API"` | API title in the info section |
+| `version` | `string` | `"1.0.0"` | API version in the info section |
+| `description` | `string` | `""` | API description |
+| `contact` | `object` | | Contact information |
+| `license` | `object` | | License information |
+| `servers` | `object[]` | `[]` | Server URLs |
+| `securitySchemes` | `object` | `{}` | Security scheme definitions |
+
+#### `openapi.contact`
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `name` | `string` | Contact name |
+| `url` | `string` | Contact URL |
+| `email` | `string` | Contact email |
+
+#### `openapi.license`
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `name` | `string` | License name (required if license is set) |
+| `url` | `string` | License URL |
+
+#### `openapi.servers[]`
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `url` | `string` | Server URL |
+| `description` | `string` | Server description |
+
+#### `openapi.securitySchemes`
+
+Each key in `securitySchemes` is the scheme name. Supported fields:
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `type` | `string` | `"http"`, `"apiKey"`, `"oauth2"`, or `"openIdConnect"` |
+| `scheme` | `string` | HTTP auth scheme (e.g., `"bearer"`) |
+| `bearerFormat` | `string` | Bearer token format (e.g., `"JWT"`) |
+| `in` | `string` | Location of API key: `"header"`, `"query"`, or `"cookie"` |
+| `name` | `string` | Name of the header, query, or cookie parameter |
+| `description` | `string` | Description of the security scheme |
+
+### `nestjs`
+
+NestJS-specific settings that affect how routes are generated in the OpenAPI document.
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `globalPrefix` | `string` | `""` | Global route prefix (e.g., `"api"`) |
+| `versioning` | `object` | | API versioning configuration |
+
+#### `nestjs.versioning`
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `type` | `string` | `"URI"` | Versioning strategy: `"URI"`, `"HEADER"`, `"MEDIA_TYPE"`, or `"CUSTOM"` |
+| `defaultVersion` | `string` | | Default version (e.g., `"1"`) |
+| `prefix` | `string` | `"v"` | Version prefix for URI versioning |
+
+```json
+{
+  "nestjs": {
+    "globalPrefix": "api",
+    "versioning": {
+      "type": "URI",
+      "defaultVersion": "1",
+      "prefix": "v"
+    }
+  }
+}
+```
+
+With this config, a `@Controller('users')` with a `@Get()` method produces the path `/api/v1/users` in the OpenAPI document.
+
+### Dev/build settings
+
+These fields mirror NestJS CLI conventions for easy migration:
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `entryFile` | `string` | `"main"` | Entry point filename without extension |
+| `sourceRoot` | `string` | `"src"` | Source root directory for file watching |
+| `deleteOutDir` | `boolean` | `false` | Delete the output directory before building (same as `--clean`) |
+| `manualRestart` | `boolean` | `false` | Enable `rs` manual restart in dev mode |
+
+---
+
 ## Validation rules
 
-`internal/config/config.go` currently enforces:
+tsgonest validates your config file and reports errors for:
 
-- `controllers.include` must contain at least one glob.
-- `openapi.output` must be non-empty.
-- `openapi.output` must have `.json` extension.
+- `controllers.include` must contain at least one glob pattern
+- `openapi.output` must not be empty
+- `openapi.output` must have a `.json` extension
 
-## Path resolution behavior
+## Path resolution
 
-- Relative `openapi.output` paths are resolved relative to the config file directory.
-- If `--config` is not set and `./tsgonest.config.json` exists, it is auto-loaded.
+- **Relative paths** in `openapi.output` are resolved relative to the config file's directory
+- If `--config` is not set, tsgonest looks for `./tsgonest.config.json` in the working directory
+- If the config file does not exist and `--config` is not set, tsgonest uses sensible defaults
 
-:::warning
-TypeScript-based config files are planned but not currently supported.
-:::
+## Migration from nest-cli.json
+
+If you're migrating from `nest-cli.json`, here's a mapping of common fields:
+
+| nest-cli.json | tsgonest.config.json | Notes |
+| --- | --- | --- |
+| `"entryFile": "main"` | `"entryFile": "main"` | Same field name |
+| `"sourceRoot": "src"` | `"sourceRoot": "src"` | Same field name |
+| `"compilerOptions.deleteOutDir"` | `"deleteOutDir"` | Top-level in tsgonest |
+| `"compilerOptions.assets"` | `--assets` flag | CLI flag, not in config |
+| N/A | `"controllers"` | New — for OpenAPI route analysis |
+| N/A | `"transforms"` | New — for companion generation |
+| N/A | `"openapi"` | New — replaces `@nestjs/swagger` config |

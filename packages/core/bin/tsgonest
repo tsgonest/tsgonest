@@ -12,8 +12,9 @@ const path = require("path");
 const PLATFORMS = {
   "darwin-arm64": { pkg: "@tsgonest/cli-darwin-arm64", bin: "tsgonest" },
   "darwin-x64":   { pkg: "@tsgonest/cli-darwin-x64",   bin: "tsgonest" },
-  "linux-x64":    { pkg: "@tsgonest/cli-linux-x64",    bin: "tsgonest" },
   "linux-arm64":  { pkg: "@tsgonest/cli-linux-arm64",  bin: "tsgonest" },
+  "linux-x64":    { pkg: "@tsgonest/cli-linux-x64",    bin: "tsgonest" },
+  "win32-arm64":  { pkg: "@tsgonest/cli-win32-arm64",  bin: "tsgonest.exe" },
   "win32-x64":    { pkg: "@tsgonest/cli-win32-x64",    bin: "tsgonest.exe" },
 };
 

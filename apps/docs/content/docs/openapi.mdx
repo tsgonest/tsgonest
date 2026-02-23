@@ -1,45 +1,190 @@
 ---
-title: openapi generation
-description: How tsgonest produces OpenAPI 3.1 from static NestJS controller analysis.
+title: OpenAPI Generation
+description: How tsgonest produces an OpenAPI 3.2 document from NestJS controllers via static analysis.
 ---
 
-`tsgonest` generates an OpenAPI 3.1 JSON document when `openapi.output` is configured.
+tsgonest generates a fully compliant **OpenAPI 3.2** document from your NestJS controllers at build time. It uses static analysis of your TypeScript source code — no runtime decorators, no `@nestjs/swagger`, no `reflect-metadata`.
 
-## Input discovery
+## How it works
 
-Controller analysis uses your configured include/exclude patterns:
+During `tsgonest build`, the OpenAPI generator:
 
-```json
-{
-  "controllers": {
-    "include": ["src/**/*.controller.ts"],
-    "exclude": ["src/**/*.spec.ts"]
+1. **Scans controllers** — Finds files matching the `controllers.include` glob patterns
+2. **Parses decorators** — Reads `@Controller()`, `@Get()`, `@Post()`, `@Put()`, `@Delete()`, `@Patch()`, `@Param()`, `@Query()`, `@Body()`, `@Returns()`, and `@HttpCode()` decorators via AST analysis
+3. **Extracts types** — Resolves parameter and return types using the TypeScript type checker
+4. **Generates schemas** — Converts TypeScript types to JSON Schema (with constraints from JSDoc/branded types)
+5. **Assembles document** — Produces a complete OpenAPI 3.2 JSON file
+
+All of this happens at compile time with zero runtime cost.
+
+## Basic example
+
+Given this controller:
+
+```ts title="src/user/user.controller.ts"
+import { Controller, Get, Post, Put, Delete, Body, Param, Query } from '@nestjs/common';
+import { Returns } from 'tsgonest';
+import { CreateUserDto, UpdateUserDto, UserResponse, PaginationQuery } from './user.dto';
+
+@Controller('users')
+export class UserController {
+  @Post()
+  create(@Body() dto: CreateUserDto): UserResponse {
+    return this.userService.create(dto);
+  }
+
+  @Get()
+  @Returns<UserResponse[]>()
+  findAll(@Query() query: PaginationQuery) {
+    return this.userService.findAll(query);
+  }
+
+  @Get(':id')
+  findOne(@Param('id') id: string): UserResponse {
+    return this.userService.findOne(id);
+  }
+
+  @Put(':id')
+  update(@Param('id') id: string, @Body() dto: UpdateUserDto): UserResponse {
+    return this.userService.update(id, dto);
+  }
+
+  @Delete(':id')
+  remove(@Param('id') id: string): void {
+    return this.userService.remove(id);
   }
 }
 ```
 
-In fixtures like `testdata/nestjs/src/user.controller.ts`, static decorators are analyzed to produce:
+tsgonest produces:
 
-- Paths such as `/users` and `/users/{id}`
-- Methods (`get`, `post`, `put`, `delete`)
-- Operation IDs from method names
-- Request bodies, path/query params, and response schemas
+```json title="dist/openapi.json"
+{
+  "openapi": "3.2.0",
+  "info": {
+    "title": "API",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/users": {
+      "post": {
+        "operationId": "UserController_create",
+        "tags": ["User"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateUserDto" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/UserResponse" }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "operationId": "UserController_findAll",
+        "tags": ["User"],
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "number" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": { "$ref": "#/components/schemas/UserResponse" }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/users/{id}": {
+      "get": {
+        "operationId": "UserController_findOne",
+        "tags": ["User"],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/UserResponse" }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "CreateUserDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          },
+          "email": {
+            "type": "string",
+            "format": "email"
+          },
+          "age": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 150
+          }
+        },
+        "required": ["name", "email", "age"]
+      },
+      "UserResponse": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "email": { "type": "string" },
+          "age": { "type": "number" },
+          "createdAt": { "type": "string" }
+        },
+        "required": ["id", "name", "email", "age", "createdAt"]
+      }
+    }
+  }
+}
+```
 
-## Document characteristics
+## Configuration
 
-Current generator output includes:
+### Output path
 
-- `openapi: "3.1.0"`
-- default info (`title: "API"`, `version: "1.0.0"`)
-- `paths` from controller routes
-- `components.schemas` from walked type metadata
-- tags derived from controller names
+Configure the OpenAPI output in `tsgonest.config.json`:
 
-## Output path
-
-If `openapi.output` is relative, it is resolved against the directory containing `tsgonest.config.json`.
-
-```json
+```json title="tsgonest.config.json"
 {
   "openapi": {
     "output": "dist/openapi.json"
@@ -47,18 +192,363 @@ If `openapi.output` is relative, it is resolved against the directory containing
 }
 ```
 
-## Run and verify
+Relative paths are resolved against the config file's directory.
 
-```bash
-./tsgonest --project testdata/nestjs/tsconfig.json --config testdata/nestjs/tsgonest.config.json
+### API metadata
+
+Customize the `info` section:
+
+```json title="tsgonest.config.json"
+{
+  "openapi": {
+    "output": "dist/openapi.json",
+    "title": "My E-commerce API",
+    "version": "2.1.0",
+    "description": "REST API for managing products, orders, and users"
+  }
+}
 ```
 
-Then inspect:
+### Contact and license
 
-```bash
-cat testdata/nestjs/dist/openapi.json
+```json title="tsgonest.config.json"
+{
+  "openapi": {
+    "output": "dist/openapi.json",
+    "title": "My API",
+    "version": "1.0.0",
+    "contact": {
+      "name": "API Support Team",
+      "url": "https://api.example.com/support",
+      "email": "api-support@example.com"
+    },
+    "license": {
+      "name": "MIT",
+      "url": "https://opensource.org/licenses/MIT"
+    }
+  }
+}
 ```
+
+### Servers
+
+Define server URLs for different environments:
+
+```json title="tsgonest.config.json"
+{
+  "openapi": {
+    "output": "dist/openapi.json",
+    "servers": [
+      {
+        "url": "https://api.example.com",
+        "description": "Production"
+      },
+      {
+        "url": "https://staging-api.example.com",
+        "description": "Staging"
+      },
+      {
+        "url": "http://localhost:3000",
+        "description": "Local development"
+      }
+    ]
+  }
+}
+```
+
+### Security schemes
+
+Define authentication methods:
+
+```json title="tsgonest.config.json"
+{
+  "openapi": {
+    "output": "dist/openapi.json",
+    "securitySchemes": {
+      "bearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "JWT Bearer token authentication"
+      },
+      "apiKey": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-API-Key",
+        "description": "API key passed via header"
+      }
+    }
+  }
+}
+```
+
+---
+
+## Controller analysis
+
+### Supported decorators
+
+tsgonest recognizes these NestJS decorators via static AST analysis:
+
+| Decorator | Usage |
+| --- | --- |
+| `@Controller('path')` | Controller route prefix |
+| `@Get()`, `@Post()`, `@Put()`, `@Delete()`, `@Patch()` | HTTP method + route |
+| `@Body()` | Request body parameter |
+| `@Param('name')` | Path parameter |
+| `@Query()` | Query parameters |
+| `@HttpCode(201)` | Custom HTTP status code |
+| `@Returns<Type>()` | Explicit return type annotation (from `tsgonest`) |
+
+### Route path handling
+
+NestJS-style route parameters (`:id`) are automatically converted to OpenAPI-style (`{id}`):
+
+```ts
+@Get(':userId/posts/:postId')  // -> /users/{userId}/posts/{postId}
+```
+
+### Operation IDs
+
+Operation IDs are generated as `ControllerName_methodName`:
+
+```ts
+@Controller('users')
+export class UserController {
+  @Get()
+  findAll() {}     // operationId: "UserController_findAll"
+
+  @Post()
+  create() {}      // operationId: "UserController_create"
+}
+```
+
+### Tags
+
+Tags are derived from controller names (without the "Controller" suffix):
+
+```ts
+@Controller('users')
+export class UserController {}
+// tag: "User"
+
+@Controller('orders')
+export class OrderController {}
+// tag: "Order"
+```
+
+---
+
+## The @Returns decorator
+
+When a controller method's return type cannot be inferred from the TypeScript return type annotation (e.g., wrapped in `Promise`, returned from a service, or an array type), use `@Returns<T>()` from `tsgonest`:
+
+```ts
+import { Returns } from 'tsgonest';
+
+@Controller('users')
+export class UserController {
+  @Get()
+  @Returns<UserResponse[]>()
+  async findAll(): Promise<UserResponse[]> {
+    return this.userService.findAll();
+  }
+
+  @Get('stats')
+  @Returns<UserStatsResponse>()
+  getStats() {
+    // Return type is inferred from @Returns
+    return this.analyticsService.getUserStats();
+  }
+}
+```
+
+`@Returns<T>()` serves two purposes:
+1. **OpenAPI**: Tells the OpenAPI generator what type the response will be
+2. **Serialization**: Populates the route map so `TsgonestFastInterceptor` knows which serializer to use
 
 :::tip
-Route params are normalized from NestJS `:id` style to OpenAPI `{id}` style.
+If your method's TypeScript return type already matches the DTO type directly (not wrapped in Promise), `@Returns` is optional — tsgonest can infer the return type from the type annotation.
 :::
+
+---
+
+## Global prefix and versioning
+
+### Global prefix
+
+If your NestJS app uses `app.setGlobalPrefix('api')`, configure it:
+
+```json title="tsgonest.config.json"
+{
+  "nestjs": {
+    "globalPrefix": "api"
+  }
+}
+```
+
+Routes will be prefixed: `@Get('users')` becomes `/api/users`.
+
+### URI versioning
+
+For versioned APIs with `app.enableVersioning({ type: VersioningType.URI })`:
+
+```json title="tsgonest.config.json"
+{
+  "nestjs": {
+    "globalPrefix": "api",
+    "versioning": {
+      "type": "URI",
+      "defaultVersion": "1",
+      "prefix": "v"
+    }
+  }
+}
+```
+
+Routes become: `/api/v1/users`.
+
+### Versioning types
+
+| Type | Description | Route example |
+| --- | --- | --- |
+| `URI` | Version in the URL path | `/api/v1/users` |
+| `HEADER` | Version in a request header | `/api/users` (header: `Accept-Version: 1`) |
+| `MEDIA_TYPE` | Version in Accept media type | `/api/users` (header: `Accept: application/json;v=1`) |
+| `CUSTOM` | Custom versioning logic | Depends on implementation |
+
+---
+
+## Query parameter handling
+
+### Simple query parameters
+
+Individual query parameters are extracted from the type:
+
+```ts
+export interface PaginationQuery {
+  page?: number;
+  limit?: number;
+  sort?: string;
+}
+
+@Controller('users')
+export class UserController {
+  @Get()
+  findAll(@Query() query: PaginationQuery) {}
+}
+```
+
+This generates individual `parameters` entries for `page`, `limit`, and `sort` in the OpenAPI document — not a single request body.
+
+### Query object decomposition
+
+When a `@Query()` parameter references a type with multiple properties, tsgonest decomposes it into individual query parameters with the correct types and constraints:
+
+```ts
+import { Min, Max, Coerce } from '@tsgonest/types';
+
+export interface SearchQuery {
+  q: string & Min<1>;
+  page: number & Coerce & Min<1>;
+  limit: number & Coerce & Max<100>;
+  category?: string;
+}
+```
+
+Produces:
+
+```json
+"parameters": [
+  { "name": "q", "in": "query", "required": true, "schema": { "type": "string", "minLength": 1 } },
+  { "name": "page", "in": "query", "required": true, "schema": { "type": "number", "minimum": 1 } },
+  { "name": "limit", "in": "query", "required": true, "schema": { "type": "number", "maximum": 100 } },
+  { "name": "category", "in": "query", "required": false, "schema": { "type": "string" } }
+]
+```
+
+---
+
+## Schema generation
+
+### Constraint mapping
+
+JSDoc tags and branded types map directly to JSON Schema constraints:
+
+| Constraint | JSON Schema |
+| --- | --- |
+| `@minLength 1` / `Min<1>` (on string) | `"minLength": 1` |
+| `@maxLength 255` / `Max<255>` (on string) | `"maxLength": 255` |
+| `@minimum 0` / `Min<0>` (on number) | `"minimum": 0` |
+| `@maximum 100` / `Max<100>` (on number) | `"maximum": 100` |
+| `@format email` / `Email` | `"format": "email"` |
+| `@pattern ^[a-z]+$` / `Pattern<"^[a-z]+$">` | `"pattern": "^[a-z]+$"` |
+| `@type int32` / `Int` | `"type": "integer", "format": "int32"` |
+| `@multipleOf 0.01` / `Step<0.01>` | `"multipleOf": 0.01` |
+
+### Enum support
+
+```ts
+enum Status {
+  Active = 'active',
+  Inactive = 'inactive',
+}
+
+// Produces: { "type": "string", "enum": ["active", "inactive"] }
+```
+
+### Union types
+
+```ts
+type Result = SuccessResponse | ErrorResponse;
+
+// Produces: { "oneOf": [{ "$ref": "..." }, { "$ref": "..." }] }
+```
+
+### Discriminated unions
+
+```ts
+interface Cat { type: 'cat'; meows: boolean; }
+interface Dog { type: 'dog'; barks: boolean; }
+type Pet = Cat | Dog;
+
+// Produces: { "oneOf": [...], "discriminator": { "propertyName": "type" } }
+```
+
+---
+
+## Migration from @nestjs/swagger
+
+| @nestjs/swagger | tsgonest |
+| --- | --- |
+| `@ApiProperty()` | Not needed — inferred from types |
+| `@ApiPropertyOptional()` | Use `?` optional modifier |
+| `@ApiResponse({ type: UserDto })` | `@Returns<UserDto>()` or inferred |
+| `@ApiTags('users')` | Auto-derived from controller name |
+| `@ApiOperation({ summary: '...' })` | Not needed — auto-generated |
+| `@ApiParam({ name: 'id' })` | Not needed — inferred from `@Param('id')` |
+| `@ApiQuery({ name: 'page' })` | Not needed — inferred from `@Query()` type |
+| `@ApiBearerAuth()` | Config: `openapi.securitySchemes` |
+| `SwaggerModule.setup()` | Serve `dist/openapi.json` with Swagger UI |
+
+### Serving the OpenAPI document
+
+After building, serve your OpenAPI document with any Swagger UI middleware:
+
+```ts title="src/main.ts"
+import { readFileSync } from 'fs';
+import * as swaggerUi from 'swagger-ui-express';
+
+const openapiDoc = JSON.parse(readFileSync('dist/openapi.json', 'utf-8'));
+app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(openapiDoc));
+```
+
+Or with `@nestjs/swagger`'s `SwaggerModule` if you prefer its UI:
+
+```ts
+import { SwaggerModule } from '@nestjs/swagger';
+import { readFileSync } from 'fs';
+
+const document = JSON.parse(readFileSync('dist/openapi.json', 'utf-8'));
+SwaggerModule.setup('api-docs', app, document);
+```

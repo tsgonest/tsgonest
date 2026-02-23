@@ -1,54 +1,158 @@
 ---
-title: cli reference
-description: Command flags and runtime behavior for the current tsgonest CLI.
+title: CLI Reference
+description: Complete reference for tsgonest build and dev commands, flags, and exit codes.
 ---
 
-## Usage
+tsgonest provides two subcommands: `build` for production compilation and `dev` for watch-mode development. If no subcommand is given, `build` is assumed.
+
+## tsgonest build
+
+Compiles TypeScript via tsgo, generates companion files, writes the manifest, and produces the OpenAPI document.
 
 ```bash
-tsgonest [flags]
+tsgonest build [flags]
 ```
 
-## Flags
+### Flags
 
 | Flag | Alias | Description | Default |
 | --- | --- | --- | --- |
 | `--project <path>` | `-p` | Path to `tsconfig.json` | `tsconfig.json` |
-| `--config <path>` | - | Path to `tsgonest.config.json` | auto-detect `./tsgonest.config.json` |
-| `--dump-metadata` | - | Dump walked type metadata JSON to stdout | `false` |
-| `--version` | - | Print version and exit | `false` |
-| `--help` | - | Print usage and exit | `false` |
+| `--config <path>` | | Path to `tsgonest.config.json` | auto-detect `./tsgonest.config.json` |
+| `--clean` | | Delete the output directory before building | `false` |
+| `--assets` | | Copy non-TypeScript assets to the output directory | `false` |
+| `--no-check` | | Skip type checking (emit only) | `false` |
+| `--dump-metadata` | | Dump type metadata JSON to stdout and exit | `false` |
+| `--version` | | Print version and exit | |
+| `--help` | | Print usage and exit | |
 
-## Operational flow
+### Pipeline
 
-When not using `--dump-metadata`, the CLI runs in this order:
+When you run `tsgonest build`, the following steps execute in order:
 
-1. Resolve working directory.
-2. Load config (explicit path or default file).
-3. Create tsgo program with the selected `tsconfig`.
-4. Emit JS.
-5. Generate companions (validation/serialization) if enabled.
-6. Generate manifest when companions exist.
-7. Generate OpenAPI when `openapi.output` is configured.
+1. **Resolve config** — Load `tsgonest.config.json` from `--config` or auto-detect in the working directory.
+2. **Parse tsconfig** — Read `tsconfig.json` (or the path given by `--project`) using tsgo's native JSONC parser.
+3. **Create program** — Build a tsgo program (incremental if configured in tsconfig).
+4. **Type-check** — Gather diagnostics. If errors exist and `--no-check` is not set, exit with code 1.
+5. **Emit JavaScript** — Write compiled JS to the output directory.
+6. **Check cache** — If the post-processing cache is valid (source files unchanged), skip steps 7-9.
+7. **Generate companions** — Walk the AST, extract type metadata, generate `*.tsgonest.js` and `*.tsgonest.d.ts` files.
+8. **Write manifest** — Generate `__tsgonest_manifest.json` with companion and route mappings.
+9. **Generate OpenAPI** — Static analysis of NestJS controllers produces `openapi.json`.
+10. **Copy assets** — If `--assets` is set, copy non-TS files to the output directory.
 
-## Examples
+### Examples
 
 ```bash
-tsgonest
+# Default build (uses tsconfig.json + auto-detected config)
+tsgonest build
+
+# Custom tsconfig
+tsgonest build --project tsconfig.build.json
+
+# Clean build
+tsgonest build --clean
+
+# Skip type checking for faster builds
+tsgonest build --no-check
+
+# Explicit config path
+tsgonest build --config configs/tsgonest.config.json -p tsconfig.build.json
+
+# Dump type metadata for debugging
+tsgonest build --dump-metadata
 ```
 
+### Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| `0` | Success — no errors |
+| `1` | TypeScript errors found, but JS was still emitted |
+| `2` | Fatal error — JS was not emitted |
+
+---
+
+## tsgonest dev
+
+Watch-mode development server. Watches source files, rebuilds on changes, and restarts your Node.js process.
+
 ```bash
+tsgonest dev [flags] [-- node-args...]
+```
+
+### Flags
+
+| Flag | Description | Default |
+| --- | --- | --- |
+| `--project <path>` | Path to `tsconfig.json` | `tsconfig.json` |
+| `--config <path>` | Path to `tsgonest.config.json` | auto-detect |
+| `--entry <file>` | Entry point TypeScript file | auto-detect from config or `src/main.ts` |
+| `--exec <command>` | Custom command to run instead of `node` | `node` |
+| `--env-file <path>` | Load environment variables from file (repeatable) | |
+| `--debug` | Enable Node.js inspector (`--inspect`) | `false` |
+| `--preserveWatchOutput` | Don't clear the terminal on rebuild | `false` |
+| `--no-source-maps` | Disable source map generation | `false` |
+
+### Behavior
+
+1. **Initial build** — Runs a full `tsgonest build` on startup.
+2. **Start process** — Launches `node dist/<entry>.js` (or the custom `--exec` command).
+3. **Watch** — Monitors `src/` (or `sourceRoot` from config) for file changes.
+4. **Rebuild** — On file change, clears the terminal, runs an incremental build, and restarts the process.
+5. **Manual restart** — Type `rs` + Enter to trigger a manual rebuild and restart (when `manualRestart` is enabled in config).
+
+### Passthrough arguments
+
+Arguments after `--` are passed directly to the Node.js process:
+
+```bash
+# Pass --inspect-brk to Node.js
+tsgonest dev -- --inspect-brk
+
+# Pass environment variables
+tsgonest dev -- --max-old-space-size=4096
+```
+
+### Examples
+
+```bash
+# Basic watch mode
+tsgonest dev
+
+# With custom entry point
+tsgonest dev --entry src/main.ts
+
+# With environment file
+tsgonest dev --env-file .env --env-file .env.local
+
+# With Node.js debugger
+tsgonest dev --debug
+
+# With custom build config
+tsgonest dev --project tsconfig.build.json --config tsgonest.config.json
+
+# Don't clear terminal on rebuild
+tsgonest dev --preserveWatchOutput
+```
+
+---
+
+## Implicit build
+
+If you run `tsgonest` without a subcommand but with flags that start with `-`, it is treated as `tsgonest build`:
+
+```bash
+# These are equivalent:
+tsgonest build --project tsconfig.build.json
 tsgonest --project tsconfig.build.json
 ```
 
-```bash
-tsgonest --config testdata/nestjs/tsgonest.config.json --project testdata/nestjs/tsconfig.json
-```
+---
+
+## Version
 
 ```bash
-tsgonest --dump-metadata --project testdata/nestjs/tsconfig.json
+tsgonest --version
+# tsgonest v0.1.1
 ```
-
-:::note
-Current implementation is single-command CLI. Subcommands like `dev`/`build` are planned in future phases.
-:::
