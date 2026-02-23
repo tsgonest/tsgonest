@@ -319,7 +319,7 @@ func TestTypeStructureParity_Validate(t *testing.T) {
 				registry = metadata.NewTypeRegistry()
 			}
 
-			output := GenerateValidation(tc.name, tc.meta, registry)
+			output := GenerateCompanionSelective(tc.name, tc.meta, registry, true, false)
 
 			if output == "" {
 				t.Fatal("expected non-empty output")
@@ -339,9 +339,7 @@ func TestTypeStructureParity_Validate(t *testing.T) {
 			if !strings.Contains(output, "export function assert") {
 				t.Error("expected assert function export")
 			}
-			if !strings.Contains(output, "export function deserialize") {
-				t.Error("expected deserialize function export")
-			}
+
 			if !strings.Contains(output, "export const schema") {
 				t.Error("expected schema export")
 			}
@@ -357,7 +355,7 @@ func TestTypeStructureParity_Serialize(t *testing.T) {
 				registry = metadata.NewTypeRegistry()
 			}
 
-			output := GenerateSerialization(tc.name, tc.meta, registry)
+			output := GenerateCompanionSelective(tc.name, tc.meta, registry, false, true)
 
 			if output == "" {
 				t.Fatal("expected non-empty output")

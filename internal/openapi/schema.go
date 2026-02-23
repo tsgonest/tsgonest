@@ -60,6 +60,7 @@ type Schema struct {
 	UniqueItems      *bool    `json:"uniqueItems,omitempty"`
 	Default          any      `json:"default,omitempty"`
 	ContentMediaType string   `json:"contentMediaType,omitempty"`
+	ContentSchema    *Schema  `json:"contentSchema,omitempty"` // JSON Schema for content-encoded data (e.g., SSE data field)
 }
 
 // Discriminator represents an OpenAPI discriminator object for discriminated unions.
@@ -272,6 +273,13 @@ func (g *SchemaGenerator) convertUnion(m *metadata.Metadata) *Schema {
 		enumValues = append(enumValues, member.LiteralValue)
 	}
 	if allLiterals && len(enumValues) > 0 {
+		// Named literal union (e.g., Prisma enum type alias or TS enum) → register as $ref
+		if m.Name != "" {
+			if _, exists := g.schemas[m.Name]; !exists {
+				g.schemas[m.Name] = &Schema{Enum: enumValues}
+			}
+			return &Schema{Ref: "#/components/schemas/" + m.Name}
+		}
 		return &Schema{Enum: enumValues}
 	}
 
@@ -333,10 +341,18 @@ func (g *SchemaGenerator) convertIntersection(m *metadata.Metadata) *Schema {
 }
 
 // convertEnum converts an enum type to a schema with enum values.
+// Named enums are registered as components/schemas and referenced via $ref.
 func (g *SchemaGenerator) convertEnum(m *metadata.Metadata) *Schema {
 	var values []any
 	for _, ev := range m.EnumValues {
 		values = append(values, ev.Value)
+	}
+	// Named enum → register as $ref for deduplication
+	if m.Name != "" {
+		if _, exists := g.schemas[m.Name]; !exists {
+			g.schemas[m.Name] = &Schema{Enum: values}
+		}
+		return &Schema{Ref: "#/components/schemas/" + m.Name}
 	}
 	return &Schema{Enum: values}
 }

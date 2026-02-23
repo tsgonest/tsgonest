@@ -24,8 +24,8 @@ func ValidateDocument(doc *Document) []ValidationError {
 	// Required: openapi version
 	if doc.OpenAPI == "" {
 		errors = append(errors, ValidationError{Path: "openapi", Message: "required field missing"})
-	} else if !strings.HasPrefix(doc.OpenAPI, "3.1") {
-		errors = append(errors, ValidationError{Path: "openapi", Message: fmt.Sprintf("expected 3.1.x, got %q", doc.OpenAPI)})
+	} else if !strings.HasPrefix(doc.OpenAPI, "3.1") && !strings.HasPrefix(doc.OpenAPI, "3.2") {
+		errors = append(errors, ValidationError{Path: "openapi", Message: fmt.Sprintf("expected 3.1.x or 3.2.x, got %q", doc.OpenAPI)})
 	}
 
 	// Required: info

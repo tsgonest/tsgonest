@@ -104,8 +104,8 @@ func TestGolden_SimpleController_Structure(t *testing.T) {
 	}
 
 	// Top-level required fields
-	if raw["openapi"] != "3.1.0" {
-		t.Errorf("expected openapi=3.1.0, got %v", raw["openapi"])
+	if raw["openapi"] != "3.2.0" {
+		t.Errorf("expected openapi=3.2.0, got %v", raw["openapi"])
 	}
 
 	info, ok := raw["info"].(map[string]any)

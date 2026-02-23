@@ -77,6 +77,8 @@ type Parameter struct {
 	Name     string  `json:"name"`
 	In       string  `json:"in"` // "query", "path", "header"
 	Required bool    `json:"required"`
+	Style    string  `json:"style,omitempty"`   // "form", "simple", "deepObject", etc.
+	Explode  *bool   `json:"explode,omitempty"` // true for repeated query params (?a=1&a=2)
 	Schema   *Schema `json:"schema"`
 }
 
@@ -88,7 +90,8 @@ type RequestBody struct {
 
 // MediaType holds the schema for a content type.
 type MediaType struct {
-	Schema *Schema `json:"schema"`
+	Schema     *Schema `json:"schema,omitempty"`
+	ItemSchema *Schema `json:"itemSchema,omitempty"` // OpenAPI 3.2: per-item schema for streaming (SSE, JSONL)
 }
 
 // Responses maps status codes to response objects.
@@ -153,10 +156,10 @@ func NewGenerator(registry *metadata.TypeRegistry) *Generator {
 	}
 }
 
-// Generate creates an OpenAPI 3.1 document from a list of controllers.
+// Generate creates an OpenAPI 3.2 document from a list of controllers.
 func (g *Generator) Generate(controllers []analyzer.ControllerInfo) *Document {
 	doc := &Document{
-		OpenAPI: "3.1.0",
+		OpenAPI: "3.2.0",
 		Info: Info{
 			Title:   "API",
 			Version: "1.0.0",
@@ -309,31 +312,69 @@ func (g *Generator) buildOperation(route analyzer.Route) *Operation {
 			})
 
 		case "headers":
-			name := param.Name
-			if name == "" {
-				name = "headers"
+			// Headers: if the type is an object and no field name, decompose into individual header params
+			if param.Type.Kind == metadata.KindObject && param.Name == "" {
+				g.decomposeHeaderObject(op, &param.Type)
+			} else if param.Type.Kind == metadata.KindRef && param.Name == "" {
+				if resolved, ok := g.schemaGen.registry.Types[param.Type.Ref]; ok {
+					g.decomposeHeaderObject(op, resolved)
+				} else {
+					op.Parameters = append(op.Parameters, Parameter{
+						Name:     param.Name,
+						In:       "header",
+						Required: param.Required,
+						Schema:   g.schemaGen.MetadataToSchema(&param.Type),
+					})
+				}
+			} else {
+				name := param.Name
+				if name == "" {
+					name = "headers"
+				}
+				op.Parameters = append(op.Parameters, Parameter{
+					Name:     name,
+					In:       "header",
+					Required: param.Required,
+					Schema:   g.schemaGen.MetadataToSchema(&param.Type),
+				})
 			}
-			op.Parameters = append(op.Parameters, Parameter{
-				Name:     name,
-				In:       "header",
-				Required: param.Required,
-				Schema:   g.schemaGen.MetadataToSchema(&param.Type),
-			})
 		}
 	}
 
 	// Build success response
 	statusStr := statusCodeString(route.StatusCode)
-	if route.ReturnType.Kind == metadata.KindVoid {
+
+	// Determine response description: @Returns description > auto-generated
+	respDescription := statusDescription(route.StatusCode)
+	if route.ResponseDescription != "" {
+		respDescription = route.ResponseDescription
+	}
+
+	// Determine response content type: @Returns contentType > "application/json"
+	respContentType := "application/json"
+	if route.ResponseContentType != "" {
+		respContentType = route.ResponseContentType
+	}
+
+	if route.IsSSE {
+		// SSE endpoint → text/event-stream with itemSchema (OpenAPI 3.2)
+		eventSchema := g.buildSSEEventSchema(&route.ReturnType)
 		op.Responses[statusStr] = &Response{
-			Description: statusDescription(route.StatusCode),
+			Description: "Server-Sent Events stream",
+			Content: map[string]MediaType{
+				"text/event-stream": {ItemSchema: eventSchema},
+			},
+		}
+	} else if route.ReturnType.Kind == metadata.KindVoid {
+		op.Responses[statusStr] = &Response{
+			Description: respDescription,
 		}
 	} else {
 		responseSchema := g.schemaGen.MetadataToSchema(&route.ReturnType)
 		op.Responses[statusStr] = &Response{
-			Description: statusDescription(route.StatusCode),
+			Description: respDescription,
 			Content: map[string]MediaType{
-				"application/json": {Schema: responseSchema},
+				respContentType: {Schema: responseSchema},
 			},
 		}
 	}
@@ -360,16 +401,94 @@ func (g *Generator) buildOperation(route analyzer.Route) *Operation {
 }
 
 // decomposeQueryObject breaks an object type into individual query parameters.
+// Array-typed properties get style: "form" and explode: true so that
+// repeated query params like ?status=A&status=B are properly documented.
 func (g *Generator) decomposeQueryObject(op *Operation, m *metadata.Metadata) {
 	for _, prop := range m.Properties {
 		propSchema := g.schemaGen.MetadataToSchema(&prop.Type)
-		op.Parameters = append(op.Parameters, Parameter{
+		param := Parameter{
 			Name:     prop.Name,
 			In:       "query",
 			Required: prop.Required,
 			Schema:   propSchema,
+		}
+		// Array query params: use style=form, explode=true for ?status=A&status=B
+		if isArrayKind(&prop.Type) {
+			param.Style = "form"
+			explode := true
+			param.Explode = &explode
+		}
+		op.Parameters = append(op.Parameters, param)
+	}
+}
+
+// decomposeHeaderObject breaks an object type into individual header parameters.
+func (g *Generator) decomposeHeaderObject(op *Operation, m *metadata.Metadata) {
+	for _, prop := range m.Properties {
+		propSchema := g.schemaGen.MetadataToSchema(&prop.Type)
+		op.Parameters = append(op.Parameters, Parameter{
+			Name:     prop.Name,
+			In:       "header",
+			Required: prop.Required,
+			Schema:   propSchema,
 		})
 	}
+}
+
+// isArrayKind checks if a metadata type is an array (directly or via ref).
+func isArrayKind(m *metadata.Metadata) bool {
+	return m.Kind == metadata.KindArray
+}
+
+// buildSSEEventSchema creates the OpenAPI 3.2 Server-Sent Events event schema.
+// The standard SSE event has: data (required), event, id, retry.
+//
+// If the return type resolves to something other than NestJS's MessageEvent
+// (i.e., a custom DTO), we use contentMediaType + contentSchema on the data
+// field so consumers know the JSON structure inside the data string.
+func (g *Generator) buildSSEEventSchema(returnType *metadata.Metadata) *Schema {
+	// Build the data property
+	dataProp := &Schema{Type: "string"}
+
+	// Check if the return type is a useful DTO (not just MessageEvent or any)
+	// NestJS's MessageEvent has properties: data, type, id, retry — it's the envelope itself.
+	// If the walker resolved to an object named "MessageEvent" or to KindAny,
+	// use the generic SSE schema. Otherwise, add contentSchema for typed data.
+	if returnType != nil && !isMessageEventType(returnType) && returnType.Kind != metadata.KindAny && returnType.Kind != metadata.KindVoid && returnType.Kind != "" {
+		dataSchema := g.schemaGen.MetadataToSchema(returnType)
+		dataProp.ContentMediaType = "application/json"
+		dataProp.ContentSchema = dataSchema
+	}
+
+	return &Schema{
+		Type:     "object",
+		Required: []string{"data"},
+		Properties: map[string]*Schema{
+			"data":  dataProp,
+			"event": {Type: "string"},
+			"id":    {Type: "string"},
+			"retry": {Type: "integer", Minimum: floatPtr(0)},
+		},
+	}
+}
+
+// isMessageEventType checks if a metadata type represents NestJS's MessageEvent interface.
+// We detect this by name — if the resolved type is an object named "MessageEvent",
+// it's the generic NestJS SSE envelope, not a user-defined DTO.
+func isMessageEventType(m *metadata.Metadata) bool {
+	if m.Name == "MessageEvent" {
+		return true
+	}
+	// Also check Ref — the type might be registered as a $ref
+	if m.Kind == metadata.KindRef && m.Ref == "MessageEvent" {
+		return true
+	}
+	return false
+}
+
+// floatPtr returns a pointer to a float64 value.
+func floatPtr(f float64) *float64 {
+	return &f
 }
 
 // ToJSON serializes the document to JSON with indentation.
@@ -414,7 +533,7 @@ func (g *Generator) GenerateWithOptions(controllers []analyzer.ControllerInfo, o
 	}
 
 	doc := &Document{
-		OpenAPI: "3.1.0",
+		OpenAPI: "3.2.0",
 		Info: Info{
 			Title:   "API",
 			Version: "1.0.0",

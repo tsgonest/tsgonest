@@ -22,7 +22,7 @@ func BenchmarkGenerateValidation_Simple(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		GenerateValidation("SimpleDto", meta, registry)
+		GenerateCompanionSelective("SimpleDto", meta, registry, true, false)
 	}
 }
 
@@ -62,7 +62,7 @@ func BenchmarkGenerateValidation_Complex(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		GenerateValidation("UserDto", meta, registry)
+		GenerateCompanionSelective("UserDto", meta, registry, true, false)
 	}
 }
 
@@ -80,7 +80,7 @@ func BenchmarkGenerateSerialization_Simple(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		GenerateSerialization("SimpleDto", meta, registry)
+		GenerateCompanionSelective("SimpleDto", meta, registry, false, true)
 	}
 }
 
@@ -109,7 +109,7 @@ func BenchmarkGenerateSerialization_Complex(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		GenerateSerialization("UserDto", meta, registry)
+		GenerateCompanionSelective("UserDto", meta, registry, false, true)
 	}
 }
 

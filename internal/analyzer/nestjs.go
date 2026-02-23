@@ -17,6 +17,12 @@ type DecoratorInfo struct {
 	Args []string
 	// NumericArg holds a numeric argument if present (e.g., 201 for @HttpCode(201)).
 	NumericArg *float64
+	// TypeArgNodes holds AST nodes of the type arguments from the call expression.
+	// e.g., for @Returns<UserDto>(), TypeArgNodes contains the TypeReference node for UserDto.
+	TypeArgNodes []*ast.Node
+	// ObjectLiteralArg holds the first object literal argument's property name→value AST nodes.
+	// e.g., for @Returns<Buffer>({ contentType: 'application/pdf' }), this maps "contentType" → StringLiteral("application/pdf").
+	ObjectLiteralArg map[string]*ast.Node
 }
 
 // ParseDecorator extracts the decorator name and arguments from a Decorator AST node.
@@ -43,6 +49,13 @@ func ParseDecorator(node *ast.Node) *DecoratorInfo {
 
 		info := &DecoratorInfo{Name: name}
 
+		// Extract type arguments (e.g., @Returns<UserDto>() → TypeArguments = [TypeReference(UserDto)])
+		if call.TypeArguments != nil {
+			for _, typeArg := range call.TypeArguments.Nodes {
+				info.TypeArgNodes = append(info.TypeArgNodes, typeArg)
+			}
+		}
+
 		// Extract arguments
 		if call.Arguments != nil {
 			for _, arg := range call.Arguments.Nodes {
@@ -56,6 +69,9 @@ func ParseDecorator(node *ast.Node) *DecoratorInfo {
 					}
 				case ast.KindNoSubstitutionTemplateLiteral:
 					info.Args = append(info.Args, arg.Text())
+				case ast.KindObjectLiteralExpression:
+					// Extract object literal properties (e.g., { contentType: 'application/pdf' })
+					info.ObjectLiteralArg = extractObjectLiteralProps(arg)
 				}
 			}
 		}
@@ -70,6 +86,40 @@ func ParseDecorator(node *ast.Node) *DecoratorInfo {
 	}
 
 	return nil
+}
+
+// extractObjectLiteralProps extracts string property assignments from an object literal expression.
+// Returns a map of property name → value AST node.
+// Handles PropertyAssignment nodes with identifier or string literal names.
+func extractObjectLiteralProps(objLit *ast.Node) map[string]*ast.Node {
+	if objLit.Kind != ast.KindObjectLiteralExpression {
+		return nil
+	}
+	ole := objLit.AsObjectLiteralExpression()
+	if ole.Properties == nil {
+		return nil
+	}
+	props := make(map[string]*ast.Node)
+	for _, prop := range ole.Properties.Nodes {
+		if prop.Kind != ast.KindPropertyAssignment {
+			continue
+		}
+		pa := prop.AsPropertyAssignment()
+		if pa.Name() == nil {
+			continue
+		}
+		var name string
+		switch pa.Name().Kind {
+		case ast.KindIdentifier:
+			name = pa.Name().AsIdentifier().Text
+		case ast.KindStringLiteral:
+			name = pa.Name().AsStringLiteral().Text
+		default:
+			continue
+		}
+		props[name] = pa.Initializer
+	}
+	return props
 }
 
 // getDecoratorExprName extracts the function name from a decorator call expression's callee.

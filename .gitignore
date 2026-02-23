@@ -9,6 +9,10 @@ release/
 runtime/dist/
 testdata/*/dist/
 
+# Build artifacts
+*.tsbuildinfo
+*.tsgonest-cache
+
 # Go
 *.test
 *.prof

@@ -1,6 +1,7 @@
 package analyzer_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/tsgonest/tsgonest/internal/analyzer"
@@ -32,7 +33,7 @@ func TestWarning_QueryNestedObject(t *testing.T) {
 		Required: false,
 	}
 
-	analyzer.ValidateParameterType(param, wc, "test.ts")
+	analyzer.ValidateParameterType(param, wc, "test.ts", "TestController.testMethod() (test.ts:1)")
 
 	if len(wc.Warnings) != 1 {
 		t.Fatalf("expected 1 warning, got %d", len(wc.Warnings))
@@ -43,6 +44,12 @@ func TestWarning_QueryNestedObject(t *testing.T) {
 	}
 	if w.File != "test.ts" {
 		t.Errorf("expected File='test.ts', got %q", w.File)
+	}
+	if !strings.Contains(w.Message, "TestController.testMethod()") {
+		t.Errorf("expected warning message to contain controller.method location, got %q", w.Message)
+	}
+	if !strings.Contains(w.Message, "test.ts:1") {
+		t.Errorf("expected warning message to contain file:line, got %q", w.Message)
 	}
 }
 
@@ -62,7 +69,7 @@ func TestWarning_QueryFlatObject_NoWarning(t *testing.T) {
 		Required: false,
 	}
 
-	analyzer.ValidateParameterType(param, wc, "test.ts")
+	analyzer.ValidateParameterType(param, wc, "test.ts", "TestController.testMethod() (test.ts:1)")
 
 	if len(wc.Warnings) != 0 {
 		t.Errorf("expected 0 warnings for flat query object, got %d: %v", len(wc.Warnings), wc.Warnings)
@@ -84,7 +91,7 @@ func TestWarning_ParamNonScalar_Object(t *testing.T) {
 		Required: true,
 	}
 
-	analyzer.ValidateParameterType(param, wc, "test.ts")
+	analyzer.ValidateParameterType(param, wc, "test.ts", "TestController.testMethod() (test.ts:1)")
 
 	if len(wc.Warnings) != 1 {
 		t.Fatalf("expected 1 warning, got %d", len(wc.Warnings))
@@ -92,6 +99,9 @@ func TestWarning_ParamNonScalar_Object(t *testing.T) {
 	w := wc.Warnings[0]
 	if w.Kind != "param-non-scalar" {
 		t.Errorf("expected Kind='param-non-scalar', got %q", w.Kind)
+	}
+	if !strings.Contains(w.Message, "TestController.testMethod()") {
+		t.Errorf("expected warning message to contain controller.method location, got %q", w.Message)
 	}
 }
 
@@ -108,7 +118,7 @@ func TestWarning_ParamNonScalar_Array(t *testing.T) {
 		Required: true,
 	}
 
-	analyzer.ValidateParameterType(param, wc, "test.ts")
+	analyzer.ValidateParameterType(param, wc, "test.ts", "TestController.testMethod() (test.ts:1)")
 
 	if len(wc.Warnings) != 1 {
 		t.Fatalf("expected 1 warning, got %d", len(wc.Warnings))
@@ -129,7 +139,7 @@ func TestWarning_ParamScalar_NoWarning(t *testing.T) {
 		Required: true,
 	}
 
-	analyzer.ValidateParameterType(param, wc, "test.ts")
+	analyzer.ValidateParameterType(param, wc, "test.ts", "TestController.testMethod() (test.ts:1)")
 
 	if len(wc.Warnings) != 0 {
 		t.Errorf("expected 0 warnings for scalar path param, got %d", len(wc.Warnings))
@@ -146,7 +156,7 @@ func TestWarning_HeaderNull(t *testing.T) {
 		Required: false,
 	}
 
-	analyzer.ValidateParameterType(param, wc, "test.ts")
+	analyzer.ValidateParameterType(param, wc, "test.ts", "TestController.testMethod() (test.ts:1)")
 
 	if len(wc.Warnings) != 1 {
 		t.Fatalf("expected 1 warning, got %d", len(wc.Warnings))
@@ -154,6 +164,9 @@ func TestWarning_HeaderNull(t *testing.T) {
 	w := wc.Warnings[0]
 	if w.Kind != "header-null" {
 		t.Errorf("expected Kind='header-null', got %q", w.Kind)
+	}
+	if !strings.Contains(w.Message, "TestController.testMethod()") {
+		t.Errorf("expected warning message to contain controller.method location, got %q", w.Message)
 	}
 }
 
@@ -167,7 +180,7 @@ func TestWarning_HeaderNonNull_NoWarning(t *testing.T) {
 		Required: true,
 	}
 
-	analyzer.ValidateParameterType(param, wc, "test.ts")
+	analyzer.ValidateParameterType(param, wc, "test.ts", "TestController.testMethod() (test.ts:1)")
 
 	if len(wc.Warnings) != 0 {
 		t.Errorf("expected 0 warnings for non-null header, got %d", len(wc.Warnings))
@@ -184,7 +197,169 @@ func TestWarning_NilCollector_NoOp(t *testing.T) {
 	}
 
 	// This should not panic
-	analyzer.ValidateParameterType(param, nil, "test.ts")
+	analyzer.ValidateParameterType(param, nil, "test.ts", "TestController.testMethod() (test.ts:1)")
+}
+
+// --- Phase 2A: Enhanced Path Parameter Validation ---
+
+func TestWarning_ParamAny(t *testing.T) {
+	wc := analyzer.NewWarningCollector()
+	param := &analyzer.RouteParameter{
+		Category: "param",
+		Name:     "id",
+		Type:     metadata.Metadata{Kind: metadata.KindAny},
+		Required: true,
+	}
+	analyzer.ValidateParameterType(param, wc, "test.ts", "Ctrl.method() (test.ts:1)")
+	found := false
+	for _, w := range wc.Warnings {
+		if w.Kind == "param-any" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected param-any warning for 'any' path param")
+	}
+}
+
+func TestWarning_ParamOptional(t *testing.T) {
+	wc := analyzer.NewWarningCollector()
+	param := &analyzer.RouteParameter{
+		Category: "param",
+		Name:     "id",
+		Type:     metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string", Optional: true},
+		Required: false,
+	}
+	analyzer.ValidateParameterType(param, wc, "test.ts", "Ctrl.method() (test.ts:1)")
+	found := false
+	for _, w := range wc.Warnings {
+		if w.Kind == "param-optional" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected param-optional warning for optional path param")
+	}
+}
+
+func TestWarning_ParamNullable(t *testing.T) {
+	wc := analyzer.NewWarningCollector()
+	param := &analyzer.RouteParameter{
+		Category: "param",
+		Name:     "id",
+		Type:     metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string", Nullable: true},
+		Required: false,
+	}
+	analyzer.ValidateParameterType(param, wc, "test.ts", "Ctrl.method() (test.ts:1)")
+	found := false
+	for _, w := range wc.Warnings {
+		if w.Kind == "param-optional" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected param-optional warning for nullable path param")
+	}
+}
+
+func TestWarning_ParamNoName(t *testing.T) {
+	wc := analyzer.NewWarningCollector()
+	param := &analyzer.RouteParameter{
+		Category: "param",
+		Name:     "",
+		Type:     metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"},
+		Required: true,
+	}
+	analyzer.ValidateParameterType(param, wc, "test.ts", "Ctrl.method() (test.ts:1)")
+	found := false
+	for _, w := range wc.Warnings {
+		if w.Kind == "param-no-name" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected param-no-name warning for @Param() without field name")
+	}
+}
+
+func TestWarning_ParamRef(t *testing.T) {
+	wc := analyzer.NewWarningCollector()
+	param := &analyzer.RouteParameter{
+		Category: "param",
+		Name:     "id",
+		Type:     metadata.Metadata{Kind: metadata.KindRef, Name: "SomeDto"},
+		Required: true,
+	}
+	analyzer.ValidateParameterType(param, wc, "test.ts", "Ctrl.method() (test.ts:1)")
+	found := false
+	for _, w := range wc.Warnings {
+		if w.Kind == "param-non-scalar" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected param-non-scalar warning for ref-typed path param")
+	}
+}
+
+// --- Phase 2B: Enhanced Query Parameter Validation ---
+
+func TestWarning_QueryNullable(t *testing.T) {
+	wc := analyzer.NewWarningCollector()
+	param := &analyzer.RouteParameter{
+		Category: "query",
+		Name:     "", // whole-object query
+		Type: metadata.Metadata{
+			Kind:     metadata.KindObject,
+			Nullable: true,
+			Properties: []metadata.Property{
+				{Name: "page", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "number"}},
+			},
+		},
+		Required: false,
+	}
+	analyzer.ValidateParameterType(param, wc, "test.ts", "Ctrl.method() (test.ts:1)")
+	found := false
+	for _, w := range wc.Warnings {
+		if w.Kind == "query-nullable" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected query-nullable warning for nullable query object")
+	}
+}
+
+// --- Phase 2C: Enhanced Header Validation ---
+
+func TestWarning_HeaderNestedObject(t *testing.T) {
+	wc := analyzer.NewWarningCollector()
+	param := &analyzer.RouteParameter{
+		Category: "headers",
+		Name:     "", // whole-object headers
+		Type: metadata.Metadata{
+			Kind: metadata.KindObject,
+			Properties: []metadata.Property{
+				{Name: "nested", Type: metadata.Metadata{
+					Kind: metadata.KindObject,
+					Properties: []metadata.Property{
+						{Name: "deep", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}},
+					},
+				}},
+			},
+		},
+		Required: false,
+	}
+	analyzer.ValidateParameterType(param, wc, "test.ts", "Ctrl.method() (test.ts:1)")
+	found := false
+	for _, w := range wc.Warnings {
+		if w.Kind == "header-complex-type" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected header-complex-type warning for nested header object")
+	}
 }
 
 // --- Phase 10.4: Content Type via Controller Analyzer ---

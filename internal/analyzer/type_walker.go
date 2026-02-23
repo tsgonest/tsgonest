@@ -287,12 +287,58 @@ func (w *TypeWalker) walkUnion(t *shimchecker.Type) metadata.Metadata {
 		UnionMembers: members,
 	}
 
+	// For all-literal unions, try to extract a name from the type alias or enum symbol.
+	// This enables enum deduplication: named enum unions are registered as $ref in OpenAPI
+	// instead of being inlined everywhere they appear.
+	allLit := true
+	for _, m := range members {
+		if m.Kind != metadata.KindLiteral {
+			allLit = false
+			break
+		}
+	}
+	if allLit && len(members) > 1 {
+		if name := w.getUnionEnumName(t); name != "" {
+			result.Name = name
+		}
+	}
+
 	// Try to detect a discriminant property for discriminated unions
 	if disc := w.detectDiscriminant(members); disc != nil {
 		result.Discriminant = disc
 	}
 
 	return result
+}
+
+// getUnionEnumName extracts a name for an all-literal union type.
+// For type aliases like `type OrderStatus = "A" | "B" | "C"`, it returns "OrderStatus".
+// For TS enums like `enum Status { Active = "active" }`, it returns "Status".
+// Returns empty string if no name is found.
+func (w *TypeWalker) getUnionEnumName(t *shimchecker.Type) string {
+	// 1. Check for type alias (Prisma-style string union types)
+	alias := shimchecker.Type_alias(t)
+	if alias != nil {
+		aliasSym := alias.Symbol()
+		if aliasSym != nil && aliasSym.Name != "" {
+			name := aliasSym.Name
+			// Filter out internal names
+			if name != "__type" && name != "__object" && (len(name) == 0 || name[0] != '\xfe') {
+				return name
+			}
+		}
+	}
+
+	// 2. Check for enum symbol (actual TS enum declarations)
+	sym := t.Symbol()
+	if sym != nil && sym.Name != "" {
+		name := sym.Name
+		if name != "__type" && name != "__object" && (len(name) == 0 || name[0] != '\xfe') {
+			return name
+		}
+	}
+
+	return ""
 }
 
 // detectDiscriminant checks if a union of objects has a common property with
@@ -999,6 +1045,14 @@ func (w *TypeWalker) walkObjectType(t *shimchecker.Type) metadata.Metadata {
 			return w.walkGenericNative(t, "Set")
 		case "Promise":
 			// Unwrap Promise<T> to T
+			typeArgs := shimchecker.Checker_getTypeArguments(w.checker, t)
+			if len(typeArgs) > 0 {
+				return w.WalkType(typeArgs[0])
+			}
+			return metadata.Metadata{Kind: metadata.KindAny}
+		case "Observable":
+			// Unwrap Observable<T> to T (rxjs Observable, used for SSE endpoints)
+			// Combined with Promise unwrapping, this handles Promise<Observable<T>> → T
 			typeArgs := shimchecker.Checker_getTypeArguments(w.checker, t)
 			if len(typeArgs) > 0 {
 				return w.WalkType(typeArgs[0])

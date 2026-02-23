@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll } from "vitest";
 import { spawnSync } from "child_process";
-import { existsSync, readFileSync, rmSync } from "fs";
+import { existsSync, readFileSync, rmSync, readdirSync } from "fs";
 import { resolve } from "path";
 
 const PROJECT_ROOT = resolve(__dirname, "..");
@@ -113,41 +113,41 @@ describe("tsgonest companion file generation", () => {
     expect(stderr).toContain("companion");
   });
 
-  it("should generate validation companion files", () => {
-    const validateFile = resolve(
+  it("should generate companion files with validate and serialize", () => {
+    const companionFile = resolve(
       FIXTURES_DIR,
-      "nestjs/dist/user.dto.CreateUserDto.validate.js"
+      "nestjs/dist/user.dto.CreateUserDto.tsgonest.js"
     );
-    expect(existsSync(validateFile)).toBe(true);
+    expect(existsSync(companionFile)).toBe(true);
 
-    const content = readFileSync(validateFile, "utf-8");
+    const content = readFileSync(companionFile, "utf-8");
     expect(content).toContain("export function validateCreateUserDto");
     expect(content).toContain("export function assertCreateUserDto");
-    expect(content).toContain("export function deserializeCreateUserDto");
+    expect(content).not.toContain("deserializeCreateUserDto");
     expect(content).toContain('typeof input.name !== "string"');
     expect(content).toContain('typeof input.age !== "number"');
   });
 
-  it("should generate serialization companion files", () => {
-    const serializeFile = resolve(
+  it("should generate serialization functions in companion files", () => {
+    const companionFile = resolve(
       FIXTURES_DIR,
-      "nestjs/dist/user.dto.UserResponse.serialize.js"
+      "nestjs/dist/user.dto.UserResponse.tsgonest.js"
     );
-    expect(existsSync(serializeFile)).toBe(true);
+    expect(existsSync(companionFile)).toBe(true);
 
-    const content = readFileSync(serializeFile, "utf-8");
+    const content = readFileSync(companionFile, "utf-8");
     expect(content).toContain("export function serializeUserResponse");
     expect(content).toContain("__jsonStr");
   });
 
   it("should handle optional properties in UpdateUserDto", () => {
-    const validateFile = resolve(
+    const companionFile = resolve(
       FIXTURES_DIR,
-      "nestjs/dist/user.dto.UpdateUserDto.validate.js"
+      "nestjs/dist/user.dto.UpdateUserDto.tsgonest.js"
     );
-    expect(existsSync(validateFile)).toBe(true);
+    expect(existsSync(companionFile)).toBe(true);
 
-    const content = readFileSync(validateFile, "utf-8");
+    const content = readFileSync(companionFile, "utf-8");
     expect(content).toContain("export function validateUpdateUserDto");
     // Optional props should use undefined guard
     expect(content).toContain("input.name !== undefined");
@@ -184,7 +184,7 @@ describe("tsgonest companion file generation", () => {
     const doc = JSON.parse(content);
 
     // Verify OpenAPI version
-    expect(doc.openapi).toBe("3.1.0");
+    expect(doc.openapi).toBe("3.2.0");
     expect(doc.info).toBeDefined();
     expect(doc.info.title).toBe("API");
     expect(doc.info.version).toBe("1.0.0");
@@ -356,7 +356,7 @@ describe("tsgonest generated JS execution", () => {
   it("validation should accept valid input", async () => {
     const validateFile = resolve(
       FIXTURES_DIR,
-      "nestjs/dist/user.dto.CreateUserDto.validate.js"
+      "nestjs/dist/user.dto.CreateUserDto.tsgonest.js"
     );
     const mod = await import(validateFile);
 
@@ -376,7 +376,7 @@ describe("tsgonest generated JS execution", () => {
   it("validation should reject invalid input", async () => {
     const validateFile = resolve(
       FIXTURES_DIR,
-      "nestjs/dist/user.dto.CreateUserDto.validate.js"
+      "nestjs/dist/user.dto.CreateUserDto.tsgonest.js"
     );
     const mod = await import(validateFile);
 
@@ -394,7 +394,7 @@ describe("tsgonest generated JS execution", () => {
   it("validation should reject null input", async () => {
     const validateFile = resolve(
       FIXTURES_DIR,
-      "nestjs/dist/user.dto.CreateUserDto.validate.js"
+      "nestjs/dist/user.dto.CreateUserDto.tsgonest.js"
     );
     const mod = await import(validateFile);
 
@@ -405,7 +405,7 @@ describe("tsgonest generated JS execution", () => {
   it("assert should throw on invalid input", async () => {
     const validateFile = resolve(
       FIXTURES_DIR,
-      "nestjs/dist/user.dto.CreateUserDto.validate.js"
+      "nestjs/dist/user.dto.CreateUserDto.tsgonest.js"
     );
     const mod = await import(validateFile);
 
@@ -414,28 +414,12 @@ describe("tsgonest generated JS execution", () => {
     );
   });
 
-  it("deserialize should parse and validate JSON", async () => {
-    const validateFile = resolve(
-      FIXTURES_DIR,
-      "nestjs/dist/user.dto.CreateUserDto.validate.js"
-    );
-    const mod = await import(validateFile);
-
-    const json = JSON.stringify({
-      name: "Bob",
-      email: "bob@example.com",
-      age: 25,
-    });
-    const result = mod.deserializeCreateUserDto(json);
-    expect(result).toEqual({ name: "Bob", email: "bob@example.com", age: 25 });
-  });
-
   it("serialization should produce valid JSON", async () => {
-    const serializeFile = resolve(
+    const companionFile = resolve(
       FIXTURES_DIR,
-      "nestjs/dist/user.dto.UserResponse.serialize.js"
+      "nestjs/dist/user.dto.UserResponse.tsgonest.js"
     );
-    const mod = await import(serializeFile);
+    const mod = await import(companionFile);
 
     const input = {
       id: 1,
@@ -456,7 +440,7 @@ describe("tsgonest generated JS execution", () => {
   it("optional property validation should allow missing props", async () => {
     const validateFile = resolve(
       FIXTURES_DIR,
-      "nestjs/dist/user.dto.UpdateUserDto.validate.js"
+      "nestjs/dist/user.dto.UpdateUserDto.tsgonest.js"
     );
     const mod = await import(validateFile);
 
@@ -472,7 +456,7 @@ describe("tsgonest generated JS execution", () => {
   it("optional property validation should reject wrong types", async () => {
     const validateFile = resolve(
       FIXTURES_DIR,
-      "nestjs/dist/user.dto.UpdateUserDto.validate.js"
+      "nestjs/dist/user.dto.UpdateUserDto.tsgonest.js"
     );
     const mod = await import(validateFile);
 
@@ -482,11 +466,11 @@ describe("tsgonest generated JS execution", () => {
   });
 
   it("serialization with optional props should produce correct JSON", async () => {
-    const serializeFile = resolve(
+    const companionFile = resolve(
       FIXTURES_DIR,
-      "nestjs/dist/user.dto.UpdateUserDto.serialize.js"
+      "nestjs/dist/user.dto.UpdateUserDto.tsgonest.js"
     );
-    const mod = await import(serializeFile);
+    const mod = await import(companionFile);
 
     // All props present
     const jsonFull = mod.serializeUpdateUserDto({
@@ -515,11 +499,11 @@ describe("tsgonest generated JS execution", () => {
 
 describe("tsgonest JSDoc constraint validation", () => {
   it("should generate constraint checks from JSDoc tags", () => {
-    const validateFile = resolve(
+    const companionFile = resolve(
       FIXTURES_DIR,
-      "nestjs/dist/user.dto.CreateUserDto.validate.js"
+      "nestjs/dist/user.dto.CreateUserDto.tsgonest.js"
     );
-    const content = readFileSync(validateFile, "utf-8");
+    const content = readFileSync(companionFile, "utf-8");
 
     // Should have minLength/maxLength for name
     expect(content).toContain("input.name.length < 1");
@@ -536,7 +520,7 @@ describe("tsgonest JSDoc constraint validation", () => {
   it("constraint validation should reject values below minimum", async () => {
     const validateFile = resolve(
       FIXTURES_DIR,
-      "nestjs/dist/user.dto.CreateUserDto.validate.js"
+      "nestjs/dist/user.dto.CreateUserDto.tsgonest.js"
     );
     const mod = await import(validateFile);
 
@@ -552,7 +536,7 @@ describe("tsgonest JSDoc constraint validation", () => {
   it("constraint validation should reject values above maximum", async () => {
     const validateFile = resolve(
       FIXTURES_DIR,
-      "nestjs/dist/user.dto.CreateUserDto.validate.js"
+      "nestjs/dist/user.dto.CreateUserDto.tsgonest.js"
     );
     const mod = await import(validateFile);
 
@@ -568,7 +552,7 @@ describe("tsgonest JSDoc constraint validation", () => {
   it("constraint validation should reject strings too short", async () => {
     const validateFile = resolve(
       FIXTURES_DIR,
-      "nestjs/dist/user.dto.CreateUserDto.validate.js"
+      "nestjs/dist/user.dto.CreateUserDto.tsgonest.js"
     );
     const mod = await import(validateFile);
 
@@ -584,7 +568,7 @@ describe("tsgonest JSDoc constraint validation", () => {
   it("constraint validation should reject invalid email format", async () => {
     const validateFile = resolve(
       FIXTURES_DIR,
-      "nestjs/dist/user.dto.CreateUserDto.validate.js"
+      "nestjs/dist/user.dto.CreateUserDto.tsgonest.js"
     );
     const mod = await import(validateFile);
 
@@ -600,7 +584,7 @@ describe("tsgonest JSDoc constraint validation", () => {
   it("constraint validation should accept valid constrained input", async () => {
     const validateFile = resolve(
       FIXTURES_DIR,
-      "nestjs/dist/user.dto.CreateUserDto.validate.js"
+      "nestjs/dist/user.dto.CreateUserDto.tsgonest.js"
     );
     const mod = await import(validateFile);
 
@@ -647,41 +631,42 @@ describe("tsgonest manifest generation", () => {
     );
     const manifest = JSON.parse(readFileSync(manifestFile, "utf-8"));
 
-    expect(manifest).toHaveProperty("validators");
-    expect(manifest).toHaveProperty("serializers");
+    expect(manifest).toHaveProperty("version", 1);
+    expect(manifest).toHaveProperty("companions");
   });
 
-  it("should have validator entries for DTOs", () => {
+  it("should have companion entries for DTOs", () => {
     const manifestFile = resolve(
       FIXTURES_DIR,
       "nestjs/dist/__tsgonest_manifest.json"
     );
     const manifest = JSON.parse(readFileSync(manifestFile, "utf-8"));
 
-    // Should have validators for CreateUserDto and UpdateUserDto
-    expect(manifest.validators).toHaveProperty("CreateUserDto");
-    expect(manifest.validators).toHaveProperty("UpdateUserDto");
+    // Should have companions for CreateUserDto and UpdateUserDto
+    expect(manifest.companions).toHaveProperty("CreateUserDto");
+    expect(manifest.companions).toHaveProperty("UpdateUserDto");
 
     // Verify function names
-    expect(manifest.validators.CreateUserDto.fn).toBe("assertCreateUserDto");
-    expect(manifest.validators.UpdateUserDto.fn).toBe("assertUpdateUserDto");
+    expect(manifest.companions.CreateUserDto.assert).toBe("assertCreateUserDto");
+    expect(manifest.companions.CreateUserDto.validate).toBe("validateCreateUserDto");
+    expect(manifest.companions.UpdateUserDto.assert).toBe("assertUpdateUserDto");
 
-    // Verify file paths are relative
-    expect(manifest.validators.CreateUserDto.file).toMatch(/\.\/.*\.validate\.js$/);
-    expect(manifest.validators.UpdateUserDto.file).toMatch(/\.\/.*\.validate\.js$/);
+    // Verify file paths are relative and use .tsgonest.js extension
+    expect(manifest.companions.CreateUserDto.file).toMatch(/\.\/.*\.tsgonest\.js$/);
+    expect(manifest.companions.UpdateUserDto.file).toMatch(/\.\/.*\.tsgonest\.js$/);
   });
 
-  it("should have serializer entries for response DTOs", () => {
+  it("should have serializer function names in companion entries", () => {
     const manifestFile = resolve(
       FIXTURES_DIR,
       "nestjs/dist/__tsgonest_manifest.json"
     );
     const manifest = JSON.parse(readFileSync(manifestFile, "utf-8"));
 
-    // Should have serializer for UserResponse
-    expect(manifest.serializers).toHaveProperty("UserResponse");
-    expect(manifest.serializers.UserResponse.fn).toBe("serializeUserResponse");
-    expect(manifest.serializers.UserResponse.file).toMatch(/\.\/.*\.serialize\.js$/);
+    // Should have serialize function for UserResponse
+    expect(manifest.companions).toHaveProperty("UserResponse");
+    expect(manifest.companions.UserResponse.serialize).toBe("serializeUserResponse");
+    expect(manifest.companions.UserResponse.file).toMatch(/\.\/.*\.tsgonest\.js$/);
   });
 
   it("manifest paths should resolve to actual companion files", () => {
@@ -692,14 +677,8 @@ describe("tsgonest manifest generation", () => {
     const manifestDir = resolve(FIXTURES_DIR, "nestjs/dist");
     const manifest = JSON.parse(readFileSync(manifestFile, "utf-8"));
 
-    // Check that all validator files exist
-    for (const [typeName, entry] of Object.entries(manifest.validators)) {
-      const fullPath = resolve(manifestDir, (entry as any).file);
-      expect(existsSync(fullPath)).toBe(true);
-    }
-
-    // Check that all serializer files exist
-    for (const [typeName, entry] of Object.entries(manifest.serializers)) {
+    // Check that all companion files exist
+    for (const [typeName, entry] of Object.entries(manifest.companions)) {
       const fullPath = resolve(manifestDir, (entry as any).file);
       expect(existsSync(fullPath)).toBe(true);
     }
@@ -713,13 +692,13 @@ describe("tsgonest manifest generation", () => {
     const manifestDir = resolve(FIXTURES_DIR, "nestjs/dist");
     const manifest = JSON.parse(readFileSync(manifestFile, "utf-8"));
 
-    // Load the CreateUserDto validator via manifest
-    const validatorEntry = manifest.validators.CreateUserDto;
-    const validatorPath = resolve(manifestDir, validatorEntry.file);
-    const mod = await import(validatorPath);
+    // Load the CreateUserDto companion via manifest
+    const companionEntry = manifest.companions.CreateUserDto;
+    const companionPath = resolve(manifestDir, companionEntry.file);
+    const mod = await import(companionPath);
 
     // The assert function should exist
-    const assertFn = mod[validatorEntry.fn];
+    const assertFn = mod[companionEntry.assert];
     expect(typeof assertFn).toBe("function");
 
     // And it should work
@@ -732,7 +711,7 @@ describe("tsgonest manifest generation", () => {
     expect(validResult.name).toBe("Test");
   });
 
-  it("should be able to require serializer files via manifest", async () => {
+  it("should be able to require serializer via companion manifest", async () => {
     const manifestFile = resolve(
       FIXTURES_DIR,
       "nestjs/dist/__tsgonest_manifest.json"
@@ -740,13 +719,13 @@ describe("tsgonest manifest generation", () => {
     const manifestDir = resolve(FIXTURES_DIR, "nestjs/dist");
     const manifest = JSON.parse(readFileSync(manifestFile, "utf-8"));
 
-    // Load the UserResponse serializer via manifest
-    const serializerEntry = manifest.serializers.UserResponse;
-    const serializerPath = resolve(manifestDir, serializerEntry.file);
-    const mod = await import(serializerPath);
+    // Load the UserResponse companion via manifest
+    const companionEntry = manifest.companions.UserResponse;
+    const companionPath = resolve(manifestDir, companionEntry.file);
+    const mod = await import(companionPath);
 
     // The serialize function should exist
-    const serializeFn = mod[serializerEntry.fn];
+    const serializeFn = mod[companionEntry.serialize];
     expect(typeof serializeFn).toBe("function");
 
     // And it should produce valid JSON
@@ -800,12 +779,12 @@ describe("tsgonest full pipeline integration", () => {
       existsSync(resolve(FIXTURES_DIR, "nestjs/dist/user.controller.js"))
     ).toBe(true);
 
-    // Verify companion files exist
+    // Verify companion files exist (consolidated .tsgonest.js format)
     expect(
       existsSync(
         resolve(
           FIXTURES_DIR,
-          "nestjs/dist/user.dto.CreateUserDto.validate.js"
+          "nestjs/dist/user.dto.CreateUserDto.tsgonest.js"
         )
       )
     ).toBe(true);
@@ -813,7 +792,7 @@ describe("tsgonest full pipeline integration", () => {
       existsSync(
         resolve(
           FIXTURES_DIR,
-          "nestjs/dist/user.dto.UserResponse.serialize.js"
+          "nestjs/dist/user.dto.UserResponse.tsgonest.js"
         )
       )
     ).toBe(true);
@@ -862,15 +841,15 @@ describe("realworld fixture", () => {
       "testdata/realworld/tsgonest.config.json",
     ]);
     expect(stderr).toContain("companion");
-    // Check that some companion files exist for key DTOs
+    // Check that some companion files exist for key DTOs (consolidated .tsgonest.js format)
     const companions = [
-      "realworld/dist/auth/auth.dto.LoginDto.validate.js",
-      "realworld/dist/auth/auth.dto.RegisterDto.validate.js",
-      "realworld/dist/auth/auth.dto.AuthTokenResponse.serialize.js",
-      "realworld/dist/user/user.dto.UserResponse.serialize.js",
-      "realworld/dist/article/article.dto.CreateArticleDto.validate.js",
-      "realworld/dist/article/article.dto.Comment.validate.js",
-      "realworld/dist/payment/payment.dto.PaymentResponse.serialize.js",
+      "realworld/dist/auth/auth.dto.LoginDto.tsgonest.js",
+      "realworld/dist/auth/auth.dto.RegisterDto.tsgonest.js",
+      "realworld/dist/auth/auth.dto.AuthTokenResponse.tsgonest.js",
+      "realworld/dist/user/user.dto.UserResponse.tsgonest.js",
+      "realworld/dist/article/article.dto.CreateArticleDto.tsgonest.js",
+      "realworld/dist/article/article.dto.Comment.tsgonest.js",
+      "realworld/dist/payment/payment.dto.PaymentResponse.tsgonest.js",
     ];
     for (const comp of companions) {
       expect(
@@ -920,7 +899,7 @@ describe("realworld fixture", () => {
     expect(existsSync(openapiFile)).toBe(true);
 
     const doc = JSON.parse(readFileSync(openapiFile, "utf-8"));
-    expect(doc.openapi).toBe("3.1.0");
+    expect(doc.openapi).toBe("3.2.0");
     expect(doc.info).toBeDefined();
     expect(doc.paths).toBeDefined();
   });
@@ -974,10 +953,10 @@ describe("realworld fixture", () => {
 
     const validatePath = resolve(
       FIXTURES_DIR,
-      "realworld/dist/auth/auth.dto.LoginDto.validate.js"
+      "realworld/dist/auth/auth.dto.LoginDto.tsgonest.js"
     );
     if (!existsSync(validatePath)) {
-      throw new Error(`validate file not found: ${validatePath}`);
+      throw new Error(`companion file not found: ${validatePath}`);
     }
 
     const mod = require(validatePath);
@@ -1004,7 +983,7 @@ describe("realworld fixture", () => {
 
     const validatePath = resolve(
       FIXTURES_DIR,
-      "realworld/dist/auth/auth.dto.LoginDto.validate.js"
+      "realworld/dist/auth/auth.dto.LoginDto.tsgonest.js"
     );
     const mod = require(validatePath);
 
@@ -1025,15 +1004,15 @@ describe("realworld fixture", () => {
       "testdata/realworld/tsgonest.config.json",
     ]);
 
-    const serializePath = resolve(
+    const companionPath = resolve(
       FIXTURES_DIR,
-      "realworld/dist/auth/auth.dto.AuthTokenResponse.serialize.js"
+      "realworld/dist/auth/auth.dto.AuthTokenResponse.tsgonest.js"
     );
-    if (!existsSync(serializePath)) {
-      throw new Error(`serialize file not found: ${serializePath}`);
+    if (!existsSync(companionPath)) {
+      throw new Error(`companion file not found: ${companionPath}`);
     }
 
-    const mod = require(serializePath);
+    const mod = require(companionPath);
     const json = mod.serializeAuthTokenResponse({
       accessToken: "abc123",
       refreshToken: "def456",
@@ -1068,12 +1047,12 @@ describe("branded type validation (@tsgonest/types)", () => {
   });
 
   it("should generate validation with email format from branded type", () => {
-    const validateFile = resolve(
+    const companionFile = resolve(
       FIXTURES_DIR,
-      "branded/dist/user.dto.CreateUserDto.validate.js"
+      "branded/dist/user.dto.CreateUserDto.tsgonest.js"
     );
-    expect(existsSync(validateFile)).toBe(true);
-    const content = readFileSync(validateFile, "utf-8");
+    expect(existsSync(companionFile)).toBe(true);
+    const content = readFileSync(companionFile, "utf-8");
 
     // Email format check from tags.Email branded type
     expect(content).toContain("format email");
@@ -1088,7 +1067,7 @@ describe("branded type validation (@tsgonest/types)", () => {
   it("branded validation should accept valid input", async () => {
     const validateFile = resolve(
       FIXTURES_DIR,
-      "branded/dist/user.dto.CreateUserDto.validate.js"
+      "branded/dist/user.dto.CreateUserDto.tsgonest.js"
     );
     const mod = await import(validateFile);
 
@@ -1103,7 +1082,7 @@ describe("branded type validation (@tsgonest/types)", () => {
   it("branded validation should reject invalid email format", async () => {
     const validateFile = resolve(
       FIXTURES_DIR,
-      "branded/dist/user.dto.CreateUserDto.validate.js"
+      "branded/dist/user.dto.CreateUserDto.tsgonest.js"
     );
     const mod = await import(validateFile);
 
@@ -1119,7 +1098,7 @@ describe("branded type validation (@tsgonest/types)", () => {
   it("branded validation should reject name below minLength", async () => {
     const validateFile = resolve(
       FIXTURES_DIR,
-      "branded/dist/user.dto.CreateUserDto.validate.js"
+      "branded/dist/user.dto.CreateUserDto.tsgonest.js"
     );
     const mod = await import(validateFile);
 
@@ -1135,7 +1114,7 @@ describe("branded type validation (@tsgonest/types)", () => {
   it("branded validation should reject age outside range", async () => {
     const validateFile = resolve(
       FIXTURES_DIR,
-      "branded/dist/user.dto.CreateUserDto.validate.js"
+      "branded/dist/user.dto.CreateUserDto.tsgonest.js"
     );
     const mod = await import(validateFile);
 
@@ -1149,12 +1128,12 @@ describe("branded type validation (@tsgonest/types)", () => {
   });
 
   it("should generate ProductDto validation with ExclusiveMinimum and Int", () => {
-    const validateFile = resolve(
+    const companionFile = resolve(
       FIXTURES_DIR,
-      "branded/dist/user.dto.ProductDto.validate.js"
+      "branded/dist/user.dto.ProductDto.tsgonest.js"
     );
-    expect(existsSync(validateFile)).toBe(true);
-    const content = readFileSync(validateFile, "utf-8");
+    expect(existsSync(companionFile)).toBe(true);
+    const content = readFileSync(companionFile, "utf-8");
 
     // UUID format from tags.Uuid
     expect(content).toContain("format uuid");
@@ -1165,12 +1144,12 @@ describe("branded type validation (@tsgonest/types)", () => {
   });
 
   it("should generate ConfigDto validation with StartsWith and Includes", () => {
-    const validateFile = resolve(
+    const companionFile = resolve(
       FIXTURES_DIR,
-      "branded/dist/user.dto.ConfigDto.validate.js"
+      "branded/dist/user.dto.ConfigDto.tsgonest.js"
     );
-    expect(existsSync(validateFile)).toBe(true);
-    const content = readFileSync(validateFile, "utf-8");
+    expect(existsSync(companionFile)).toBe(true);
+    const content = readFileSync(companionFile, "utf-8");
 
     // StartsWith from tags.StartsWith<"https://">
     expect(content).toContain('startsWith("https://")');
@@ -1183,7 +1162,7 @@ describe("branded type validation (@tsgonest/types)", () => {
   it("ProductDto validation should work at runtime", async () => {
     const validateFile = resolve(
       FIXTURES_DIR,
-      "branded/dist/user.dto.ProductDto.validate.js"
+      "branded/dist/user.dto.ProductDto.tsgonest.js"
     );
     const mod = await import(validateFile);
 
@@ -1210,7 +1189,7 @@ describe("branded type validation (@tsgonest/types)", () => {
   it("ConfigDto validation should work at runtime", async () => {
     const validateFile = resolve(
       FIXTURES_DIR,
-      "branded/dist/user.dto.ConfigDto.validate.js"
+      "branded/dist/user.dto.ConfigDto.tsgonest.js"
     );
     const mod = await import(validateFile);
 
@@ -1230,5 +1209,664 @@ describe("branded type validation (@tsgonest/types)", () => {
     expect(
       invalidUrl.errors.some((e: any) => e.path === "input.websiteUrl")
     ).toBe(true);
+  });
+});
+
+// --- Incremental compilation tests ---
+
+describe("tsgonest incremental compilation", () => {
+  const incrDist = resolve(FIXTURES_DIR, "incremental/dist");
+  const tsbuildinfo = resolve(FIXTURES_DIR, "incremental/tsconfig.tsbuildinfo");
+  const srcFile = resolve(FIXTURES_DIR, "incremental/src/index.ts");
+
+  beforeAll(() => {
+    // Clean up from any previous runs
+    if (existsSync(incrDist)) {
+      rmSync(incrDist, { recursive: true });
+    }
+    if (existsSync(tsbuildinfo)) {
+      rmSync(tsbuildinfo);
+    }
+  });
+
+  it("should detect incremental mode from tsconfig", () => {
+    const { exitCode, stderr } = runTsgonest([
+      "--project",
+      "testdata/incremental/tsconfig.json",
+    ]);
+    expect(exitCode).toBe(0);
+    expect(stderr).toContain("incremental build enabled");
+  });
+
+  it("should write .tsbuildinfo file", () => {
+    expect(existsSync(tsbuildinfo)).toBe(true);
+    const content = readFileSync(tsbuildinfo, "utf-8");
+    const buildInfo = JSON.parse(content);
+    expect(buildInfo).toHaveProperty("version");
+    expect(buildInfo).toHaveProperty("fileNames");
+    expect(Array.isArray(buildInfo.fileNames)).toBe(true);
+  });
+
+  it("should emit JS on first build", () => {
+    expect(existsSync(resolve(incrDist, "index.js"))).toBe(true);
+  });
+
+  it("warm build should skip diagnostics and emit when nothing changed", () => {
+    // Second build — nothing changed, should be fast
+    const { exitCode, stderr } = runTsgonest([
+      "--project",
+      "testdata/incremental/tsconfig.json",
+    ]);
+    expect(exitCode).toBe(0);
+    expect(stderr).toContain("incremental build enabled");
+    // No files emitted because nothing changed
+    expect(stderr).toContain("no files emitted");
+  });
+
+  it("should re-emit only changed files after modification", () => {
+    // Read original content
+    const originalContent = readFileSync(srcFile, "utf-8");
+
+    // Modify the file (append a new export)
+    const modifiedContent =
+      originalContent + "\nexport const VERSION = 42;\n";
+    const { writeFileSync } = require("fs");
+    writeFileSync(srcFile, modifiedContent);
+
+    // Rebuild — should detect the change
+    const { exitCode, stderr } = runTsgonest([
+      "--project",
+      "testdata/incremental/tsconfig.json",
+    ]);
+    expect(exitCode).toBe(0);
+    expect(stderr).toContain("incremental build enabled");
+    expect(stderr).toContain("emitted");
+
+    // Verify the emitted JS has the new export
+    const jsContent = readFileSync(resolve(incrDist, "index.js"), "utf-8");
+    expect(jsContent).toContain("VERSION");
+
+    // Restore original content
+    writeFileSync(srcFile, originalContent);
+
+    // One more build to restore .tsbuildinfo to clean state
+    runTsgonest(["--project", "testdata/incremental/tsconfig.json"]);
+  });
+});
+
+// --- Incremental post-processing cache tests ---
+
+describe("tsgonest incremental post-processing cache", () => {
+  const fixtureDir = resolve(FIXTURES_DIR, "incremental-nestjs");
+  const distDir = resolve(fixtureDir, "dist");
+  const tsbuildinfo = resolve(fixtureDir, "tsconfig.tsbuildinfo");
+  const cacheFile = resolve(fixtureDir, "tsconfig.tsgonest-cache");
+  const configFile = resolve(fixtureDir, "tsgonest.config.json");
+  const srcFile = resolve(fixtureDir, "src/item.dto.ts");
+  const openapiFile = resolve(fixtureDir, "dist/openapi.json");
+  const manifestFile = resolve(
+    fixtureDir,
+    "dist/__tsgonest_manifest.json"
+  );
+
+  // Helper: full clean + cold build to reset state
+  function cleanAndBuild() {
+    if (existsSync(distDir)) {
+      rmSync(distDir, { recursive: true });
+    }
+    if (existsSync(tsbuildinfo)) {
+      rmSync(tsbuildinfo);
+    }
+    if (existsSync(cacheFile)) {
+      rmSync(cacheFile);
+    }
+    const result = runTsgonest([
+      "--project",
+      "testdata/incremental-nestjs/tsconfig.json",
+      "--config",
+      "testdata/incremental-nestjs/tsgonest.config.json",
+    ]);
+    expect(result.exitCode).toBe(0);
+    return result;
+  }
+
+  // Helper: warm build (no clean)
+  function warmBuild() {
+    return runTsgonest([
+      "--project",
+      "testdata/incremental-nestjs/tsconfig.json",
+      "--config",
+      "testdata/incremental-nestjs/tsgonest.config.json",
+    ]);
+  }
+
+  beforeAll(() => {
+    // Ensure clean starting state
+    cleanAndBuild();
+  });
+
+  it("cold build should produce all outputs and cache file", () => {
+    // Clean and rebuild from scratch
+    const { exitCode, stderr } = cleanAndBuild();
+    expect(exitCode).toBe(0);
+    expect(stderr).toContain("emitted");
+    expect(stderr).toContain("companion");
+    expect(stderr).toContain("controller");
+    expect(stderr).toContain("OpenAPI");
+    expect(stderr).toContain("manifest");
+
+    // Cache file should exist
+    expect(existsSync(cacheFile)).toBe(true);
+    const cache = JSON.parse(readFileSync(cacheFile, "utf-8"));
+    expect(cache.v).toBe(1);
+    expect(cache.configHash).toBeTruthy();
+    expect(cache.outputs).toBeInstanceOf(Array);
+    expect(cache.outputs.length).toBeGreaterThanOrEqual(2);
+
+    // All output files should exist
+    expect(existsSync(openapiFile)).toBe(true);
+    expect(existsSync(manifestFile)).toBe(true);
+  });
+
+  it("warm build with no changes should skip post-processing", () => {
+    // Ensure we have a warm state
+    cleanAndBuild();
+
+    // Second build — nothing changed
+    const { exitCode, stderr } = warmBuild();
+    expect(exitCode).toBe(0);
+    expect(stderr).toContain("no changes detected, outputs up to date");
+
+    // Should NOT contain companion/controller/OpenAPI generation messages
+    expect(stderr).not.toContain("companion file");
+    expect(stderr).not.toContain("found 1 controller");
+    // Timing should show 0s for post-processing phases
+    expect(stderr).toContain("companions:    0s");
+    expect(stderr).toContain("controllers:   0s");
+    expect(stderr).toContain("openapi:       0s");
+  });
+
+  it("config change should force full rebuild", () => {
+    cleanAndBuild();
+
+    // Modify config (add a trailing space to title — content changes hash)
+    const originalConfig = readFileSync(configFile, "utf-8");
+    const { writeFileSync } = require("fs");
+    const modifiedConfig = originalConfig.replace(
+      '"dist/openapi.json"',
+      '"dist/openapi.json" '
+    );
+    writeFileSync(configFile, modifiedConfig);
+
+    const { exitCode, stderr } = warmBuild();
+    expect(exitCode).toBe(0);
+    // Should NOT say "no changes detected" — cache is invalid due to config change
+    expect(stderr).not.toContain("no changes detected");
+    // Should run full post-processing
+    // Note: "no files emitted" is still printed because TS source didn't change,
+    // but post-processing should still run because config hash changed
+    expect(stderr).toContain("companion");
+
+    // Restore original config
+    writeFileSync(configFile, originalConfig);
+    // Rebuild to restore clean state
+    warmBuild();
+  });
+
+  it("output file deletion should force full rebuild", () => {
+    cleanAndBuild();
+
+    // Delete the OpenAPI output file
+    rmSync(openapiFile);
+    expect(existsSync(openapiFile)).toBe(false);
+
+    const { exitCode, stderr } = warmBuild();
+    expect(exitCode).toBe(0);
+    // Should NOT skip — output file is missing
+    expect(stderr).not.toContain("no changes detected");
+    // Should regenerate OpenAPI
+    expect(stderr).toContain("OpenAPI");
+    // OpenAPI file should be restored
+    expect(existsSync(openapiFile)).toBe(true);
+  });
+
+  it("manifest file deletion should force full rebuild", () => {
+    cleanAndBuild();
+
+    // Delete the manifest file
+    rmSync(manifestFile);
+    expect(existsSync(manifestFile)).toBe(false);
+
+    const { exitCode, stderr } = warmBuild();
+    expect(exitCode).toBe(0);
+    expect(stderr).not.toContain("no changes detected");
+    expect(stderr).toContain("manifest");
+    expect(existsSync(manifestFile)).toBe(true);
+  });
+
+  it("source file change should force full rebuild", () => {
+    cleanAndBuild();
+
+    // Modify source file
+    const originalSrc = readFileSync(srcFile, "utf-8");
+    const { writeFileSync } = require("fs");
+    const modifiedSrc =
+      originalSrc + "\nexport interface ExtraDto { extra: string; }\n";
+    writeFileSync(srcFile, modifiedSrc);
+
+    const { exitCode, stderr } = warmBuild();
+    expect(exitCode).toBe(0);
+    // Source changed → tsgo emits files → post-processing runs
+    expect(stderr).toContain("emitted");
+    expect(stderr).not.toContain("no changes detected");
+    expect(stderr).toContain("companion");
+
+    // Restore original
+    writeFileSync(srcFile, originalSrc);
+    warmBuild(); // Clean up state
+  });
+
+  it("cache file missing should force full rebuild", () => {
+    cleanAndBuild();
+
+    // Delete only the cache file (outputs still exist)
+    rmSync(cacheFile);
+    expect(existsSync(cacheFile)).toBe(false);
+
+    const { exitCode, stderr } = warmBuild();
+    expect(exitCode).toBe(0);
+    // Cache miss → full rebuild
+    expect(stderr).not.toContain("no changes detected");
+    expect(stderr).toContain("companion");
+    // Cache should be recreated
+    expect(existsSync(cacheFile)).toBe(true);
+  });
+
+  it("corrupted cache file should force full rebuild", () => {
+    cleanAndBuild();
+
+    // Write garbage to cache file
+    const { writeFileSync } = require("fs");
+    writeFileSync(cacheFile, "not valid json {{{");
+
+    const { exitCode, stderr } = warmBuild();
+    expect(exitCode).toBe(0);
+    expect(stderr).not.toContain("no changes detected");
+    expect(stderr).toContain("companion");
+    // Cache should be overwritten with valid data
+    const cacheContent = readFileSync(cacheFile, "utf-8");
+    const cache = JSON.parse(cacheContent); // should not throw
+    expect(cache.v).toBe(1);
+  });
+
+  it("--clean flag should force full rebuild", () => {
+    cleanAndBuild();
+
+    // Verify warm build would normally skip
+    const warmResult = warmBuild();
+    expect(warmResult.stderr).toContain("no changes detected");
+
+    // Now build with --clean — should force full rebuild
+    const { exitCode, stderr } = runTsgonest([
+      "--project",
+      "testdata/incremental-nestjs/tsconfig.json",
+      "--config",
+      "testdata/incremental-nestjs/tsgonest.config.json",
+      "--clean",
+    ]);
+    expect(exitCode).toBe(0);
+    expect(stderr).toContain("cleaning output directory");
+    expect(stderr).not.toContain("no changes detected");
+    expect(stderr).toContain("emitted"); // All files re-emitted after clean
+    expect(stderr).toContain("companion");
+  });
+
+  it("schema version bump should force full rebuild", () => {
+    cleanAndBuild();
+
+    // Tamper with the cache schema version
+    const cacheContent = JSON.parse(readFileSync(cacheFile, "utf-8"));
+    cacheContent.v = 999; // future version
+    const { writeFileSync } = require("fs");
+    writeFileSync(cacheFile, JSON.stringify(cacheContent));
+
+    const { exitCode, stderr } = warmBuild();
+    expect(exitCode).toBe(0);
+    expect(stderr).not.toContain("no changes detected");
+    expect(stderr).toContain("companion");
+
+    // Cache should be overwritten with correct version
+    const newCache = JSON.parse(readFileSync(cacheFile, "utf-8"));
+    expect(newCache.v).toBe(1);
+  });
+
+  it("successive warm builds should all skip consistently", () => {
+    cleanAndBuild();
+
+    // Run 3 warm builds in succession — all should skip
+    for (let i = 0; i < 3; i++) {
+      const { exitCode, stderr } = warmBuild();
+      expect(exitCode).toBe(0);
+      expect(stderr).toContain("no changes detected, outputs up to date");
+    }
+  });
+
+  it("rebuild after skip should still produce correct outputs", () => {
+    cleanAndBuild();
+
+    // Warm build (skips)
+    const warmResult = warmBuild();
+    expect(warmResult.stderr).toContain("no changes detected");
+
+    // Verify output files are still valid from the cold build
+    const openapi = JSON.parse(readFileSync(openapiFile, "utf-8"));
+    expect(openapi.openapi).toBe("3.2.0");
+    expect(openapi.paths).toHaveProperty("/items");
+
+    const manifest = JSON.parse(readFileSync(manifestFile, "utf-8"));
+    expect(manifest).toHaveProperty("version", 1);
+    expect(manifest).toHaveProperty("companions");
+    expect(manifest.companions).toHaveProperty("CreateItemDto");
+  });
+
+  it("non-incremental build should not create cache file", () => {
+    // The simple fixture doesn't have incremental: true
+    const simpleDist = resolve(FIXTURES_DIR, "simple/dist");
+    if (existsSync(simpleDist)) {
+      rmSync(simpleDist, { recursive: true });
+    }
+    const simpleCacheFile = resolve(FIXTURES_DIR, "simple/tsconfig.tsgonest-cache");
+    if (existsSync(simpleCacheFile)) {
+      rmSync(simpleCacheFile);
+    }
+
+    runTsgonest(["--project", "testdata/simple/tsconfig.json"]);
+
+    // The simple fixture has no config, so no post-processing → cache is saved
+    // but with no outputs and empty config hash. The important thing is it doesn't crash.
+    // Cache file should still be created (it records the empty state)
+    expect(existsSync(simpleCacheFile)).toBe(true);
+  });
+});
+
+// --- Diagnostic pipeline & exit code tests ---
+
+describe("tsgonest diagnostics and exit codes", () => {
+  it("should exit 1 on type errors and still emit JS", () => {
+    // Clean dist
+    const distDir = resolve(FIXTURES_DIR, "errors-type/dist");
+    if (existsSync(distDir)) {
+      rmSync(distDir, { recursive: true });
+    }
+
+    const { exitCode, stderr } = runTsgonest([
+      "--project",
+      "testdata/errors-type/tsconfig.json",
+    ]);
+    expect(exitCode).toBe(1);
+
+    // Should report the type errors
+    expect(stderr).toContain("TS2345"); // string not assignable to number
+    expect(stderr).toContain("TS2741"); // missing property 'age'
+    expect(stderr).toContain("error");
+
+    // JS should still be emitted (type errors don't prevent emit unless noEmitOnError)
+    expect(stderr).toContain("emitted");
+    expect(existsSync(resolve(distDir, "bad-types.js"))).toBe(true);
+  });
+
+  it("should exit 1 on syntax errors and still emit JS", () => {
+    // Clean dist
+    const distDir = resolve(FIXTURES_DIR, "errors-syntax/dist");
+    if (existsSync(distDir)) {
+      rmSync(distDir, { recursive: true });
+    }
+
+    const { exitCode, stderr } = runTsgonest([
+      "--project",
+      "testdata/errors-syntax/tsconfig.json",
+    ]);
+    expect(exitCode).toBe(1);
+
+    // Should report the syntax error
+    expect(stderr).toContain("TS1005"); // '}' expected
+    expect(stderr).toContain("error");
+
+    // JS is still emitted (tsgo emits even with errors unless noEmitOnError)
+    expect(stderr).toContain("emitted");
+  });
+
+  it("should exit 2 with noEmitOnError and NOT emit JS", () => {
+    // Clean dist
+    const distDir = resolve(FIXTURES_DIR, "errors-noemit/dist");
+    if (existsSync(distDir)) {
+      rmSync(distDir, { recursive: true });
+    }
+
+    const { exitCode, stderr } = runTsgonest([
+      "--project",
+      "testdata/errors-noemit/tsconfig.json",
+    ]);
+    expect(exitCode).toBe(2);
+
+    // Should report the type error
+    expect(stderr).toContain("TS2345");
+    expect(stderr).toContain("error");
+
+    // Should indicate no files were emitted
+    expect(stderr).toContain("no files emitted");
+    expect(stderr).toContain("noEmitOnError");
+
+    // dist directory should not exist or be empty (no JS output)
+    if (existsSync(distDir)) {
+      const files = readdirSync(distDir);
+      const jsFiles = files.filter((f) => f.endsWith(".js"));
+      expect(jsFiles).toHaveLength(0);
+    }
+  });
+
+  it("should exit 0 with --no-check even when type errors exist", () => {
+    const { exitCode, stderr } = runTsgonest([
+      "--project",
+      "testdata/errors-type/tsconfig.json",
+      "--no-check",
+    ]);
+    expect(exitCode).toBe(0);
+
+    // Should NOT report type errors when --no-check is used
+    expect(stderr).not.toContain("TS2345");
+    expect(stderr).not.toContain("TS2741");
+
+    // Should still emit files
+    expect(stderr).toContain("emitted");
+  });
+
+  it("should still report syntax errors with --no-check", () => {
+    const { exitCode, stderr } = runTsgonest([
+      "--project",
+      "testdata/errors-syntax/tsconfig.json",
+      "--no-check",
+    ]);
+    // Syntax errors should still cause exit 1 even with --no-check
+    // (--no-check only skips semantic/type checking, not syntax)
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain("TS1005");
+  });
+
+  it("diagnostic output should include file name and position", () => {
+    const { stderr } = runTsgonest([
+      "--project",
+      "testdata/errors-type/tsconfig.json",
+    ]);
+
+    // Should include file name in diagnostics
+    expect(stderr).toContain("bad-types.ts");
+    // Should include line/column position (format: file(line,col) or file:line:col)
+    expect(stderr).toMatch(/bad-types\.ts[\(:]/);
+  });
+});
+
+// ─── @Returns<T>() Decorator Tests ─────────────────────────────────────────
+describe("@Returns<T>() decorator", () => {
+  const fixtureDir = resolve(FIXTURES_DIR, "nestjs-returns");
+  const openapiFile = resolve(fixtureDir, "dist/openapi.json");
+
+  beforeAll(() => {
+    // Clean and build fresh
+    const distDir = resolve(fixtureDir, "dist");
+    if (existsSync(distDir)) {
+      rmSync(distDir, { recursive: true });
+    }
+    const cacheFile = resolve(fixtureDir, "tsconfig.tsgonest-cache");
+    if (existsSync(cacheFile)) rmSync(cacheFile);
+    const buildInfoFile = resolve(fixtureDir, "tsconfig.tsbuildinfo");
+    if (existsSync(buildInfoFile)) rmSync(buildInfoFile);
+
+    const { exitCode, stderr } = runTsgonest([
+      "--project",
+      "testdata/nestjs-returns/tsconfig.json",
+      "--config",
+      "testdata/nestjs-returns/tsgonest.config.json",
+      "--clean",
+    ]);
+    expect(exitCode).toBe(0);
+    expect(stderr).toContain("controller");
+    expect(stderr).toContain("OpenAPI");
+    expect(existsSync(openapiFile)).toBe(true);
+  });
+
+  it("should generate OpenAPI for @Returns<ReportResponse>() with @Res()", () => {
+    const doc = JSON.parse(readFileSync(openapiFile, "utf-8"));
+    const getReport = doc.paths["/reports/{id}"]?.get;
+    expect(getReport).toBeDefined();
+    expect(getReport.operationId).toBe("getReport");
+
+    // Should have a typed response, NOT void
+    const response200 = getReport.responses["200"];
+    expect(response200.content).toBeDefined();
+    expect(response200.content["application/json"]).toBeDefined();
+    expect(response200.content["application/json"].schema.$ref).toBe(
+      "#/components/schemas/ReportResponse"
+    );
+  });
+
+  it("should use custom contentType from @Returns options", () => {
+    const doc = JSON.parse(readFileSync(openapiFile, "utf-8"));
+
+    // PDF endpoint — application/pdf
+    const pdfRoute = doc.paths["/reports/{id}/pdf"]?.get;
+    expect(pdfRoute).toBeDefined();
+    const pdfResponse = pdfRoute.responses["200"];
+    expect(pdfResponse.content["application/pdf"]).toBeDefined();
+    expect(pdfResponse.content["application/json"]).toBeUndefined();
+
+    // CSV endpoint — text/csv
+    const csvRoute = doc.paths["/reports/{id}/csv"]?.get;
+    expect(csvRoute).toBeDefined();
+    const csvResponse = csvRoute.responses["200"];
+    expect(csvResponse.content["text/csv"]).toBeDefined();
+    expect(csvResponse.content["text/csv"].schema.type).toBe("string");
+    expect(csvResponse.content["application/json"]).toBeUndefined();
+  });
+
+  it("should use custom description from @Returns options", () => {
+    const doc = JSON.parse(readFileSync(openapiFile, "utf-8"));
+
+    // PDF endpoint — description override
+    const pdfResponse = doc.paths["/reports/{id}/pdf"]?.get?.responses["200"];
+    expect(pdfResponse.description).toBe("PDF report document");
+
+    // CSV endpoint — description override
+    const csvResponse = doc.paths["/reports/{id}/csv"]?.get?.responses["200"];
+    expect(csvResponse.description).toBe("CSV export");
+
+    // Normal route — default description
+    const summaryResponse = doc.paths["/reports/summary"]?.get?.responses["200"];
+    expect(summaryResponse.description).toBe("OK");
+  });
+
+  it("should produce void response for @Res() without @Returns", () => {
+    const doc = JSON.parse(readFileSync(openapiFile, "utf-8"));
+    const rawRoute = doc.paths["/reports/{id}/raw"]?.get;
+    expect(rawRoute).toBeDefined();
+    const rawResponse = rawRoute.responses["200"];
+    // Void response — no content key
+    expect(rawResponse.content).toBeUndefined();
+    expect(rawResponse.description).toBe("OK");
+  });
+
+  it("should emit warning for @Res() without @Returns", () => {
+    const { stderr } = runTsgonest([
+      "--project",
+      "testdata/nestjs-returns/tsconfig.json",
+      "--config",
+      "testdata/nestjs-returns/tsgonest.config.json",
+    ]);
+    // Should warn about getRawReport using @Res() without @Returns
+    expect(stderr).toContain("getRawReport");
+    expect(stderr).toContain("uses-raw-response");
+    expect(stderr).toContain("@Returns<YourType>()");
+    expect(stderr).toContain("@tsgonest-ignore");
+  });
+
+  it("should NOT emit warning for @Res() with @Returns", () => {
+    const { stderr } = runTsgonest([
+      "--project",
+      "testdata/nestjs-returns/tsconfig.json",
+      "--config",
+      "testdata/nestjs-returns/tsgonest.config.json",
+    ]);
+    // Methods with @Returns should NOT produce uses-raw-response warning
+    expect(stderr).not.toContain("getReport —");
+    expect(stderr).not.toContain("getReportPdf —");
+    expect(stderr).not.toContain("getReportCsv —");
+  });
+
+  it("should suppress warning with @tsgonest-ignore uses-raw-response", () => {
+    const { stderr } = runTsgonest([
+      "--project",
+      "testdata/nestjs-returns/tsconfig.json",
+      "--config",
+      "testdata/nestjs-returns/tsgonest.config.json",
+    ]);
+    // streamReport has @tsgonest-ignore uses-raw-response — no warning
+    expect(stderr).not.toContain("streamReport");
+  });
+
+  it("should handle @Returns status override", () => {
+    const doc = JSON.parse(readFileSync(openapiFile, "utf-8"));
+    const regenerateRoute = doc.paths["/reports/{id}/regenerate"]?.post;
+    expect(regenerateRoute).toBeDefined();
+    // @Returns({ status: 200 }) should override @HttpCode(202)
+    expect(regenerateRoute.responses["200"]).toBeDefined();
+    expect(regenerateRoute.responses["202"]).toBeUndefined();
+    // The response should have a typed schema
+    expect(
+      regenerateRoute.responses["200"].content["application/json"].schema.$ref
+    ).toBe("#/components/schemas/ReportResponse");
+  });
+
+  it("should not affect normal routes without @Res()", () => {
+    const doc = JSON.parse(readFileSync(openapiFile, "utf-8"));
+    const summaryRoute = doc.paths["/reports/summary"]?.get;
+    expect(summaryRoute).toBeDefined();
+    // Normal route should work as before
+    expect(summaryRoute.responses["200"].content["application/json"]).toBeDefined();
+    expect(
+      summaryRoute.responses["200"].content["application/json"].schema.$ref
+    ).toBe("#/components/schemas/ReportSummary");
+  });
+
+  it("should include ReportResponse schema in components", () => {
+    const doc = JSON.parse(readFileSync(openapiFile, "utf-8"));
+    const schema = doc.components?.schemas?.ReportResponse;
+    expect(schema).toBeDefined();
+    expect(schema.type).toBe("object");
+    expect(schema.properties.id).toEqual({ type: "string" });
+    expect(schema.properties.title).toEqual({ type: "string" });
+    expect(schema.properties.generatedAt).toEqual({ type: "string" });
+    expect(schema.required).toContain("id");
+    expect(schema.required).toContain("title");
+    expect(schema.required).toContain("generatedAt");
   });
 });

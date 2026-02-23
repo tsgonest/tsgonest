@@ -1169,5 +1169,368 @@ func TestControllerAnalyzer_HigherOrderDecoratorFactory(t *testing.T) {
 	}
 }
 
+// --- Return Type Inference Tests (no explicit annotation) ---
+
+func TestControllerAnalyzer_InferReturnType_InlineObject(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+
+		@Controller("items")
+		export class ItemController {
+			@Get()
+			findAll() {
+				return [{ id: 1, name: "item" }];
+			}
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 || len(controllers[0].Routes) != 1 {
+		t.Fatalf("expected 1 controller with 1 route")
+	}
+
+	r := controllers[0].Routes[0]
+	// Inferred return type should be an array (of objects), not KindAny
+	if r.ReturnType.Kind == "any" {
+		t.Errorf("findAll: expected inferred return type, got KindAny")
+	}
+}
+
+func TestControllerAnalyzer_InferReturnType_ServiceDelegation(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+
+		interface UserDto {
+			id: number;
+			name: string;
+			email: string;
+		}
+
+		class UserService {
+			findAll(): UserDto[] { return []; }
+			findOne(id: string): UserDto { return {} as UserDto; }
+		}
+
+		@Controller("users")
+		export class UserController {
+			private userService = new UserService();
+
+			@Get()
+			getUsers() {
+				return this.userService.findAll();
+			}
+
+			@Get(":id")
+			getUser() {
+				return this.userService.findOne("1");
+			}
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 || len(controllers[0].Routes) != 2 {
+		t.Fatalf("expected 1 controller with 2 routes, got %d controllers", len(controllers))
+	}
+
+	// getUsers: service returns UserDto[] → should infer array
+	r0 := controllers[0].Routes[0]
+	if r0.ReturnType.Kind == "any" {
+		t.Errorf("getUsers: expected inferred array return type, got KindAny")
+	}
+
+	// getUser: service returns UserDto → should infer ref or object
+	r1 := controllers[0].Routes[1]
+	if r1.ReturnType.Kind == "any" {
+		t.Errorf("getUser: expected inferred object/ref return type, got KindAny")
+	}
+}
+
+func TestControllerAnalyzer_InferReturnType_Primitive(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+
+		@Controller("health")
+		export class HealthController {
+			@Get()
+			check() {
+				return { status: "ok", uptime: 12345 };
+			}
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 || len(controllers[0].Routes) != 1 {
+		t.Fatalf("expected 1 controller with 1 route")
+	}
+
+	r := controllers[0].Routes[0]
+	// Should infer an object with status and uptime properties, not KindAny
+	if r.ReturnType.Kind == "any" {
+		t.Errorf("check: expected inferred object return type, got KindAny")
+	}
+}
+
+func TestControllerAnalyzer_InferReturnType_AsyncNoAnnotation(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+
+		interface Product { id: number; title: string; price: number; }
+
+		@Controller("products")
+		export class ProductController {
+			@Get()
+			async findAll() {
+				return [] as Product[];
+			}
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 || len(controllers[0].Routes) != 1 {
+		t.Fatalf("expected 1 controller with 1 route")
+	}
+
+	r := controllers[0].Routes[0]
+	// async without annotation: checker infers Promise<Product[]>; walker unwraps Promise → array
+	if r.ReturnType.Kind == "any" {
+		t.Errorf("findAll: expected inferred array return type from async method, got KindAny")
+	}
+}
+
+func TestControllerAnalyzer_InferReturnType_NoSlowWarning(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+
+		interface SimpleDto { id: number; name: string; }
+
+		class SimpleService {
+			getAll(): SimpleDto[] { return []; }
+		}
+
+		@Controller("simple")
+		export class SimpleController {
+			private svc = new SimpleService();
+
+			@Get()
+			getAll() {
+				return this.svc.getAll();
+			}
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	ca.AnalyzeSourceFile(env.sourceFile)
+
+	// Fast inference (service has explicit return type) should NOT produce a slow-inference warning
+	warnings := ca.Warnings()
+	for _, w := range warnings {
+		if w.Kind == "slow-return-type-inference" {
+			t.Errorf("unexpected slow-return-type-inference warning for simple service delegation: %s", w.Message)
+		}
+	}
+}
+
+func TestControllerAnalyzer_InferReturnType_ExplicitAnnotation_StillWorks(t *testing.T) {
+	// Verify that methods WITH explicit annotations still work (regression test)
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+
+		interface User { id: number; name: string; }
+
+		@Controller("users")
+		export class UserController {
+			@Get()
+			async getUsers(): Promise<User[]> { return []; }
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 || len(controllers[0].Routes) != 1 {
+		t.Fatalf("expected 1 controller with 1 route")
+	}
+
+	r := controllers[0].Routes[0]
+	if r.ReturnType.Kind != "array" {
+		t.Errorf("getUsers: expected Kind='array', got %q", r.ReturnType.Kind)
+	}
+}
+
+// --- Phase 3: @Res() Detection Tests ---
+
+func TestControllerAnalyzer_ResDecorator_ForcesVoid(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+		function Res(): ParameterDecorator { return () => {}; }
+
+		@Controller("files")
+		export class FileController {
+			@Get("download")
+			download(@Res() res: any): string {
+				return "file content";
+			}
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 || len(controllers[0].Routes) != 1 {
+		t.Fatalf("expected 1 controller with 1 route")
+	}
+
+	r := controllers[0].Routes[0]
+	// @Res() should force return type to void
+	if r.ReturnType.Kind != "void" {
+		t.Errorf("expected return type void when @Res() is used, got %q", r.ReturnType.Kind)
+	}
+	if !r.UsesRawResponse {
+		t.Error("expected UsesRawResponse=true when @Res() is used")
+	}
+
+	// Should emit a warning about @Res() usage
+	warnings := ca.Warnings()
+	found := false
+	for _, w := range warnings {
+		if w.Kind == "uses-raw-response" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected uses-raw-response warning when @Res() is used")
+	}
+}
+
+func TestControllerAnalyzer_ResponseDecorator_ForcesVoid(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+		function Response(): ParameterDecorator { return () => {}; }
+
+		@Controller("files")
+		export class FileController {
+			@Get("stream")
+			stream(@Response() res: any): void {}
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 || len(controllers[0].Routes) != 1 {
+		t.Fatalf("expected 1 controller with 1 route")
+	}
+
+	r := controllers[0].Routes[0]
+	if r.ReturnType.Kind != "void" {
+		t.Errorf("expected return type void when @Response() is used, got %q", r.ReturnType.Kind)
+	}
+	if !r.UsesRawResponse {
+		t.Error("expected UsesRawResponse=true when @Response() is used")
+	}
+}
+
+// --- Phase 4: Custom Decorator Warning Tests ---
+
+func TestControllerAnalyzer_CustomDecorator_NoIn_WithType_Warns(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+
+		// Custom decorator WITHOUT @in annotation
+		const ExtractUser = (data?: any): ParameterDecorator => {
+			return (target: any, key: string | symbol, index: number) => {};
+		};
+
+		interface UserPayload { id: string; email: string; }
+
+		@Controller("profile")
+		export class ProfileController {
+			@Get()
+			getProfile(@ExtractUser() user: UserPayload): string { return ""; }
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	ca.AnalyzeSourceFile(env.sourceFile)
+
+	// Custom decorators without @in are context-injection decorators — silently skipped.
+	// No warning should be emitted regardless of whether the parameter has a type annotation.
+	warnings := ca.Warnings()
+	for _, w := range warnings {
+		if w.Kind == "custom-decorator-no-in" {
+			t.Errorf("unexpected custom-decorator-no-in warning — custom decorators without @in should be silently skipped: %s", w.Message)
+		}
+	}
+}
+
+func TestControllerAnalyzer_CustomDecorator_NoIn_NoType_Silent(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+
+		// Custom decorator WITHOUT @in — and parameter has no type annotation
+		const CurrentUser = (data?: any): ParameterDecorator => {
+			return (target: any, key: string | symbol, index: number) => {};
+		};
+
+		@Controller("profile")
+		export class ProfileController {
+			@Get()
+			getProfile(@CurrentUser() user): string { return ""; }
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	ca.AnalyzeSourceFile(env.sourceFile)
+
+	// No type annotation = silently skip (likely @CurrentUser, @Ip, etc.)
+	warnings := ca.Warnings()
+	for _, w := range warnings {
+		if w.Kind == "custom-decorator-no-in" {
+			t.Errorf("unexpected custom-decorator-no-in warning for untyped parameter: %s", w.Message)
+		}
+	}
+}
+
 // The following ensures we're using the shimcompiler import correctly.
 var _ = (*shimcompiler.Program)(nil)

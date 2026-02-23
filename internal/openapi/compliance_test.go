@@ -12,7 +12,7 @@ import (
 
 func TestValidateDocument_Valid(t *testing.T) {
 	doc := &Document{
-		OpenAPI: "3.1.0",
+		OpenAPI: "3.2.0",
 		Info:    Info{Title: "Test API", Version: "1.0.0"},
 		Paths: map[string]*PathItem{
 			"/users": {
@@ -65,7 +65,7 @@ func TestValidateDocument_WrongOpenAPIVersion(t *testing.T) {
 	errors := ValidateDocument(doc)
 	found := false
 	for _, e := range errors {
-		if e.Path == "openapi" && e.Message == `expected 3.1.x, got "2.0.0"` {
+		if e.Path == "openapi" && e.Message == `expected 3.1.x or 3.2.x, got "2.0.0"` {
 			found = true
 			break
 		}
@@ -77,7 +77,7 @@ func TestValidateDocument_WrongOpenAPIVersion(t *testing.T) {
 
 func TestValidateDocument_MissingTitle(t *testing.T) {
 	doc := &Document{
-		OpenAPI: "3.1.0",
+		OpenAPI: "3.2.0",
 		Info:    Info{Title: "", Version: "1.0.0"},
 		Paths:   map[string]*PathItem{},
 	}
@@ -97,7 +97,7 @@ func TestValidateDocument_MissingTitle(t *testing.T) {
 
 func TestValidateDocument_MissingVersion(t *testing.T) {
 	doc := &Document{
-		OpenAPI: "3.1.0",
+		OpenAPI: "3.2.0",
 		Info:    Info{Title: "API", Version: ""},
 		Paths:   map[string]*PathItem{},
 	}
@@ -117,7 +117,7 @@ func TestValidateDocument_MissingVersion(t *testing.T) {
 
 func TestValidateDocument_InvalidPath(t *testing.T) {
 	doc := &Document{
-		OpenAPI: "3.1.0",
+		OpenAPI: "3.2.0",
 		Info:    Info{Title: "API", Version: "1.0.0"},
 		Paths: map[string]*PathItem{
 			"users": { // missing leading /
@@ -145,7 +145,7 @@ func TestValidateDocument_InvalidPath(t *testing.T) {
 
 func TestValidateDocument_MissingResponses(t *testing.T) {
 	doc := &Document{
-		OpenAPI: "3.1.0",
+		OpenAPI: "3.2.0",
 		Info:    Info{Title: "API", Version: "1.0.0"},
 		Paths: map[string]*PathItem{
 			"/users": {
@@ -172,7 +172,7 @@ func TestValidateDocument_MissingResponses(t *testing.T) {
 
 func TestValidateDocument_EmptyResponses(t *testing.T) {
 	doc := &Document{
-		OpenAPI: "3.1.0",
+		OpenAPI: "3.2.0",
 		Info:    Info{Title: "API", Version: "1.0.0"},
 		Paths: map[string]*PathItem{
 			"/users": {
@@ -199,7 +199,7 @@ func TestValidateDocument_EmptyResponses(t *testing.T) {
 
 func TestValidateDocument_PathParamRequired(t *testing.T) {
 	doc := &Document{
-		OpenAPI: "3.1.0",
+		OpenAPI: "3.2.0",
 		Info:    Info{Title: "API", Version: "1.0.0"},
 		Paths: map[string]*PathItem{
 			"/users/{id}": {
@@ -231,7 +231,7 @@ func TestValidateDocument_PathParamRequired(t *testing.T) {
 
 func TestValidateDocument_InvalidParamIn(t *testing.T) {
 	doc := &Document{
-		OpenAPI: "3.1.0",
+		OpenAPI: "3.2.0",
 		Info:    Info{Title: "API", Version: "1.0.0"},
 		Paths: map[string]*PathItem{
 			"/users": {
@@ -263,7 +263,7 @@ func TestValidateDocument_InvalidParamIn(t *testing.T) {
 
 func TestValidateDocument_MissingParamName(t *testing.T) {
 	doc := &Document{
-		OpenAPI: "3.1.0",
+		OpenAPI: "3.2.0",
 		Info:    Info{Title: "API", Version: "1.0.0"},
 		Paths: map[string]*PathItem{
 			"/users": {
@@ -294,7 +294,7 @@ func TestValidateDocument_MissingParamName(t *testing.T) {
 
 func TestValidateDocument_MissingParamIn(t *testing.T) {
 	doc := &Document{
-		OpenAPI: "3.1.0",
+		OpenAPI: "3.2.0",
 		Info:    Info{Title: "API", Version: "1.0.0"},
 		Paths: map[string]*PathItem{
 			"/users": {
@@ -325,7 +325,7 @@ func TestValidateDocument_MissingParamIn(t *testing.T) {
 
 func TestValidateDocument_MissingResponseDescription(t *testing.T) {
 	doc := &Document{
-		OpenAPI: "3.1.0",
+		OpenAPI: "3.2.0",
 		Info:    Info{Title: "API", Version: "1.0.0"},
 		Paths: map[string]*PathItem{
 			"/users": {
@@ -353,7 +353,7 @@ func TestValidateDocument_MissingResponseDescription(t *testing.T) {
 
 func TestValidateDocument_MissingPaths(t *testing.T) {
 	doc := &Document{
-		OpenAPI: "3.1.0",
+		OpenAPI: "3.2.0",
 		Info:    Info{Title: "API", Version: "1.0.0"},
 		Paths:   nil,
 	}
@@ -373,7 +373,7 @@ func TestValidateDocument_MissingPaths(t *testing.T) {
 
 func TestValidateDocument_EmptyServerURL(t *testing.T) {
 	doc := &Document{
-		OpenAPI: "3.1.0",
+		OpenAPI: "3.2.0",
 		Info:    Info{Title: "API", Version: "1.0.0"},
 		Paths:   map[string]*PathItem{},
 		Servers: []Server{{URL: "", Description: "Production"}},
@@ -394,7 +394,7 @@ func TestValidateDocument_EmptyServerURL(t *testing.T) {
 
 func TestValidateDocument_SchemaRefWithType(t *testing.T) {
 	doc := &Document{
-		OpenAPI: "3.1.0",
+		OpenAPI: "3.2.0",
 		Info:    Info{Title: "API", Version: "1.0.0"},
 		Paths:   map[string]*PathItem{},
 		Components: &Components{
@@ -433,7 +433,7 @@ func TestValidateDocument_MultipleErrors(t *testing.T) {
 
 func TestValidateDocument_ValidWithAllMethods(t *testing.T) {
 	doc := &Document{
-		OpenAPI: "3.1.0",
+		OpenAPI: "3.2.0",
 		Info:    Info{Title: "API", Version: "1.0.0"},
 		Paths: map[string]*PathItem{
 			"/resource": {
@@ -459,7 +459,7 @@ func TestValidateDocument_ValidWithAllMethods(t *testing.T) {
 
 func TestValidateDocument_ValidPathParams(t *testing.T) {
 	doc := &Document{
-		OpenAPI: "3.1.0",
+		OpenAPI: "3.2.0",
 		Info:    Info{Title: "API", Version: "1.0.0"},
 		Paths: map[string]*PathItem{
 			"/users/{id}": {
@@ -776,7 +776,7 @@ func TestCompliance_GeneratedMultiController(t *testing.T) {
 
 func TestValidateJSON_ValidJSON(t *testing.T) {
 	doc := &Document{
-		OpenAPI: "3.1.0",
+		OpenAPI: "3.2.0",
 		Info:    Info{Title: "API", Version: "1.0.0"},
 		Paths: map[string]*PathItem{
 			"/health": {
@@ -813,7 +813,7 @@ func TestValidateJSON_InvalidJSON(t *testing.T) {
 }
 
 func TestValidateJSON_MissingFields(t *testing.T) {
-	jsonData := []byte(`{"openapi":"3.1.0","info":{"title":"","version":""},"paths":{}}`)
+	jsonData := []byte(`{"openapi":"3.2.0","info":{"title":"","version":""},"paths":{}}`)
 	errors, err := ValidateJSON(jsonData)
 	if err != nil {
 		t.Fatalf("ValidateJSON returned error: %v", err)

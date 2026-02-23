@@ -8,6 +8,7 @@ import (
 	"github.com/microsoft/typescript-go/shim/ast"
 	shimcompiler "github.com/microsoft/typescript-go/shim/compiler"
 	"github.com/microsoft/typescript-go/shim/core"
+	shimincremental "github.com/microsoft/typescript-go/shim/execute/incremental"
 	"github.com/microsoft/typescript-go/shim/tsoptions"
 	"github.com/microsoft/typescript-go/shim/tspath"
 	"github.com/microsoft/typescript-go/shim/vfs"
@@ -102,16 +103,121 @@ func CreateProgram(singleThreaded bool, fs vfs.FS, cwd string, tsconfigPath stri
 	}, nil, nil
 }
 
-// EmitProgram writes the compiled JavaScript output to disk using tsgo's emitter.
-func EmitProgram(program *shimcompiler.Program) ([]string, []Diagnostic, error) {
-	result := program.Emit(context.Background(), shimcompiler.EmitOptions{})
+// EmitResult wraps tsgo's EmitResult with our additions.
+type EmitResult struct {
+	EmittedFiles []string
+	Diagnostics  []*ast.Diagnostic
+	EmitSkipped  bool
+}
 
-	var diags []Diagnostic
-	if len(result.Diagnostics) > 0 {
-		diags = convertDiagnostics(result.Diagnostics)
+// EmitProgram writes the compiled JavaScript output to disk using tsgo's emitter.
+// Returns the raw EmitResult so callers can check EmitSkipped.
+func EmitProgram(program *shimcompiler.Program) *EmitResult {
+	result := program.Emit(context.Background(), shimcompiler.EmitOptions{})
+	return &EmitResult{
+		EmittedFiles: result.EmittedFiles,
+		Diagnostics:  result.Diagnostics,
+		EmitSkipped:  result.EmitSkipped,
+	}
+}
+
+// GatherDiagnostics collects all diagnostics from a program using tsgo's
+// GetDiagnosticsOfAnyProgram — the same cascade tsgo itself uses:
+//
+//	config → syntactic → program → bind → options → global → semantic → declaration
+//
+// When noCheck=true, the semantic callback is a no-op (skips type checking).
+func GatherDiagnostics(program *shimcompiler.Program, noCheck bool) []*ast.Diagnostic {
+	ctx := context.Background()
+
+	semanticFn := func(ctx context.Context, file *ast.SourceFile) []*ast.Diagnostic {
+		if noCheck {
+			return nil
+		}
+		return shimcompiler.Program_GetSemanticDiagnostics(program, ctx, file)
 	}
 
-	return result.EmittedFiles, diags, nil
+	return shimcompiler.GetDiagnosticsOfAnyProgram(
+		ctx,
+		program,
+		nil,   // file=nil → all files
+		false, // skipNoEmitCheckForDtsDiagnostics
+		func(ctx context.Context, file *ast.SourceFile) []*ast.Diagnostic {
+			// Bind diagnostics are gathered by the program's checker internally;
+			// we pass a no-op here because BindSourceFiles was already called.
+			// tsgo's own EmitFilesAndReportErrors does call GetBindDiagnostics
+			// but it's primarily for timing — the bind step already ran.
+			return nil
+		},
+		semanticFn,
+	)
+}
+
+// GetSyntacticDiagnostics returns parse errors for all source files.
+func GetSyntacticDiagnostics(program *shimcompiler.Program) []*ast.Diagnostic {
+	ctx := context.Background()
+	return shimcompiler.Program_GetSyntacticDiagnostics(program, ctx, nil)
+}
+
+// CreateIncrementalProgram wraps a compiler.Program with incremental state.
+// Reads prior state from .tsbuildinfo on disk. For subsequent calls (watch mode),
+// pass the previous incremental.Program as oldProgram instead of nil.
+func CreateIncrementalProgram(
+	program *shimcompiler.Program,
+	oldProgram *shimincremental.Program,
+	host shimcompiler.CompilerHost,
+	parsedConfig *tsoptions.ParsedCommandLine,
+) *shimincremental.Program {
+	// On first call (or CLI build), read old state from .tsbuildinfo
+	if oldProgram == nil {
+		reader := shimincremental.NewBuildInfoReader(host)
+		oldProgram = shimincremental.ReadBuildInfoProgram(parsedConfig, reader, host)
+		// oldProgram may still be nil if no .tsbuildinfo exists — that's OK
+	}
+	incrHost := shimincremental.CreateHost(host)
+	return shimincremental.NewProgram(program, oldProgram, incrHost, false)
+}
+
+// EmitIncrementalProgram emits only changed files through the incremental program.
+// Also writes the updated .tsbuildinfo file to disk.
+func EmitIncrementalProgram(incrProgram *shimincremental.Program) *EmitResult {
+	result := incrProgram.Emit(context.Background(), shimcompiler.EmitOptions{})
+	return &EmitResult{
+		EmittedFiles: result.EmittedFiles,
+		Diagnostics:  result.Diagnostics,
+		EmitSkipped:  result.EmitSkipped,
+	}
+}
+
+// GatherIncrementalDiagnostics collects diagnostics from an incremental program.
+// The incremental program's GetSemanticDiagnostics only checks affected (changed) files,
+// returning cached results for unchanged files.
+func GatherIncrementalDiagnostics(incrProgram *shimincremental.Program, noCheck bool) []*ast.Diagnostic {
+	ctx := context.Background()
+
+	semanticFn := func(ctx context.Context, file *ast.SourceFile) []*ast.Diagnostic {
+		if noCheck {
+			return nil
+		}
+		return incrProgram.GetSemanticDiagnostics(ctx, file)
+	}
+
+	return shimcompiler.GetDiagnosticsOfAnyProgram(
+		ctx,
+		incrProgram,
+		nil,   // file=nil → all files
+		false, // skipNoEmitCheckForDtsDiagnostics
+		func(ctx context.Context, file *ast.SourceFile) []*ast.Diagnostic {
+			return incrProgram.GetBindDiagnostics(ctx, file)
+		},
+		semanticFn,
+	)
+}
+
+// GetSyntacticDiagnosticsIncremental returns parse errors from an incremental program.
+func GetSyntacticDiagnosticsIncremental(incrProgram *shimincremental.Program) []*ast.Diagnostic {
+	ctx := context.Background()
+	return incrProgram.GetSyntacticDiagnostics(ctx, nil)
 }
 
 // GetSourceFiles returns the source files from a program, excluding declaration files.

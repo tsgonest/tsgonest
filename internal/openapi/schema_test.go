@@ -2,6 +2,7 @@ package openapi
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/tsgonest/tsgonest/internal/analyzer"
@@ -536,8 +537,8 @@ func TestGenerator_SimpleController(t *testing.T) {
 	doc := gen.Generate(controllers)
 
 	// Verify OpenAPI version
-	if doc.OpenAPI != "3.1.0" {
-		t.Errorf("expected openapi='3.1.0', got %q", doc.OpenAPI)
+	if doc.OpenAPI != "3.2.0" {
+		t.Errorf("expected openapi='3.2.0', got %q", doc.OpenAPI)
 	}
 
 	// Verify paths
@@ -894,8 +895,8 @@ func TestGenerator_ToJSON(t *testing.T) {
 	}
 
 	// Verify key fields
-	if parsed["openapi"] != "3.1.0" {
-		t.Errorf("expected openapi='3.1.0', got %v", parsed["openapi"])
+	if parsed["openapi"] != "3.2.0" {
+		t.Errorf("expected openapi='3.2.0', got %v", parsed["openapi"])
 	}
 	paths, ok := parsed["paths"].(map[string]any)
 	if !ok {
@@ -963,7 +964,7 @@ func TestSchemaGenerator_DiscriminatedUnion(t *testing.T) {
 
 func TestDocument_ApplyConfig(t *testing.T) {
 	doc := &Document{
-		OpenAPI: "3.1.0",
+		OpenAPI: "3.2.0",
 		Info:    Info{Title: "API", Version: "1.0.0"},
 		Paths:   make(map[string]*PathItem),
 	}
@@ -1595,4 +1596,993 @@ func contentTypeKeys(content map[string]MediaType) []string {
 		keys = append(keys, k)
 	}
 	return keys
+}
+
+// --- Feature 1: @hidden / @exclude ---
+
+func TestGenerator_HiddenRouteExcludedFromOpenAPI(t *testing.T) {
+	// Routes with @hidden/@exclude JSDoc should not appear in the OpenAPI document.
+	// The route analyzer filters them out (returns nil from analyzeMethod),
+	// so they never reach the generator. This test verifies the generator
+	// correctly produces a doc without hidden routes.
+	registry := metadata.NewTypeRegistry()
+	gen := NewGenerator(registry)
+
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name: "ItemController",
+			Path: "items",
+			Routes: []analyzer.Route{
+				{
+					Method:      "GET",
+					Path:        "/items",
+					OperationID: "findAll",
+					ReturnType:  metadata.Metadata{Kind: metadata.KindArray, ElementType: &metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}},
+					StatusCode:  200,
+					Tags:        []string{"Item"},
+				},
+				// Note: a @hidden route would NOT appear here because analyzeMethod returns nil.
+				// We intentionally omit "internalMethod" to verify the doc only has visible routes.
+			},
+		},
+	}
+
+	doc := gen.Generate(controllers)
+
+	// Should only have the visible route
+	itemsPath, ok := doc.Paths["/items"]
+	if !ok {
+		t.Fatal("expected /items path")
+	}
+	if itemsPath.Get == nil {
+		t.Error("expected GET /items to be present")
+	}
+	if itemsPath.Get.OperationID != "findAll" {
+		t.Errorf("expected operationId='findAll', got %q", itemsPath.Get.OperationID)
+	}
+
+	// Verify no other paths exist
+	if len(doc.Paths) != 1 {
+		t.Errorf("expected 1 path, got %d", len(doc.Paths))
+	}
+}
+
+func TestGenerator_MixedHiddenAndVisibleRoutes(t *testing.T) {
+	// When a controller has some hidden routes, only visible routes appear.
+	registry := metadata.NewTypeRegistry()
+	gen := NewGenerator(registry)
+
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name: "HealthController",
+			Path: "health",
+			Routes: []analyzer.Route{
+				{
+					Method:      "GET",
+					Path:        "/health",
+					OperationID: "check",
+					ReturnType:  metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"},
+					StatusCode:  200,
+					Tags:        []string{"Health"},
+				},
+				// "debug" and "metrics" are hidden — they would be filtered by analyzeMethod
+			},
+		},
+		{
+			Name: "UserController",
+			Path: "users",
+			Routes: []analyzer.Route{
+				{
+					Method:      "GET",
+					Path:        "/users",
+					OperationID: "listUsers",
+					ReturnType:  metadata.Metadata{Kind: metadata.KindArray, ElementType: &metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}},
+					StatusCode:  200,
+					Tags:        []string{"User"},
+				},
+			},
+		},
+	}
+
+	doc := gen.Generate(controllers)
+
+	if len(doc.Paths) != 2 {
+		t.Errorf("expected 2 paths (hidden routes filtered before generator), got %d", len(doc.Paths))
+	}
+	if _, ok := doc.Paths["/health"]; !ok {
+		t.Error("expected /health path")
+	}
+	if _, ok := doc.Paths["/users"]; !ok {
+		t.Error("expected /users path")
+	}
+}
+
+// --- Feature 2: Enum as $ref ---
+
+func TestSchemaGenerator_NamedEnumUnionAsRef(t *testing.T) {
+	// A union of literals with a name (from type alias or TS enum) should be
+	// registered as a component schema and returned as $ref.
+	registry := metadata.NewTypeRegistry()
+	gen := NewSchemaGenerator(registry)
+
+	m := &metadata.Metadata{
+		Kind: metadata.KindUnion,
+		Name: "OrderStatus",
+		UnionMembers: []metadata.Metadata{
+			{Kind: metadata.KindLiteral, LiteralValue: "PENDING"},
+			{Kind: metadata.KindLiteral, LiteralValue: "SHIPPED"},
+			{Kind: metadata.KindLiteral, LiteralValue: "DELIVERED"},
+		},
+	}
+
+	schema := gen.MetadataToSchema(m)
+
+	// Should return a $ref
+	if schema.Ref != "#/components/schemas/OrderStatus" {
+		t.Errorf("expected $ref='#/components/schemas/OrderStatus', got %q", schema.Ref)
+	}
+
+	// Should be registered in schemas
+	schemas := gen.Schemas()
+	enumSchema, ok := schemas["OrderStatus"]
+	if !ok {
+		t.Fatal("expected OrderStatus to be registered in schemas")
+	}
+
+	// Should have the enum values
+	if len(enumSchema.Enum) != 3 {
+		t.Fatalf("expected 3 enum values, got %d", len(enumSchema.Enum))
+	}
+	expected := []any{"PENDING", "SHIPPED", "DELIVERED"}
+	for i, v := range expected {
+		if enumSchema.Enum[i] != v {
+			t.Errorf("enum[%d]: expected %q, got %v", i, v, enumSchema.Enum[i])
+		}
+	}
+}
+
+func TestSchemaGenerator_UnnamedEnumUnionInline(t *testing.T) {
+	// A union of literals WITHOUT a name should remain inline (no $ref).
+	registry := metadata.NewTypeRegistry()
+	gen := NewSchemaGenerator(registry)
+
+	m := &metadata.Metadata{
+		Kind: metadata.KindUnion,
+		UnionMembers: []metadata.Metadata{
+			{Kind: metadata.KindLiteral, LiteralValue: "yes"},
+			{Kind: metadata.KindLiteral, LiteralValue: "no"},
+		},
+	}
+
+	schema := gen.MetadataToSchema(m)
+
+	// Should NOT be a $ref
+	if schema.Ref != "" {
+		t.Errorf("expected no $ref for unnamed enum union, got %q", schema.Ref)
+	}
+	// Should be inline enum
+	if len(schema.Enum) != 2 {
+		t.Fatalf("expected 2 enum values, got %d", len(schema.Enum))
+	}
+}
+
+func TestSchemaGenerator_NamedEnumDeduplication(t *testing.T) {
+	// The same named enum used in multiple places should produce a single
+	// component schema with multiple $ref pointers.
+	registry := metadata.NewTypeRegistry()
+	gen := NewSchemaGenerator(registry)
+
+	orderStatus := metadata.Metadata{
+		Kind: metadata.KindUnion,
+		Name: "OrderStatus",
+		UnionMembers: []metadata.Metadata{
+			{Kind: metadata.KindLiteral, LiteralValue: "PENDING"},
+			{Kind: metadata.KindLiteral, LiteralValue: "SHIPPED"},
+		},
+	}
+
+	// Use in two different objects
+	obj1 := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Name: "Order",
+		Properties: []metadata.Property{
+			{Name: "status", Type: orderStatus, Required: true},
+		},
+	}
+	obj2 := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Name: "OrderHistory",
+		Properties: []metadata.Property{
+			{Name: "previousStatus", Type: orderStatus, Required: true},
+			{Name: "currentStatus", Type: orderStatus, Required: true},
+		},
+	}
+
+	gen.MetadataToSchema(obj1)
+	gen.MetadataToSchema(obj2)
+
+	schemas := gen.Schemas()
+
+	// OrderStatus should appear exactly once
+	if _, ok := schemas["OrderStatus"]; !ok {
+		t.Fatal("expected OrderStatus in schemas")
+	}
+
+	// The Order and OrderHistory schemas should reference OrderStatus via $ref
+	orderSchema := schemas["Order"]
+	if orderSchema == nil {
+		t.Fatal("expected Order in schemas")
+	}
+	statusProp, ok := orderSchema.Properties["status"]
+	if !ok {
+		t.Fatal("expected 'status' property in Order schema")
+	}
+	if statusProp.Ref != "#/components/schemas/OrderStatus" {
+		t.Errorf("expected status.$ref='#/components/schemas/OrderStatus', got %q", statusProp.Ref)
+	}
+
+	historySchema := schemas["OrderHistory"]
+	if historySchema == nil {
+		t.Fatal("expected OrderHistory in schemas")
+	}
+	prevProp, ok := historySchema.Properties["previousStatus"]
+	if !ok {
+		t.Fatal("expected 'previousStatus' property in OrderHistory schema")
+	}
+	if prevProp.Ref != "#/components/schemas/OrderStatus" {
+		t.Errorf("expected previousStatus.$ref='#/components/schemas/OrderStatus', got %q", prevProp.Ref)
+	}
+}
+
+func TestSchemaGenerator_NamedEnumKindEnum(t *testing.T) {
+	// KindEnum (from actual TS enum declarations) with a name should also be a $ref.
+	registry := metadata.NewTypeRegistry()
+	gen := NewSchemaGenerator(registry)
+
+	m := &metadata.Metadata{
+		Kind: metadata.KindEnum,
+		Name: "Color",
+		EnumValues: []metadata.EnumValue{
+			{Name: "Red", Value: "red"},
+			{Name: "Green", Value: "green"},
+			{Name: "Blue", Value: "blue"},
+		},
+	}
+
+	schema := gen.MetadataToSchema(m)
+
+	if schema.Ref != "#/components/schemas/Color" {
+		t.Errorf("expected $ref='#/components/schemas/Color', got %q", schema.Ref)
+	}
+
+	schemas := gen.Schemas()
+	colorSchema, ok := schemas["Color"]
+	if !ok {
+		t.Fatal("expected Color to be registered in schemas")
+	}
+	if len(colorSchema.Enum) != 3 {
+		t.Fatalf("expected 3 enum values, got %d", len(colorSchema.Enum))
+	}
+}
+
+func TestSchemaGenerator_NullableNamedEnum(t *testing.T) {
+	// A nullable named enum should wrap the $ref in anyOf with null.
+	registry := metadata.NewTypeRegistry()
+	gen := NewSchemaGenerator(registry)
+
+	m := &metadata.Metadata{
+		Kind:     metadata.KindUnion,
+		Name:     "Status",
+		Nullable: true,
+		UnionMembers: []metadata.Metadata{
+			{Kind: metadata.KindLiteral, LiteralValue: "active"},
+			{Kind: metadata.KindLiteral, LiteralValue: "inactive"},
+		},
+	}
+
+	schema := gen.MetadataToSchema(m)
+
+	// Should be wrapped in anyOf with null
+	if schema.AnyOf == nil || len(schema.AnyOf) != 2 {
+		t.Fatalf("expected anyOf with 2 items for nullable enum, got %v", schema.AnyOf)
+	}
+	if schema.AnyOf[0].Ref != "#/components/schemas/Status" {
+		t.Errorf("expected anyOf[0].$ref='#/components/schemas/Status', got %q", schema.AnyOf[0].Ref)
+	}
+	if schema.AnyOf[1].Type != "null" {
+		t.Errorf("expected anyOf[1].type='null', got %q", schema.AnyOf[1].Type)
+	}
+}
+
+// --- Feature 3: Array query params ---
+
+func TestGenerator_ArrayQueryParam(t *testing.T) {
+	// Array-typed query params should have style=form and explode=true.
+	registry := metadata.NewTypeRegistry()
+	gen := NewGenerator(registry)
+
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name: "OrderController",
+			Path: "orders",
+			Routes: []analyzer.Route{
+				{
+					Method:      "GET",
+					Path:        "/orders",
+					OperationID: "findOrders",
+					Parameters: []analyzer.RouteParameter{
+						{
+							Category: "query",
+							Name:     "",
+							Type: metadata.Metadata{
+								Kind: metadata.KindObject,
+								Properties: []metadata.Property{
+									{Name: "page", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "number"}, Required: false},
+									{Name: "status", Type: metadata.Metadata{
+										Kind:        metadata.KindArray,
+										ElementType: &metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"},
+									}, Required: false},
+								},
+							},
+							Required: false,
+						},
+					},
+					ReturnType: metadata.Metadata{Kind: metadata.KindArray, ElementType: &metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}},
+					StatusCode: 200,
+					Tags:       []string{"Order"},
+				},
+			},
+		},
+	}
+
+	doc := gen.Generate(controllers)
+
+	ordersPath, ok := doc.Paths["/orders"]
+	if !ok {
+		t.Fatal("expected /orders path")
+	}
+	if ordersPath.Get == nil {
+		t.Fatal("expected GET operation on /orders")
+	}
+
+	params := ordersPath.Get.Parameters
+	if len(params) != 2 {
+		t.Fatalf("expected 2 parameters, got %d", len(params))
+	}
+
+	// Find the "status" param (array)
+	var statusParam *Parameter
+	var pageParam *Parameter
+	for i := range params {
+		switch params[i].Name {
+		case "status":
+			statusParam = &params[i]
+		case "page":
+			pageParam = &params[i]
+		}
+	}
+
+	if statusParam == nil {
+		t.Fatal("expected 'status' query parameter")
+	}
+	if statusParam.Style != "form" {
+		t.Errorf("expected status.style='form', got %q", statusParam.Style)
+	}
+	if statusParam.Explode == nil || !*statusParam.Explode {
+		t.Error("expected status.explode=true")
+	}
+	if statusParam.Schema == nil || statusParam.Schema.Type != "array" {
+		t.Error("expected status schema to be array type")
+	}
+
+	// Non-array param should NOT have style/explode
+	if pageParam == nil {
+		t.Fatal("expected 'page' query parameter")
+	}
+	if pageParam.Style != "" {
+		t.Errorf("expected page.style to be empty, got %q", pageParam.Style)
+	}
+	if pageParam.Explode != nil {
+		t.Errorf("expected page.explode to be nil, got %v", *pageParam.Explode)
+	}
+}
+
+func TestGenerator_ArrayQueryParamJSON(t *testing.T) {
+	// Verify the JSON output includes style and explode for array query params.
+	registry := metadata.NewTypeRegistry()
+	gen := NewGenerator(registry)
+
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name: "FilterController",
+			Path: "filter",
+			Routes: []analyzer.Route{
+				{
+					Method:      "GET",
+					Path:        "/filter",
+					OperationID: "filter",
+					Parameters: []analyzer.RouteParameter{
+						{
+							Category: "query",
+							Name:     "",
+							Type: metadata.Metadata{
+								Kind: metadata.KindObject,
+								Properties: []metadata.Property{
+									{Name: "tags", Type: metadata.Metadata{
+										Kind:        metadata.KindArray,
+										ElementType: &metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"},
+									}, Required: false},
+								},
+							},
+							Required: false,
+						},
+					},
+					ReturnType: metadata.Metadata{Kind: metadata.KindVoid},
+					StatusCode: 200,
+					Tags:       []string{"Filter"},
+				},
+			},
+		},
+	}
+
+	doc := gen.Generate(controllers)
+	jsonBytes, err := doc.ToJSON()
+	if err != nil {
+		t.Fatalf("failed to serialize to JSON: %v", err)
+	}
+	jsonStr := string(jsonBytes)
+
+	// The JSON should contain style and explode for the tags param
+	if !contains(jsonStr, `"style": "form"`) {
+		t.Error("expected JSON to contain style: form")
+	}
+	if !contains(jsonStr, `"explode": true`) {
+		t.Error("expected JSON to contain explode: true")
+	}
+}
+
+func TestGenerator_ScalarQueryParamNoStyleExplode(t *testing.T) {
+	// Scalar query params should NOT have style or explode in the JSON output.
+	registry := metadata.NewTypeRegistry()
+	gen := NewGenerator(registry)
+
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name: "SearchController",
+			Path: "search",
+			Routes: []analyzer.Route{
+				{
+					Method:      "GET",
+					Path:        "/search",
+					OperationID: "search",
+					Parameters: []analyzer.RouteParameter{
+						{
+							Category: "query",
+							Name:     "",
+							Type: metadata.Metadata{
+								Kind: metadata.KindObject,
+								Properties: []metadata.Property{
+									{Name: "q", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+									{Name: "limit", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "number"}, Required: false},
+								},
+							},
+							Required: true,
+						},
+					},
+					ReturnType: metadata.Metadata{Kind: metadata.KindVoid},
+					StatusCode: 200,
+					Tags:       []string{"Search"},
+				},
+			},
+		},
+	}
+
+	doc := gen.Generate(controllers)
+	jsonBytes, err := doc.ToJSON()
+	if err != nil {
+		t.Fatalf("failed to serialize to JSON: %v", err)
+	}
+	jsonStr := string(jsonBytes)
+
+	// Scalar params should NOT have style or explode
+	if contains(jsonStr, `"style"`) {
+		t.Error("scalar query params should NOT have style field in JSON")
+	}
+	if contains(jsonStr, `"explode"`) {
+		t.Error("scalar query params should NOT have explode field in JSON")
+	}
+}
+
+func contains(s, substr string) bool {
+	return strings.Contains(s, substr)
+}
+
+// --- Feature 2+3 combined: Named enum in query array ---
+
+func TestGenerator_NamedEnumArrayQueryParam(t *testing.T) {
+	// Array of named enum in query params should produce both $ref and style/explode.
+	registry := metadata.NewTypeRegistry()
+	gen := NewGenerator(registry)
+
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name: "OrderController",
+			Path: "orders",
+			Routes: []analyzer.Route{
+				{
+					Method:      "GET",
+					Path:        "/orders",
+					OperationID: "findOrders",
+					Parameters: []analyzer.RouteParameter{
+						{
+							Category: "query",
+							Name:     "",
+							Type: metadata.Metadata{
+								Kind: metadata.KindObject,
+								Properties: []metadata.Property{
+									{Name: "statuses", Type: metadata.Metadata{
+										Kind: metadata.KindArray,
+										ElementType: &metadata.Metadata{
+											Kind: metadata.KindUnion,
+											Name: "OrderStatus",
+											UnionMembers: []metadata.Metadata{
+												{Kind: metadata.KindLiteral, LiteralValue: "PENDING"},
+												{Kind: metadata.KindLiteral, LiteralValue: "SHIPPED"},
+												{Kind: metadata.KindLiteral, LiteralValue: "DELIVERED"},
+											},
+										},
+									}, Required: false},
+								},
+							},
+							Required: false,
+						},
+					},
+					ReturnType: metadata.Metadata{Kind: metadata.KindVoid},
+					StatusCode: 200,
+					Tags:       []string{"Order"},
+				},
+			},
+		},
+	}
+
+	doc := gen.Generate(controllers)
+
+	ordersPath, ok := doc.Paths["/orders"]
+	if !ok {
+		t.Fatal("expected /orders path")
+	}
+
+	params := ordersPath.Get.Parameters
+	if len(params) != 1 {
+		t.Fatalf("expected 1 parameter, got %d", len(params))
+	}
+
+	statusesParam := params[0]
+	if statusesParam.Name != "statuses" {
+		t.Errorf("expected param name='statuses', got %q", statusesParam.Name)
+	}
+	if statusesParam.Style != "form" {
+		t.Errorf("expected style='form', got %q", statusesParam.Style)
+	}
+	if statusesParam.Explode == nil || !*statusesParam.Explode {
+		t.Error("expected explode=true")
+	}
+
+	// The array items should reference OrderStatus
+	if statusesParam.Schema == nil || statusesParam.Schema.Type != "array" {
+		t.Fatal("expected array schema")
+	}
+	if statusesParam.Schema.Items == nil {
+		t.Fatal("expected items in array schema")
+	}
+	if statusesParam.Schema.Items.Ref != "#/components/schemas/OrderStatus" {
+		t.Errorf("expected items.$ref='#/components/schemas/OrderStatus', got %q", statusesParam.Schema.Items.Ref)
+	}
+
+	// OrderStatus should be registered as a component
+	if doc.Components == nil || doc.Components.Schemas == nil {
+		t.Fatal("expected components.schemas to be present")
+	}
+	if _, ok := doc.Components.Schemas["OrderStatus"]; !ok {
+		t.Error("expected OrderStatus in components.schemas")
+	}
+}
+
+// --- SSE Support Tests ---
+
+func TestGenerator_SSEEndpoint_BasicEventStream(t *testing.T) {
+	// An SSE route should produce text/event-stream response with itemSchema.
+	registry := metadata.NewTypeRegistry()
+	gen := NewGenerator(registry)
+
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name: "EventsController",
+			Path: "events",
+			Routes: []analyzer.Route{
+				{
+					Method:      "GET",
+					Path:        "/events",
+					OperationID: "streamEvents",
+					ReturnType:  metadata.Metadata{Kind: metadata.KindAny, Name: "MessageEvent"},
+					StatusCode:  200,
+					Tags:        []string{"Events"},
+					IsSSE:       true,
+				},
+			},
+		},
+	}
+
+	doc := gen.Generate(controllers)
+
+	// Verify OpenAPI version is 3.2.0
+	if doc.OpenAPI != "3.2.0" {
+		t.Errorf("expected openapi='3.2.0', got %q", doc.OpenAPI)
+	}
+
+	eventsPath, ok := doc.Paths["/events"]
+	if !ok {
+		t.Fatal("expected /events path")
+	}
+	if eventsPath.Get == nil {
+		t.Fatal("expected GET operation on /events")
+	}
+
+	op := eventsPath.Get
+	resp, ok := op.Responses["200"]
+	if !ok {
+		t.Fatal("expected 200 response")
+	}
+
+	if resp.Description != "Server-Sent Events stream" {
+		t.Errorf("expected description='Server-Sent Events stream', got %q", resp.Description)
+	}
+
+	// Check content type is text/event-stream
+	sseMedia, ok := resp.Content["text/event-stream"]
+	if !ok {
+		t.Fatal("expected text/event-stream content type")
+	}
+
+	// Should use itemSchema (not schema)
+	if sseMedia.Schema != nil {
+		t.Error("SSE response should NOT have schema (should use itemSchema)")
+	}
+	if sseMedia.ItemSchema == nil {
+		t.Fatal("SSE response should have itemSchema")
+	}
+
+	// Check the SSE event schema structure
+	eventSchema := sseMedia.ItemSchema
+	if eventSchema.Type != "object" {
+		t.Errorf("expected type='object', got %q", eventSchema.Type)
+	}
+	if len(eventSchema.Required) != 1 || eventSchema.Required[0] != "data" {
+		t.Errorf("expected required=['data'], got %v", eventSchema.Required)
+	}
+
+	// Check all 4 SSE fields
+	if _, ok := eventSchema.Properties["data"]; !ok {
+		t.Error("expected 'data' property")
+	}
+	if _, ok := eventSchema.Properties["event"]; !ok {
+		t.Error("expected 'event' property")
+	}
+	if _, ok := eventSchema.Properties["id"]; !ok {
+		t.Error("expected 'id' property")
+	}
+	retryProp, ok := eventSchema.Properties["retry"]
+	if !ok {
+		t.Error("expected 'retry' property")
+	} else {
+		if retryProp.Type != "integer" {
+			t.Errorf("expected retry type='integer', got %q", retryProp.Type)
+		}
+		if retryProp.Minimum == nil || *retryProp.Minimum != 0 {
+			t.Error("expected retry minimum=0")
+		}
+	}
+}
+
+func TestGenerator_SSEEndpoint_NoApplicationJSON(t *testing.T) {
+	// SSE endpoints should NOT have application/json in their response.
+	registry := metadata.NewTypeRegistry()
+	gen := NewGenerator(registry)
+
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name: "EventsController",
+			Path: "events",
+			Routes: []analyzer.Route{
+				{
+					Method:      "GET",
+					Path:        "/events",
+					OperationID: "streamEvents",
+					ReturnType:  metadata.Metadata{Kind: metadata.KindAny},
+					StatusCode:  200,
+					IsSSE:       true,
+				},
+			},
+		},
+	}
+
+	doc := gen.Generate(controllers)
+	resp := doc.Paths["/events"].Get.Responses["200"]
+
+	if _, ok := resp.Content["application/json"]; ok {
+		t.Error("SSE response should NOT contain application/json content type")
+	}
+	if _, ok := resp.Content["text/event-stream"]; !ok {
+		t.Error("SSE response should contain text/event-stream content type")
+	}
+}
+
+func TestGenerator_SSEEndpoint_WithTypedData(t *testing.T) {
+	// When the return type is a known DTO (not MessageEvent), the SSE event
+	// schema should have contentMediaType + contentSchema on the data field.
+	registry := metadata.NewTypeRegistry()
+	registry.Register("ChatEvent", &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Name: "ChatEvent",
+		Properties: []metadata.Property{
+			{Name: "type", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+			{Name: "payload", Type: metadata.Metadata{Kind: metadata.KindAny}, Required: true},
+		},
+	})
+
+	gen := NewGenerator(registry)
+
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name: "ChatEventsController",
+			Path: "chat/events",
+			Routes: []analyzer.Route{
+				{
+					Method:      "GET",
+					Path:        "/chat/events",
+					OperationID: "streamChatEvents",
+					ReturnType:  metadata.Metadata{Kind: metadata.KindRef, Ref: "ChatEvent"},
+					StatusCode:  200,
+					Tags:        []string{"Chat"},
+					IsSSE:       true,
+				},
+			},
+		},
+	}
+
+	doc := gen.Generate(controllers)
+	resp := doc.Paths["/chat/events"].Get.Responses["200"]
+	sseMedia := resp.Content["text/event-stream"]
+	eventSchema := sseMedia.ItemSchema
+
+	dataProp := eventSchema.Properties["data"]
+	if dataProp == nil {
+		t.Fatal("expected 'data' property")
+	}
+
+	// data should have contentMediaType and contentSchema
+	if dataProp.ContentMediaType != "application/json" {
+		t.Errorf("expected data.contentMediaType='application/json', got %q", dataProp.ContentMediaType)
+	}
+	if dataProp.ContentSchema == nil {
+		t.Fatal("expected data.contentSchema to be set for typed SSE data")
+	}
+	if dataProp.ContentSchema.Ref != "#/components/schemas/ChatEvent" {
+		t.Errorf("expected contentSchema.$ref='#/components/schemas/ChatEvent', got %q", dataProp.ContentSchema.Ref)
+	}
+}
+
+func TestGenerator_SSEEndpoint_MessageEventGeneric(t *testing.T) {
+	// When the return type is NestJS's MessageEvent, data should be a plain
+	// string without contentSchema (generic SSE envelope).
+	registry := metadata.NewTypeRegistry()
+	gen := NewGenerator(registry)
+
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name: "NotificationController",
+			Path: "notifications",
+			Routes: []analyzer.Route{
+				{
+					Method:      "GET",
+					Path:        "/notifications/events",
+					OperationID: "streamNotifications",
+					// Observable<MessageEvent> unwraps to MessageEvent → walker sees object named "MessageEvent"
+					ReturnType: metadata.Metadata{Kind: metadata.KindObject, Name: "MessageEvent"},
+					StatusCode: 200,
+					IsSSE:      true,
+				},
+			},
+		},
+	}
+
+	doc := gen.Generate(controllers)
+	resp := doc.Paths["/notifications/events"].Get.Responses["200"]
+	sseMedia := resp.Content["text/event-stream"]
+	eventSchema := sseMedia.ItemSchema
+
+	dataProp := eventSchema.Properties["data"]
+	if dataProp == nil {
+		t.Fatal("expected 'data' property")
+	}
+
+	// Generic MessageEvent → no contentSchema
+	if dataProp.ContentMediaType != "" {
+		t.Errorf("expected no contentMediaType for generic MessageEvent, got %q", dataProp.ContentMediaType)
+	}
+	if dataProp.ContentSchema != nil {
+		t.Error("expected no contentSchema for generic MessageEvent")
+	}
+	if dataProp.Type != "string" {
+		t.Errorf("expected data type='string', got %q", dataProp.Type)
+	}
+}
+
+func TestGenerator_SSEEndpoint_JSON(t *testing.T) {
+	// Verify the JSON output structure for an SSE endpoint.
+	registry := metadata.NewTypeRegistry()
+	gen := NewGenerator(registry)
+
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name: "EventsController",
+			Path: "events",
+			Routes: []analyzer.Route{
+				{
+					Method:      "GET",
+					Path:        "/events/stream",
+					OperationID: "stream",
+					ReturnType:  metadata.Metadata{Kind: metadata.KindAny},
+					StatusCode:  200,
+					IsSSE:       true,
+				},
+			},
+		},
+	}
+
+	doc := gen.Generate(controllers)
+	jsonBytes, err := doc.ToJSON()
+	if err != nil {
+		t.Fatalf("failed to serialize: %v", err)
+	}
+	jsonStr := string(jsonBytes)
+
+	// Should contain text/event-stream
+	if !contains(jsonStr, `"text/event-stream"`) {
+		t.Error("JSON should contain text/event-stream")
+	}
+	// Should contain itemSchema
+	if !contains(jsonStr, `"itemSchema"`) {
+		t.Error("JSON should contain itemSchema")
+	}
+	// Should contain required data field
+	if !contains(jsonStr, `"data"`) {
+		t.Error("JSON should contain data field")
+	}
+	// Should contain event field
+	if !contains(jsonStr, `"event"`) {
+		t.Error("JSON should contain event field")
+	}
+	// Should NOT contain application/json for SSE endpoint
+	if contains(jsonStr, `"application/json"`) {
+		t.Error("SSE endpoint should NOT contain application/json")
+	}
+}
+
+func TestGenerator_SSEAndRegularEndpoints(t *testing.T) {
+	// A controller with both SSE and regular endpoints should produce both
+	// text/event-stream and application/json responses appropriately.
+	registry := metadata.NewTypeRegistry()
+	gen := NewGenerator(registry)
+
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name: "ChatController",
+			Path: "chat",
+			Routes: []analyzer.Route{
+				{
+					Method:      "GET",
+					Path:        "/chat/messages",
+					OperationID: "getMessages",
+					ReturnType:  metadata.Metadata{Kind: metadata.KindArray, ElementType: &metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}},
+					StatusCode:  200,
+					Tags:        []string{"Chat"},
+				},
+				{
+					Method:      "GET",
+					Path:        "/chat/events",
+					OperationID: "streamEvents",
+					ReturnType:  metadata.Metadata{Kind: metadata.KindAny},
+					StatusCode:  200,
+					Tags:        []string{"Chat"},
+					IsSSE:       true,
+				},
+			},
+		},
+	}
+
+	doc := gen.Generate(controllers)
+
+	// Regular endpoint should have application/json
+	messagesPath := doc.Paths["/chat/messages"]
+	if messagesPath == nil || messagesPath.Get == nil {
+		t.Fatal("expected /chat/messages GET")
+	}
+	msgResp := messagesPath.Get.Responses["200"]
+	if _, ok := msgResp.Content["application/json"]; !ok {
+		t.Error("regular endpoint should have application/json")
+	}
+	if _, ok := msgResp.Content["text/event-stream"]; ok {
+		t.Error("regular endpoint should NOT have text/event-stream")
+	}
+
+	// SSE endpoint should have text/event-stream
+	eventsPath := doc.Paths["/chat/events"]
+	if eventsPath == nil || eventsPath.Get == nil {
+		t.Fatal("expected /chat/events GET")
+	}
+	sseResp := eventsPath.Get.Responses["200"]
+	if _, ok := sseResp.Content["text/event-stream"]; !ok {
+		t.Error("SSE endpoint should have text/event-stream")
+	}
+	if _, ok := sseResp.Content["application/json"]; ok {
+		t.Error("SSE endpoint should NOT have application/json")
+	}
+}
+
+func TestGenerator_SSEWithQueryParams(t *testing.T) {
+	// SSE endpoints often use query params for auth (token).
+	// Verify query params are still decomposed correctly for SSE routes.
+	registry := metadata.NewTypeRegistry()
+	gen := NewGenerator(registry)
+
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name: "EventsController",
+			Path: "events",
+			Routes: []analyzer.Route{
+				{
+					Method:      "GET",
+					Path:        "/events/stream",
+					OperationID: "stream",
+					Parameters: []analyzer.RouteParameter{
+						{
+							Category: "query",
+							Name:     "",
+							Type: metadata.Metadata{
+								Kind: metadata.KindObject,
+								Properties: []metadata.Property{
+									{Name: "token", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+								},
+							},
+							Required: true,
+						},
+					},
+					ReturnType: metadata.Metadata{Kind: metadata.KindAny},
+					StatusCode: 200,
+					IsSSE:      true,
+				},
+			},
+		},
+	}
+
+	doc := gen.Generate(controllers)
+	op := doc.Paths["/events/stream"].Get
+
+	// Should have the token query parameter
+	if len(op.Parameters) != 1 {
+		t.Fatalf("expected 1 parameter, got %d", len(op.Parameters))
+	}
+	if op.Parameters[0].Name != "token" {
+		t.Errorf("expected param name='token', got %q", op.Parameters[0].Name)
+	}
+	if op.Parameters[0].In != "query" {
+		t.Errorf("expected param in='query', got %q", op.Parameters[0].In)
+	}
+
+	// Should still have SSE response
+	resp := op.Responses["200"]
+	if _, ok := resp.Content["text/event-stream"]; !ok {
+		t.Error("expected text/event-stream response")
+	}
 }

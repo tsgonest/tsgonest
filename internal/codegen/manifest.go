@@ -9,10 +9,18 @@ import (
 // Manifest is the __tsgonest_manifest.json structure.
 // It maps DTO type names to their companion file paths and function names.
 type Manifest struct {
-	Validators  map[string]ManifestEntry `json:"validators"`
-	Serializers map[string]ManifestEntry `json:"serializers"`
-	Schemas     map[string]ManifestEntry `json:"schemas"`
-	Routes      map[string]RouteMapping  `json:"routes,omitempty"`
+	Version    int                          `json:"version"`
+	Companions map[string]CompanionManifest `json:"companions"`
+	Routes     map[string]RouteMapping      `json:"routes,omitempty"`
+}
+
+// CompanionManifest holds all function references for a single type's companion file.
+type CompanionManifest struct {
+	File      string `json:"file"`
+	Validate  string `json:"validate"`
+	Assert    string `json:"assert"`
+	Serialize string `json:"serialize"`
+	Schema    string `json:"schema"`
 }
 
 // RouteMapping maps a controller method to its return type name and whether
@@ -24,12 +32,6 @@ type RouteMapping struct {
 	IsArray bool `json:"isArray,omitempty"`
 }
 
-// ManifestEntry points to a companion file and exported function.
-type ManifestEntry struct {
-	File string `json:"file"`
-	Fn   string `json:"fn"`
-}
-
 // GenerateManifest creates a manifest from a list of companion files.
 // The outputDir is used to compute relative paths from the manifest location.
 // companionFiles are the CompanionFile structs from GenerateCompanionFiles.
@@ -37,15 +39,14 @@ type ManifestEntry struct {
 // populated from NestJS controller analysis. Pass nil to omit.
 func GenerateManifest(companionFiles []CompanionFile, outputDir string, routeMap map[string]RouteMapping) *Manifest {
 	m := &Manifest{
-		Validators:  make(map[string]ManifestEntry),
-		Serializers: make(map[string]ManifestEntry),
-		Schemas:     make(map[string]ManifestEntry),
-		Routes:      routeMap,
+		Version:    1,
+		Companions: make(map[string]CompanionManifest),
+		Routes:     routeMap,
 	}
 
 	for _, cf := range companionFiles {
-		typeName, category := parseCompanionPath(cf.Path)
-		if typeName == "" || category == "" {
+		typeName := parseCompanionPath(cf.Path)
+		if typeName == "" {
 			continue
 		}
 
@@ -63,22 +64,12 @@ func GenerateManifest(companionFiles []CompanionFile, outputDir string, routeMap
 			relPath = "./" + relPath
 		}
 
-		switch category {
-		case "validate":
-			m.Validators[typeName] = ManifestEntry{
-				File: relPath,
-				Fn:   "assert" + typeName,
-			}
-			// Also add Standard Schema entry from same file
-			m.Schemas[typeName] = ManifestEntry{
-				File: relPath,
-				Fn:   "schema" + typeName,
-			}
-		case "serialize":
-			m.Serializers[typeName] = ManifestEntry{
-				File: relPath,
-				Fn:   "serialize" + typeName,
-			}
+		m.Companions[typeName] = CompanionManifest{
+			File:      relPath,
+			Validate:  "validate" + typeName,
+			Assert:    "assert" + typeName,
+			Serialize: "serialize" + typeName,
+			Schema:    "schema" + typeName,
 		}
 	}
 
@@ -90,30 +81,25 @@ func ManifestJSON(m *Manifest) ([]byte, error) {
 	return json.MarshalIndent(m, "", "  ")
 }
 
-// parseCompanionPath extracts the type name and category from a companion file path.
-// e.g., "dist/user.dto.CreateUserDto.validate.js" → ("CreateUserDto", "validate")
-// e.g., "dist/user.dto.UserResponse.serialize.js" → ("UserResponse", "serialize")
-func parseCompanionPath(path string) (typeName string, category string) {
+// parseCompanionPath extracts the type name from a consolidated companion file path.
+// e.g., "dist/user.dto.CreateUserDto.tsgonest.js" → "CreateUserDto"
+// Only processes .tsgonest.js files, skips .tsgonest.d.ts files.
+func parseCompanionPath(path string) string {
 	base := filepath.Base(path)
 
-	// Strip .js extension
-	if !strings.HasSuffix(base, ".js") {
-		return "", ""
+	// Only process .tsgonest.js files (not .d.ts)
+	if !strings.HasSuffix(base, ".tsgonest.js") {
+		return ""
 	}
-	base = base[:len(base)-3]
+	// Strip .tsgonest.js suffix
+	base = base[:len(base)-len(".tsgonest.js")]
 
-	// Split by dots: [..., TypeName, category]
+	// Split by dots: [..., TypeName]
 	parts := strings.Split(base, ".")
-	if len(parts) < 3 {
-		return "", ""
+	if len(parts) < 2 {
+		return ""
 	}
 
-	category = parts[len(parts)-1]
-	typeName = parts[len(parts)-2]
-
-	if category != "validate" && category != "serialize" {
-		return "", ""
-	}
-
-	return typeName, category
+	// TypeName is the last segment
+	return parts[len(parts)-1]
 }

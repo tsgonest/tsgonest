@@ -6,12 +6,19 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/microsoft/typescript-go/shim/ast"
 	shimchecker "github.com/microsoft/typescript-go/shim/checker"
 	shimcompiler "github.com/microsoft/typescript-go/shim/compiler"
+	shimscanner "github.com/microsoft/typescript-go/shim/scanner"
 	"github.com/tsgonest/tsgonest/internal/metadata"
 )
+
+// returnTypeInferenceWarnThreshold is the wall-clock duration above which we
+// warn the user that a method's return type inference is slow and they should
+// add an explicit return type annotation for better build performance.
+const returnTypeInferenceWarnThreshold = 200 * time.Millisecond
 
 // ControllerInfo represents a parsed NestJS controller class.
 type ControllerInfo struct {
@@ -53,6 +60,18 @@ type Route struct {
 	ErrorResponses []ErrorResponse
 	// Version is from @Version() decorator (e.g., "1", "2").
 	Version string
+	// IsSSE indicates this is a Server-Sent Events endpoint (from @Sse decorator).
+	// SSE endpoints use GET method and return Observable<MessageEvent>.
+	IsSSE bool
+	// UsesRawResponse indicates a parameter uses @Res()/@Response(), meaning
+	// the developer handles the response manually. Return type is meaningless.
+	UsesRawResponse bool
+	// ResponseContentType overrides the content type for the success response in OpenAPI.
+	// Defaults to "application/json". Set by @Returns<T>({ contentType: 'application/pdf' }).
+	ResponseContentType string
+	// ResponseDescription overrides the response description in OpenAPI.
+	// Set by @Returns<T>({ description: 'PDF invoice' }).
+	ResponseDescription string
 }
 
 // SecurityRequirement represents an OpenAPI security requirement.
@@ -215,7 +234,7 @@ func (a *ControllerAnalyzer) analyzeClass(classNode *ast.Node, sourceFile string
 				continue
 			}
 
-			route := a.analyzeMethod(member, controllerPath, tag)
+			route := a.analyzeMethod(member, controllerPath, tag, className, sourceFile)
 			if route != nil {
 				routes = append(routes, *route)
 			}
@@ -232,14 +251,16 @@ func (a *ControllerAnalyzer) analyzeClass(classNode *ast.Node, sourceFile string
 
 // analyzeMethod attempts to parse a method declaration as a NestJS route handler.
 // Returns nil if the method has no HTTP method decorator.
-func (a *ControllerAnalyzer) analyzeMethod(methodNode *ast.Node, controllerPath string, tag string) *Route {
+func (a *ControllerAnalyzer) analyzeMethod(methodNode *ast.Node, controllerPath string, tag string, className string, sourceFile string) *Route {
 	methodDecl := methodNode.AsMethodDeclaration()
 
-	// Look for HTTP method decorators, @HttpCode, and @Version
+	// Look for HTTP method decorators, @HttpCode, @Version, @Sse, and @Returns
 	httpMethod := ""
 	subPath := ""
 	statusCode := 0
 	version := ""
+	isSSE := false
+	var returnsDecoratorInfo *DecoratorInfo
 
 	for _, dec := range methodNode.Decorators() {
 		info := ParseDecorator(dec)
@@ -253,6 +274,13 @@ func (a *ControllerAnalyzer) analyzeMethod(methodNode *ast.Node, controllerPath 
 			if len(info.Args) > 0 {
 				subPath = info.Args[0]
 			}
+		case "Sse":
+			// @Sse('path') — Server-Sent Events endpoint, maps to GET
+			httpMethod = "GET"
+			isSSE = true
+			if len(info.Args) > 0 {
+				subPath = info.Args[0]
+			}
 		case "HttpCode":
 			if info.NumericArg != nil {
 				statusCode = int(*info.NumericArg)
@@ -261,6 +289,8 @@ func (a *ControllerAnalyzer) analyzeMethod(methodNode *ast.Node, controllerPath 
 			if len(info.Args) > 0 {
 				version = info.Args[0]
 			}
+		case "Returns":
+			returnsDecoratorInfo = info
 		}
 	}
 
@@ -282,19 +312,41 @@ func (a *ControllerAnalyzer) analyzeMethod(methodNode *ast.Node, controllerPath 
 		operationID = methodDecl.Name().Text()
 	}
 
-	// Extract parameters
+	// Extract parameters, detecting @Res()/@Response() usage
 	var params []RouteParameter
+	usesRawResponse := false
 	if methodDecl.Parameters != nil {
 		for _, paramNode := range methodDecl.Parameters.Nodes {
-			param := a.analyzeParameter(paramNode)
+			// Check for @Res/@Response before full analysis (analyzeParameter returns nil for these)
+			if hasResponseDecorator(paramNode) {
+				usesRawResponse = true
+			}
+			param := a.analyzeParameter(paramNode, className, operationID, sourceFile, methodNode)
 			if param != nil {
 				params = append(params, *param)
 			}
 		}
 	}
 
-	// Extract return type
-	returnType := a.extractReturnType(methodNode, operationID)
+	// Extract return type.
+	// When @Res() is used AND @Returns<T>() is present, use T for OpenAPI schema.
+	// When @Res() is used without @Returns, force void.
+	// When @Res() is not used, infer normally from method return type.
+	var returnType metadata.Metadata
+	var responseContentType string
+	var responseDescription string
+	if usesRawResponse && returnsDecoratorInfo != nil {
+		// @Res() + @Returns<T>() — use the type argument for OpenAPI
+		var statusOverride int
+		returnType, responseContentType, responseDescription, statusOverride = a.extractReturnsDecoratorType(returnsDecoratorInfo)
+		if statusOverride > 0 {
+			statusCode = statusOverride
+		}
+	} else if usesRawResponse {
+		returnType = metadata.Metadata{Kind: metadata.KindVoid}
+	} else {
+		returnType = a.extractReturnType(methodNode, className, operationID, sourceFile)
+	}
 
 	var tags []string
 	if tag != "" {
@@ -302,7 +354,12 @@ func (a *ControllerAnalyzer) analyzeMethod(methodNode *ast.Node, controllerPath 
 	}
 
 	// Extract JSDoc metadata from the method
-	summary, description, deprecated, jsdocTags, security, errorResponses, contentType := extractMethodJSDoc(methodNode)
+	summary, description, deprecated, hidden, jsdocTags, security, errorResponses, contentType, ignoreWarnings := extractMethodJSDoc(methodNode)
+
+	// @hidden or @exclude — skip this route from OpenAPI generation
+	if hidden {
+		return nil
+	}
 	if len(jsdocTags) > 0 {
 		tags = jsdocTags // Override controller-derived tags
 	}
@@ -324,8 +381,30 @@ func (a *ControllerAnalyzer) analyzeMethod(methodNode *ast.Node, controllerPath 
 
 	// Validate parameter types and collect warnings
 	if a.warnings != nil {
+		// Build location string for warnings: ControllerName.methodName() (file.ts:line)
+		warnLocation := operationID + "()"
+		if className != "" {
+			warnLocation = className + "." + warnLocation
+		}
+		if sf := ast.GetSourceFileOfNode(methodNode); sf != nil {
+			line, _ := shimscanner.GetECMALineAndCharacterOfPosition(sf, methodNode.Pos())
+			warnLocation = fmt.Sprintf("%s (%s:%d)", warnLocation, sourceFile, line+1)
+		} else if sourceFile != "" {
+			warnLocation = fmt.Sprintf("%s (%s)", warnLocation, sourceFile)
+		}
+
 		for i := range params {
-			ValidateParameterType(&params[i], a.warnings, "")
+			ValidateParameterType(&params[i], a.warnings, sourceFile, warnLocation)
+		}
+
+		// Warn when @Res()/@Response() is used WITHOUT @Returns — return type cannot be determined statically.
+		// When @Returns<T>() is present, we have the type info and no warning is needed.
+		// When @tsgonest-ignore uses-raw-response is in JSDoc, suppress the warning.
+		if usesRawResponse && returnsDecoratorInfo == nil && !ignoreWarnings["uses-raw-response"] {
+			a.warnings.Add(sourceFile, "uses-raw-response",
+				fmt.Sprintf("%s — uses @Res()/@Response(); response type cannot be determined statically. "+
+					"The OpenAPI response will be empty (void). "+
+					"To fix: add @Returns<YourType>() decorator, or suppress with /** @tsgonest-ignore uses-raw-response */", warnLocation))
 		}
 	}
 
@@ -340,19 +419,23 @@ func (a *ControllerAnalyzer) analyzeMethod(methodNode *ast.Node, controllerPath 
 	}
 
 	return &Route{
-		Method:         httpMethod,
-		Path:           fullPath,
-		OperationID:    operationID,
-		Parameters:     params,
-		ReturnType:     returnType,
-		StatusCode:     statusCode,
-		Summary:        summary,
-		Description:    description,
-		Deprecated:     deprecated,
-		Tags:           tags,
-		Security:       security,
-		ErrorResponses: resolvedErrors,
-		Version:        version,
+		Method:              httpMethod,
+		Path:                fullPath,
+		OperationID:         operationID,
+		Parameters:          params,
+		ReturnType:          returnType,
+		StatusCode:          statusCode,
+		Summary:             summary,
+		Description:         description,
+		Deprecated:          deprecated,
+		Tags:                tags,
+		Security:            security,
+		ErrorResponses:      resolvedErrors,
+		Version:             version,
+		IsSSE:               isSSE,
+		UsesRawResponse:     usesRawResponse,
+		ResponseContentType: responseContentType,
+		ResponseDescription: responseDescription,
 	}
 }
 
@@ -363,12 +446,13 @@ func (a *ControllerAnalyzer) analyzeMethod(methodNode *ast.Node, controllerPath 
 //  1. Built-in NestJS decorators (@Body, @Param, @Query, @Headers) — hardcoded
 //  2. Custom decorators with @in JSDoc on their declaration site — resolved via checker
 //  3. No match → silently skip (correct for @CurrentUser, @Ip, etc.)
-func (a *ControllerAnalyzer) analyzeParameter(paramNode *ast.Node) *RouteParameter {
+func (a *ControllerAnalyzer) analyzeParameter(paramNode *ast.Node, className string, methodName string, sourceFile string, methodNode *ast.Node) *RouteParameter {
 	paramDecl := paramNode.AsParameterDeclaration()
 
 	// Look for parameter decorators
 	category := ""
 	paramName := ""
+	var unresolvedDecorators []string // track custom decorators without @in
 
 	for _, dec := range paramNode.Decorators() {
 		info := ParseDecorator(dec)
@@ -407,11 +491,17 @@ func (a *ControllerAnalyzer) analyzeParameter(paramNode *ast.Node) *RouteParamet
 				if len(info.Args) > 0 {
 					paramName = info.Args[0]
 				}
+			} else {
+				unresolvedDecorators = append(unresolvedDecorators, info.Name)
 			}
 		}
 	}
 
 	if category == "" {
+		// Custom decorators without @in are context-injection decorators
+		// (e.g., @UserId, @CurrentUser, @Tenant) — silently skip them.
+		// Users opt-in to OpenAPI inclusion by adding /** @in param|query|body|headers */
+		// to the decorator declaration.
 		return nil
 	}
 
@@ -430,6 +520,12 @@ func (a *ControllerAnalyzer) analyzeParameter(paramNode *ast.Node) *RouteParamet
 		}
 	}
 
+	// Auto-enable coercion for query and path parameters that are typed as
+	// number or boolean. These arrive as strings from HTTP and need coercion.
+	if category == "param" || category == "query" {
+		autoEnableCoercion(&paramType)
+	}
+
 	// Determine if required (not optional, not nullable)
 	required := paramDecl.QuestionToken == nil && !paramType.Optional && !paramType.Nullable
 
@@ -439,6 +535,42 @@ func (a *ControllerAnalyzer) analyzeParameter(paramNode *ast.Node) *RouteParamet
 		Type:     paramType,
 		Required: required,
 	}
+}
+
+// autoEnableCoercion sets Coerce=true on number/boolean atomic properties in query/path
+// parameters. HTTP query and path values arrive as strings — number and boolean types
+// need automatic string→type coercion at runtime.
+func autoEnableCoercion(m *metadata.Metadata) {
+	if m.Kind == metadata.KindAtomic && (m.Atomic == "number" || m.Atomic == "boolean") {
+		if m.Constraints == nil {
+			m.Constraints = &metadata.Constraints{}
+		}
+		if m.Constraints.Coerce == nil {
+			b := true
+			m.Constraints.Coerce = &b
+		}
+	}
+	// For whole-object query params, enable coercion on each property
+	if m.Kind == metadata.KindObject || m.Kind == metadata.KindRef {
+		for i := range m.Properties {
+			autoEnableCoercion(&m.Properties[i].Type)
+		}
+	}
+	// For array query params, enable coercion on the element type
+	if m.Kind == metadata.KindArray && m.ElementType != nil {
+		autoEnableCoercion(m.ElementType)
+	}
+}
+
+// hasResponseDecorator checks if a parameter node has @Res() or @Response() decorator.
+func hasResponseDecorator(paramNode *ast.Node) bool {
+	for _, dec := range paramNode.Decorators() {
+		info := ParseDecorator(dec)
+		if info != nil && (info.Name == "Res" || info.Name == "Response") {
+			return true
+		}
+	}
+	return false
 }
 
 // resolveDecoratorIn resolves a custom decorator's parameter category by reading
@@ -537,32 +669,129 @@ func findInTag(jsdocNode *ast.Node) string {
 // extractReturnType extracts and unwraps the return type of a method.
 // Promise<T> is unwrapped by the TypeWalker automatically.
 //
-// If the method has no explicit return type annotation, we return KindAny
-// instead of triggering full type inference through the checker. Inferred
-// return types (e.g., from Prisma service calls) can be deeply generic and
-// take seconds to resolve — and they produce nothing useful for OpenAPI since
-// there's no annotation to document.
-func (a *ControllerAnalyzer) extractReturnType(methodNode *ast.Node, methodName string) metadata.Metadata {
-	// Fast path: if no explicit return type annotation, skip expensive type inference.
+// When the method has an explicit return type annotation, we use WalkTypeNode
+// for the fastest path. When there is no annotation, we fall back to
+// checker-based inference: symbol → type → call signatures → return type.
+// If checker inference exceeds returnTypeInferenceWarnThreshold, we still use
+// the result but emit a warning so the user knows that method is slow to
+// analyze and should add an explicit return type annotation.
+func (a *ControllerAnalyzer) extractReturnType(methodNode *ast.Node, className string, methodName string, sourceFile string) metadata.Metadata {
 	methodDecl := methodNode.AsMethodDeclaration()
-	if methodDecl.Type == nil {
-		if a.warnings != nil && methodName != "" {
-			a.warnings.Add("", "missing-return-type",
-				fmt.Sprintf("%s() has no return type annotation — response will be untyped in OpenAPI. "+
-					"Add an explicit return type like Promise<YourDto> for proper documentation and serialization.", methodName))
-		}
+
+	// Fast path: explicit return type annotation — use the type node directly.
+	if methodDecl.Type != nil {
+		return a.walker.WalkTypeNode(methodDecl.Type)
+	}
+
+	// No annotation — infer via the checker.
+	return a.inferReturnType(methodNode, className, methodName, sourceFile)
+}
+
+// inferReturnType uses the checker to resolve the return type of a method that
+// has no explicit return type annotation. It measures wall-clock time and emits
+// a performance warning if inference is slow (indicating a computed/deeply
+// generic return type that the user should annotate explicitly).
+func (a *ControllerAnalyzer) inferReturnType(methodNode *ast.Node, className string, methodName string, sourceFile string) metadata.Metadata {
+	start := time.Now()
+
+	// GetSymbolAtLocation works on identifier nodes, not declaration nodes.
+	nameNode := methodNode.AsMethodDeclaration().Name()
+	if nameNode == nil {
 		return metadata.Metadata{Kind: metadata.KindAny}
 	}
 
-	// Use the type node directly — this is faster than going through
-	// symbol → type → signatures → return type, and works correctly
-	// for annotated return types.
-	return a.walker.WalkTypeNode(methodDecl.Type)
+	sym := a.checker.GetSymbolAtLocation(nameNode)
+	if sym == nil {
+		return metadata.Metadata{Kind: metadata.KindAny}
+	}
+
+	methodType := shimchecker.Checker_getTypeOfSymbol(a.checker, sym)
+	if methodType == nil {
+		return metadata.Metadata{Kind: metadata.KindAny}
+	}
+
+	sigs := shimchecker.Checker_getSignaturesOfType(a.checker, methodType, shimchecker.SignatureKindCall)
+	if len(sigs) == 0 {
+		return metadata.Metadata{Kind: metadata.KindAny}
+	}
+
+	// Use the last signature (overload resolution picks the implementation signature last).
+	returnType := shimchecker.Checker_getReturnTypeOfSignature(a.checker, sigs[len(sigs)-1])
+	if returnType == nil {
+		return metadata.Metadata{Kind: metadata.KindAny}
+	}
+
+	result := a.walker.WalkType(returnType)
+	elapsed := time.Since(start)
+
+	if elapsed >= returnTypeInferenceWarnThreshold && a.warnings != nil && methodName != "" {
+		// Build a descriptive location: ControllerName.methodName() (file.ts:line)
+		location := methodName + "()"
+		if className != "" {
+			location = className + "." + location
+		}
+
+		// Get line number from the method node position
+		if sf := ast.GetSourceFileOfNode(methodNode); sf != nil {
+			line, _ := shimscanner.GetECMALineAndCharacterOfPosition(sf, methodNode.Pos())
+			// line is 0-indexed, display as 1-indexed
+			location = fmt.Sprintf("%s (%s:%d)", location, sourceFile, line+1)
+		} else if sourceFile != "" {
+			location = fmt.Sprintf("%s (%s)", location, sourceFile)
+		}
+
+		a.warnings.Add(sourceFile, "slow-return-type-inference",
+			fmt.Sprintf("%s return type inference took %dms — consider adding an explicit return type annotation for better build performance.",
+				location, elapsed.Milliseconds()))
+	}
+
+	return result
+}
+
+// extractReturnsDecoratorType extracts the response type from a @Returns<T>() decorator.
+// It reads the type argument T via the checker and walks it into metadata.
+// Also extracts contentType, description, and status override from the options object.
+// statusOverride is 0 when no override was specified.
+func (a *ControllerAnalyzer) extractReturnsDecoratorType(info *DecoratorInfo) (returnType metadata.Metadata, contentType string, description string, statusOverride int) {
+	// Default: void (fallback if type arg is missing)
+	returnType = metadata.Metadata{Kind: metadata.KindVoid}
+
+	// Extract type argument T from @Returns<T>()
+	if len(info.TypeArgNodes) > 0 {
+		typeArgNode := info.TypeArgNodes[0]
+
+		// Resolve the type through the checker → type walker
+		t := shimchecker.Checker_getTypeFromTypeNode(a.checker, typeArgNode)
+		if t != nil {
+			returnType = a.walker.WalkType(t)
+		} else {
+			// Fallback: walk the type node directly
+			returnType = a.walker.WalkTypeNode(typeArgNode)
+		}
+	}
+
+	// Extract options from the object literal argument
+	if info.ObjectLiteralArg != nil {
+		if ct, ok := info.ObjectLiteralArg["contentType"]; ok && ct.Kind == ast.KindStringLiteral {
+			contentType = ct.AsStringLiteral().Text
+		}
+		if desc, ok := info.ObjectLiteralArg["description"]; ok && desc.Kind == ast.KindStringLiteral {
+			description = desc.AsStringLiteral().Text
+		}
+		if st, ok := info.ObjectLiteralArg["status"]; ok && st.Kind == ast.KindNumericLiteral {
+			if num, err := strconv.ParseFloat(st.Text(), 64); err == nil {
+				statusOverride = int(num)
+			}
+		}
+	}
+
+	return
 }
 
 // extractMethodJSDoc extracts OpenAPI-relevant JSDoc tags from a method declaration.
-// Returns summary, description, deprecated, tags, security, error responses, and content type.
-func extractMethodJSDoc(node *ast.Node) (summary string, description string, deprecated bool, tags []string, security []SecurityRequirement, errorResponses []ErrorResponse, contentType string) {
+// Returns summary, description, deprecated, hidden, tags, security, error responses, content type,
+// and a set of ignored warning kinds (from @tsgonest-ignore tags).
+func extractMethodJSDoc(node *ast.Node) (summary string, description string, deprecated bool, hidden bool, tags []string, security []SecurityRequirement, errorResponses []ErrorResponse, contentType string, ignoreWarnings map[string]bool) {
 	if node == nil {
 		return
 	}
@@ -597,6 +826,8 @@ func extractMethodJSDoc(node *ast.Node) (summary string, description string, dep
 			description = strings.TrimSpace(comment)
 		case "deprecated":
 			deprecated = true
+		case "hidden", "exclude":
+			hidden = true
 		case "tag":
 			t := strings.TrimSpace(comment)
 			if t != "" {
@@ -622,6 +853,16 @@ func extractMethodJSDoc(node *ast.Node) (summary string, description string, dep
 			}
 		case "contenttype":
 			contentType = strings.TrimSpace(comment)
+		case "tsgonest-ignore":
+			// @tsgonest-ignore uses-raw-response
+			// Suppresses the specified warning kind.
+			kind := strings.TrimSpace(comment)
+			if kind != "" {
+				if ignoreWarnings == nil {
+					ignoreWarnings = make(map[string]bool)
+				}
+				ignoreWarnings[kind] = true
+			}
 		}
 	}
 
@@ -793,28 +1034,74 @@ var _ = strconv.ParseFloat
 
 // ValidateParameterType checks that a route parameter has a valid type for its category
 // and records warnings via the WarningCollector if not.
-func ValidateParameterType(param *RouteParameter, wc *WarningCollector, sourceFile string) {
+// location is a pre-formatted string like "ControllerName.methodName() (file.ts:line)".
+func ValidateParameterType(param *RouteParameter, wc *WarningCollector, sourceFile string, location string) {
 	if wc == nil {
 		return
 	}
 	switch param.Category {
 	case "param":
 		// Path params must be scalar (string, number). Warn if arrays/objects are used.
-		if param.Type.Kind == metadata.KindObject || param.Type.Kind == metadata.KindArray {
+		if param.Type.Kind == metadata.KindObject || param.Type.Kind == metadata.KindArray || param.Type.Kind == metadata.KindRef {
 			wc.Add(sourceFile, "param-non-scalar",
-				fmt.Sprintf("path parameter %q has non-scalar type %q; only string/number are valid", param.Name, param.Type.Kind))
+				fmt.Sprintf("%s — path parameter %q has non-scalar type %q; only string/number are valid in URL path segments",
+					location, param.Name, param.Type.Kind))
+		}
+		// Path params cannot be any — no type info for URL segment.
+		if param.Type.Kind == metadata.KindAny {
+			wc.Add(sourceFile, "param-any",
+				fmt.Sprintf("%s — path parameter %q has type 'any'; add a type annotation (string or number)",
+					location, param.Name))
+		}
+		// Path params cannot be optional or nullable — URL segments can't be missing.
+		if param.Type.Optional || param.Type.Nullable {
+			wc.Add(sourceFile, "param-optional",
+				fmt.Sprintf("%s — path parameter %q is optional/nullable; URL path segments cannot be missing",
+					location, param.Name))
+		}
+		// Path params should not be union types across different kinds.
+		if param.Type.Kind == metadata.KindUnion && len(param.Type.UnionMembers) > 1 {
+			kinds := map[metadata.Kind]bool{}
+			for _, m := range param.Type.UnionMembers {
+				kinds[m.Kind] = true
+			}
+			if len(kinds) > 1 {
+				wc.Add(sourceFile, "param-union",
+					fmt.Sprintf("%s — path parameter %q is a union of different types; path params should be a single scalar type",
+						location, param.Name))
+			}
+		}
+		// @Param() without a field name — nestia errors on this, we warn.
+		if param.Name == "" {
+			wc.Add(sourceFile, "param-no-name",
+				fmt.Sprintf("%s — @Param() used without a field name; use @Param('id') to name the path parameter",
+					location))
 		}
 	case "query":
 		// Query params should be flat (no deeply nested objects).
 		if hasNestedObjects(&param.Type) {
 			wc.Add(sourceFile, "query-complex-type",
-				fmt.Sprintf("query parameter %q has nested object type; query params should be flat", param.Name))
+				fmt.Sprintf("%s — query parameter %q has nested object type; query params should be flat (no nested objects)",
+					location, param.Name))
+		}
+		// Whole-object query params should not be nullable.
+		if param.Name == "" && param.Type.Nullable {
+			wc.Add(sourceFile, "query-nullable",
+				fmt.Sprintf("%s — query object is nullable; query parameters cannot be null",
+					location))
 		}
 	case "headers":
 		// Headers shouldn't be null.
 		if param.Type.Nullable {
 			wc.Add(sourceFile, "header-null",
-				fmt.Sprintf("header parameter %q is nullable; header values cannot be null", param.Name))
+				fmt.Sprintf("%s — header parameter %q is nullable; HTTP header values cannot be null",
+					location, param.Name))
+		}
+		// Whole-object headers should not have nested objects.
+		if param.Name == "" && hasNestedObjects(&param.Type) {
+			wc.Add(sourceFile, "header-complex-type",
+				fmt.Sprintf("%s — header object has nested object type; headers should be flat (no nested objects)",
+					location))
 		}
 	}
 }

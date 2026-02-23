@@ -14,6 +14,7 @@ import (
 	shimchecker "github.com/microsoft/typescript-go/shim/checker"
 	shimcompiler "github.com/microsoft/typescript-go/shim/compiler"
 	"github.com/tsgonest/tsgonest/internal/analyzer"
+	"github.com/tsgonest/tsgonest/internal/buildcache"
 	"github.com/tsgonest/tsgonest/internal/codegen"
 	"github.com/tsgonest/tsgonest/internal/compiler"
 	"github.com/tsgonest/tsgonest/internal/config"
@@ -23,7 +24,13 @@ import (
 )
 
 // runBuild executes the full build pipeline:
-// compile -> path alias resolution -> companions -> manifest -> OpenAPI -> assets.
+// diagnostics -> compile -> path alias resolution -> companions -> manifest -> OpenAPI -> assets.
+//
+// Exit codes (matching tsgo):
+//
+//	0 = success, no errors
+//	1 = diagnostics present, outputs generated
+//	2 = diagnostics present, outputs skipped (e.g. noEmitOnError)
 func runBuild(args []string) int {
 	buildFlags := flag.NewFlagSet("build", flag.ExitOnError)
 
@@ -33,6 +40,7 @@ func runBuild(args []string) int {
 		dumpMetadata bool
 		clean        bool
 		assets       string
+		noCheck      bool
 	)
 
 	buildFlags.StringVar(&configPath, "config", "", "Path to tsgonest config file (tsgonest.config.json)")
@@ -41,6 +49,7 @@ func runBuild(args []string) int {
 	buildFlags.BoolVar(&dumpMetadata, "dump-metadata", false, "Dump type metadata as JSON to stdout (debug)")
 	buildFlags.BoolVar(&clean, "clean", false, "Clean output directory before building")
 	buildFlags.StringVar(&assets, "assets", "", "Glob pattern for static assets to copy to output")
+	buildFlags.BoolVar(&noCheck, "no-check", false, "Skip type checking (syntax errors are still reported)")
 
 	buildFlags.Usage = func() {
 		fmt.Println("Usage: tsgonest build [flags]")
@@ -60,11 +69,13 @@ func runBuild(args []string) int {
 		return 1
 	}
 
-	// Load config if specified
+	// Load config if specified.
+	// resolvedConfigPath is hoisted to function scope — needed later for cache hashing.
 	var cfg *config.Config
+	var resolvedConfigPath string
 	configDir := cwd // default: resolve relative paths from CWD
 	if configPath != "" {
-		resolvedConfigPath := configPath
+		resolvedConfigPath = configPath
 		if !filepath.IsAbs(resolvedConfigPath) {
 			resolvedConfigPath = filepath.Join(cwd, resolvedConfigPath)
 		}
@@ -87,6 +98,7 @@ func runBuild(args []string) int {
 					fmt.Fprintf(os.Stderr, "error: %v\n", err)
 					return 1
 				}
+				resolvedConfigPath = p
 				configDir = filepath.Dir(p)
 				fmt.Fprintf(os.Stderr, "loaded config from %s\n", filepath.Base(p))
 				break
@@ -123,11 +135,27 @@ func runBuild(args []string) int {
 		}
 	}
 
+	// Resolve tsconfig path for cache file derivation
+	resolvedTsconfigPath := tsconfigPath
+	if !filepath.IsAbs(resolvedTsconfigPath) {
+		resolvedTsconfigPath = filepath.Join(cwd, resolvedTsconfigPath)
+	}
+	postCachePath := buildcache.CachePath(resolvedTsconfigPath)
+
 	// Clean output directory if requested (using parsed OutDir, no re-parsing needed)
 	if clean && opts.OutDir != "" {
 		if cleanErr := cleanDir(opts.OutDir); cleanErr != nil {
 			fmt.Fprintf(os.Stderr, "warning: clean: %v\n", cleanErr)
 		}
+		// Also delete the .tsbuildinfo file — otherwise the incremental program
+		// thinks nothing changed and won't re-emit the JS files we just deleted.
+		tsbuildInfoPath := strings.TrimSuffix(resolvedTsconfigPath, ".json") + ".tsbuildinfo"
+		if _, err := os.Stat(tsbuildInfoPath); err == nil {
+			os.Remove(tsbuildInfoPath)
+			fmt.Fprintf(os.Stderr, "removed %s\n", filepath.Base(tsbuildInfoPath))
+		}
+		// Also delete the post-processing cache — ensures full rebuild
+		buildcache.Delete(postCachePath)
 	}
 	tsconfigDur := time.Since(tsconfigStart)
 
@@ -149,25 +177,158 @@ func runBuild(args []string) int {
 		return runDumpMetadata(program)
 	}
 
-	// Emit JavaScript
-	emitStart := time.Now()
-	emittedFiles, emitDiags, err := compiler.EmitProgram(program)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error during emit: %v\n", err)
-		return 1
-	}
-	if len(emitDiags) > 0 {
-		fmt.Fprint(os.Stderr, compiler.FormatDiagnostics(emitDiags))
-	}
-	emitDur := time.Since(emitStart)
+	// Step 3: Gather diagnostics + emit.
+	// If tsconfig has "incremental: true" or "composite: true", use the incremental
+	// pipeline — only checks/emits changed files, persists state to .tsbuildinfo.
+	pretty := compiler.IsPrettyOutput()
+	reportDiag := compiler.CreateDiagnosticReporter(os.Stderr, cwd, pretty)
 
+	isIncremental := opts.IsIncremental()
+
+	var allDiagnostics []*ast.Diagnostic
+	var emitResult *compiler.EmitResult
+	var diagDur, emitDur time.Duration
+
+	if isIncremental {
+		// Incremental mode: wrap program with incremental state.
+		// ReadBuildInfoProgram reads prior state from .tsbuildinfo (if it exists).
+		incrProgram := compiler.CreateIncrementalProgram(program, nil, host, parsedConfig)
+		fmt.Fprintln(os.Stderr, "incremental build enabled")
+
+		diagStart := time.Now()
+		allDiagnostics = compiler.GatherIncrementalDiagnostics(incrProgram, noCheck)
+		diagDur = time.Since(diagStart)
+
+		// Emit through incremental program — only changed files + writes .tsbuildinfo
+		emitStart := time.Now()
+		emitResult = compiler.EmitIncrementalProgram(incrProgram)
+		emitDur = time.Since(emitStart)
+	} else {
+		diagStart := time.Now()
+		allDiagnostics = compiler.GatherDiagnostics(program, noCheck)
+		diagDur = time.Since(diagStart)
+
+		// Emit JavaScript (non-incremental)
+		emitStart := time.Now()
+		emitResult = compiler.EmitProgram(program)
+		emitDur = time.Since(emitStart)
+	}
+
+	// Append emit diagnostics (declaration transform errors, write errors)
+	allDiagnostics = append(allDiagnostics, emitResult.Diagnostics...)
+	allDiagnostics = shimcompiler.SortAndDeduplicateDiagnostics(allDiagnostics)
+
+	// Report all diagnostics
+	for _, d := range allDiagnostics {
+		reportDiag(d)
+	}
+
+	// Error summary (pretty mode only)
+	if pretty {
+		compiler.WriteErrorSummary(os.Stderr, allDiagnostics, cwd)
+	}
+
+	// Determine exit status (matching tsgo):
+	// - EmitSkipped + errors → exit 2
+	// - Errors present → exit 1
+	// - No errors → continue to NestJS analysis
+	hasErrors := compiler.CountErrors(allDiagnostics) > 0
+	if emitResult.EmitSkipped && hasErrors {
+		// noEmitOnError triggered — no files written
+		fmt.Fprintln(os.Stderr, "no files emitted (noEmitOnError)")
+		totalDur := time.Since(buildStart)
+		printTiming(tsconfigDur, programDur, diagDur, emitDur, 0, 0, 0, 0, 0, 0, totalDur)
+		return 2
+	}
+
+	emittedFiles := emitResult.EmittedFiles
 	if len(emittedFiles) > 0 {
 		fmt.Fprintf(os.Stderr, "emitted %d file(s)\n", len(emittedFiles))
-	} else {
+	} else if !emitResult.EmitSkipped {
 		fmt.Fprintln(os.Stderr, "no files emitted")
 	}
 
+	// ── Early exit on diagnostic errors ──────────────────────────────────
+	// If TypeScript has errors, skip all post-processing (companions, controllers,
+	// manifest, OpenAPI). The type checker data may be incomplete/unreliable, and
+	// tsgonest warnings are noise when the user needs to fix TS errors first.
+	// Path aliases are still resolved since emitted JS needs correct imports.
+	if hasErrors {
+		// Resolve path aliases so the emitted JS is usable despite errors
+		aliasStart := time.Now()
+		if opts.Paths != nil && opts.Paths.Size() > 0 {
+			pathsMap := make(map[string][]string)
+			for k, v := range opts.Paths.Entries() {
+				pathsMap[k] = v
+			}
+			pathsBaseDir := opts.GetPathsBasePath(cwd)
+
+			resolver := pathalias.NewPathResolver(pathalias.Config{
+				PathsBaseDir: pathsBaseDir,
+				OutDir:       opts.OutDir,
+				RootDir:      opts.RootDir,
+				Paths:        pathsMap,
+			})
+			count, aliasErr := resolver.ResolveAllEmittedFiles(emittedFiles)
+			if aliasErr != nil {
+				fmt.Fprintf(os.Stderr, "warning: path alias resolution: %v\n", aliasErr)
+			} else if count > 0 {
+				fmt.Fprintf(os.Stderr, "resolved path aliases in %d file(s)\n", count)
+			}
+		}
+		aliasDur := time.Since(aliasStart)
+
+		totalDur := time.Since(buildStart)
+		printTiming(tsconfigDur, programDur, diagDur, emitDur, aliasDur, 0, 0, 0, 0, 0, totalDur)
+		return 1
+	}
+
+	// ── Post-processing cache check ──────────────────────────────────────
+	// When incremental mode reports no emitted files (nothing changed in TS),
+	// AND the tsgonest config + critical output files are unchanged, we can
+	// skip all expensive post-processing (aliases, checker, companions,
+	// controller analysis, manifest, OpenAPI).
+	//
+	// If ANY condition fails → full rebuild. No partial invalidation.
+	var configHash string
+	if resolvedConfigPath != "" {
+		configHash = buildcache.HashFile(resolvedConfigPath)
+	}
+
+	noFilesEmitted := len(emittedFiles) == 0 && !emitResult.EmitSkipped
+	if noFilesEmitted && !clean {
+		existingCache := buildcache.Load(postCachePath)
+		if existingCache != nil && existingCache.IsValid(configHash) {
+			// All checks passed — skip post-processing entirely
+			fmt.Fprintln(os.Stderr, "no changes detected, outputs up to date")
+
+			totalDur := time.Since(buildStart)
+			printTiming(tsconfigDur, programDur, diagDur, emitDur, 0, 0, 0, 0, 0, 0, totalDur)
+
+			return 0
+		}
+		// Cache miss/invalid — fall through to full post-processing
+	}
+
+	// When the cache is invalid but no files were emitted (incremental warm rebuild
+	// with cache miss — e.g., output file deleted, config changed), we still need
+	// the emitted file list to build the source→output map for companion generation.
+	// In this case, enumerate existing .js files in the outDir.
+	effectiveEmittedFiles := emittedFiles
+	if noFilesEmitted && opts.OutDir != "" {
+		existingJS := discoverJSFiles(opts.OutDir)
+		if len(existingJS) > 0 {
+			effectiveEmittedFiles = existingJS
+		}
+	}
+
+	// Track files with syntax errors — skip companion generation for them
+	syntaxErrorFiles := compiler.FilesWithSyntaxErrors(
+		compiler.GetSyntacticDiagnostics(program),
+	)
+
 	// Resolve path aliases in emitted files using the parsed tsconfig paths.
+	// Only process actually emitted files (not discovered ones — they were already resolved).
 	aliasStart := time.Now()
 	if opts.Paths != nil && opts.Paths.Size() > 0 {
 		pathsMap := make(map[string][]string)
@@ -214,10 +375,12 @@ func runBuild(args []string) int {
 	checkerDur := time.Since(checkerStart)
 
 	// Generate companion files (validation + serialization)
+	// Skip files with syntax errors — their AST/type metadata may be unreliable.
+	// Use effectiveEmittedFiles (which includes discovered files on cache-miss warm builds).
 	companionStart := time.Now()
 	var allCompanions []codegen.CompanionFile
 	if needCompanions {
-		companions, compErr := generateCompanionsWithWalker(program, cfg, emittedFiles, opts.RootDir, opts.OutDir, sharedChecker, sharedWalker)
+		companions, compErr := generateCompanionsWithWalker(program, cfg, effectiveEmittedFiles, opts.RootDir, opts.OutDir, sharedChecker, sharedWalker, syntaxErrorFiles)
 		if compErr != nil {
 			fmt.Fprintf(os.Stderr, "error generating companions: %v\n", compErr)
 			return 1
@@ -238,19 +401,10 @@ func runBuild(args []string) int {
 		ca := analyzer.NewControllerAnalyzerWithWalker(program, sharedChecker, sharedWalker)
 		controllers = ca.AnalyzeProgram(cfg.Controllers.Include, cfg.Controllers.Exclude)
 		controllerRegistry = ca.Registry()
-		// Print warnings, summarizing repeated types
+		// Print warnings
 		warnings := ca.Warnings()
-		var missingReturnCount int
 		for _, w := range warnings {
-			if w.Kind == "missing-return-type" {
-				missingReturnCount++
-			} else {
-				fmt.Fprintf(os.Stderr, "warning: %s\n", w.Message)
-			}
-		}
-		if missingReturnCount > 0 {
-			fmt.Fprintf(os.Stderr, "warning: %d route(s) have no return type annotation — responses will be untyped in OpenAPI.\n", missingReturnCount)
-			fmt.Fprintf(os.Stderr, "         Add explicit return types like Promise<YourDto> for proper documentation and serialization.\n")
+			fmt.Fprintf(os.Stderr, "warning: %s\n", w.Message)
 		}
 		if len(controllers) > 0 {
 			totalRoutes := 0
@@ -303,22 +457,52 @@ func runBuild(args []string) int {
 		}
 	}
 
+	// ── Save post-processing cache ─────────────────────────────────────
+	// Record what we just built so the next incremental warm build can skip
+	// post-processing when nothing changed.
+	var cacheOutputs []string
+	if cfg != nil && cfg.OpenAPI.Output != "" {
+		openapiOutput := cfg.OpenAPI.Output
+		if !filepath.IsAbs(openapiOutput) {
+			openapiOutput = filepath.Join(configDir, openapiOutput)
+		}
+		cacheOutputs = append(cacheOutputs, openapiOutput)
+	}
+	if len(allCompanions) > 0 {
+		manifestDir := opts.OutDir
+		if manifestDir == "" {
+			manifestDir = determineOutputDir(allCompanions, emittedFiles, cwd)
+		}
+		manifestPath := filepath.Join(manifestDir, "__tsgonest_manifest.json")
+		cacheOutputs = append(cacheOutputs, manifestPath)
+	}
+	postCache := buildcache.New(configHash, cacheOutputs)
+	if saveErr := buildcache.Save(postCachePath, postCache); saveErr != nil {
+		fmt.Fprintf(os.Stderr, "warning: saving post-processing cache: %v\n", saveErr)
+	}
+
 	totalDur := time.Since(buildStart)
 
 	// Print timing breakdown
-	fmt.Fprintf(os.Stderr, "\n--- timing ---\n")
-	fmt.Fprintf(os.Stderr, "  tsconfig:      %s\n", tsconfigDur.Round(time.Millisecond))
-	fmt.Fprintf(os.Stderr, "  program:       %s\n", programDur.Round(time.Millisecond))
-	fmt.Fprintf(os.Stderr, "  emit:          %s\n", emitDur.Round(time.Millisecond))
-	fmt.Fprintf(os.Stderr, "  aliases:       %s\n", aliasDur.Round(time.Millisecond))
-	fmt.Fprintf(os.Stderr, "  checker:       %s\n", checkerDur.Round(time.Millisecond))
-	fmt.Fprintf(os.Stderr, "  companions:    %s\n", companionDur.Round(time.Millisecond))
-	fmt.Fprintf(os.Stderr, "  controllers:   %s\n", controllerDur.Round(time.Millisecond))
-	fmt.Fprintf(os.Stderr, "  manifest:      %s\n", manifestDur.Round(time.Millisecond))
-	fmt.Fprintf(os.Stderr, "  openapi:       %s\n", openapiDur.Round(time.Millisecond))
-	fmt.Fprintf(os.Stderr, "  total:         %s\n", totalDur.Round(time.Millisecond))
+	printTiming(tsconfigDur, programDur, diagDur, emitDur, aliasDur, checkerDur, companionDur, controllerDur, manifestDur, openapiDur, totalDur)
 
 	return 0
+}
+
+// printTiming outputs the build timing breakdown to stderr.
+func printTiming(tsconfig, program, diag, emit, aliases, checker, companions, controllers, manifest, openapi, total time.Duration) {
+	fmt.Fprintf(os.Stderr, "\n--- timing ---\n")
+	fmt.Fprintf(os.Stderr, "  tsconfig:      %s\n", tsconfig.Round(time.Millisecond))
+	fmt.Fprintf(os.Stderr, "  program:       %s\n", program.Round(time.Millisecond))
+	fmt.Fprintf(os.Stderr, "  diagnostics:   %s\n", diag.Round(time.Millisecond))
+	fmt.Fprintf(os.Stderr, "  emit:          %s\n", emit.Round(time.Millisecond))
+	fmt.Fprintf(os.Stderr, "  aliases:       %s\n", aliases.Round(time.Millisecond))
+	fmt.Fprintf(os.Stderr, "  checker:       %s\n", checker.Round(time.Millisecond))
+	fmt.Fprintf(os.Stderr, "  companions:    %s\n", companions.Round(time.Millisecond))
+	fmt.Fprintf(os.Stderr, "  controllers:   %s\n", controllers.Round(time.Millisecond))
+	fmt.Fprintf(os.Stderr, "  manifest:      %s\n", manifest.Round(time.Millisecond))
+	fmt.Fprintf(os.Stderr, "  openapi:       %s\n", openapi.Round(time.Millisecond))
+	fmt.Fprintf(os.Stderr, "  total:         %s\n", total.Round(time.Millisecond))
 }
 
 // cleanDir removes a directory after safety checks.
@@ -422,7 +606,8 @@ func generateOpenAPIFromControllers(controllers []analyzer.ControllerInfo, regis
 }
 
 // generateCompanionsWithWalker analyzes types and generates companion files using a shared checker + walker.
-func generateCompanionsWithWalker(program *shimcompiler.Program, cfg *config.Config, emittedFiles []string, rootDir, outDir string, checker *shimchecker.Checker, walker *analyzer.TypeWalker) ([]codegen.CompanionFile, error) {
+// Files in skipFiles (source files with syntax errors) are excluded from companion generation.
+func generateCompanionsWithWalker(program *shimcompiler.Program, cfg *config.Config, emittedFiles []string, rootDir, outDir string, checker *shimchecker.Checker, walker *analyzer.TypeWalker, skipFiles map[string]bool) ([]codegen.CompanionFile, error) {
 	// Build a map from source file name -> emitted JS path
 	// so we can write companions alongside the emitted JS.
 	sourceToOutput := buildSourceToOutputMap(program, emittedFiles, rootDir, outDir)
@@ -431,6 +616,12 @@ func generateCompanionsWithWalker(program *shimcompiler.Program, cfg *config.Con
 
 	for _, sf := range program.GetSourceFiles() {
 		if sf.IsDeclarationFile {
+			continue
+		}
+
+		// Skip files with syntax errors — their type metadata may be wrong
+		if skipFiles[sf.FileName()] {
+			fmt.Fprintf(os.Stderr, "warning: skipping companion generation for %s (syntax errors)\n", filepath.Base(sf.FileName()))
 			continue
 		}
 
@@ -469,6 +660,11 @@ func generateCompanionsWithWalker(program *shimcompiler.Program, cfg *config.Con
 			case ast.KindClassDeclaration:
 				decl := stmt.AsClassDeclaration()
 				if decl.Name() != nil {
+					// Skip controller classes — they have @Controller() decorator
+					// and their companion files are useless (validates method names as any).
+					if isControllerClass(stmt) {
+						continue
+					}
 					name := decl.Name().Text()
 					sym := checker.GetSymbolAtLocation(decl.Name())
 					if sym != nil {
@@ -570,6 +766,24 @@ func resolveReturnTypeName(m *metadata.Metadata) string {
 		}
 	}
 	return ""
+}
+
+// discoverJSFiles walks the output directory and returns all .js file paths.
+// Used when incremental mode emitted no files (nothing changed in TS) but we
+// still need to run post-processing (cache miss). The companion generator needs
+// a list of JS files to build the source→output mapping.
+func discoverJSFiles(outDir string) []string {
+	var files []string
+	filepath.Walk(outDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil // skip errors
+		}
+		if !info.IsDir() && strings.HasSuffix(path, ".js") {
+			files = append(files, path)
+		}
+		return nil
+	})
+	return files
 }
 
 // determineOutputDir figures out the output directory from emitted files or companion paths.
@@ -747,4 +961,17 @@ func runDumpMetadata(program *shimcompiler.Program) int {
 		return 1
 	}
 	return 0
+}
+
+// isControllerClass checks if a class declaration has a @Controller() decorator.
+// Used to skip companion generation for NestJS controller classes, which produce
+// useless validators (they validate method names as any-typed properties).
+func isControllerClass(classNode *ast.Node) bool {
+	for _, dec := range classNode.Decorators() {
+		info := analyzer.ParseDecorator(dec)
+		if info != nil && analyzer.IsControllerDecorator(info) {
+			return true
+		}
+	}
+	return false
 }

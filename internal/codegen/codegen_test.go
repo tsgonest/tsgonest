@@ -20,15 +20,13 @@ func TestValidateSimpleObject(t *testing.T) {
 		},
 	}
 
-	code := GenerateValidation("CreateUserDto", meta, reg)
+	code := GenerateCompanionSelective("CreateUserDto", meta, reg, true, false)
 
 	assertContains(t, code, "export function validateCreateUserDto(input)")
 	assertContains(t, code, "typeof input !== \"object\"")
 	assertContains(t, code, "typeof input.name !== \"string\"")
 	assertContains(t, code, "typeof input.age !== \"number\"")
 	assertContains(t, code, "export function assertCreateUserDto(input)")
-	assertContains(t, code, "export function deserializeCreateUserDto(json)")
-	assertContains(t, code, "JSON.parse(json)")
 }
 
 func TestValidateOptionalProp(t *testing.T) {
@@ -41,7 +39,7 @@ func TestValidateOptionalProp(t *testing.T) {
 		},
 	}
 
-	code := GenerateValidation("Profile", meta, reg)
+	code := GenerateCompanionSelective("Profile", meta, reg, true, false)
 
 	// Required prop should have undefined check
 	assertContains(t, code, "input.name === undefined")
@@ -58,7 +56,7 @@ func TestValidateNullableProp(t *testing.T) {
 		},
 	}
 
-	code := GenerateValidation("Box", meta, reg)
+	code := GenerateCompanionSelective("Box", meta, reg, true, false)
 	assertContains(t, code, "input.value !== null")
 }
 
@@ -72,7 +70,7 @@ func TestValidateArray(t *testing.T) {
 		},
 	}
 
-	code := GenerateValidation("Post", meta, reg)
+	code := GenerateCompanionSelective("Post", meta, reg, true, false)
 	assertContains(t, code, "Array.isArray(input.tags)")
 	// Depth is 1 inside object check, so loop var is i1
 	assertContains(t, code, "typeof input.tags[i1] !== \"string\"")
@@ -93,7 +91,7 @@ func TestValidateLiteralUnion(t *testing.T) {
 		},
 	}
 
-	code := GenerateValidation("Account", meta, reg)
+	code := GenerateCompanionSelective("Account", meta, reg, true, false)
 	assertContains(t, code, "\"active\"")
 	assertContains(t, code, "\"inactive\"")
 	assertContains(t, code, ".includes(input.status)")
@@ -117,7 +115,7 @@ func TestValidateLiteralUnionEscapedQuotes(t *testing.T) {
 		},
 	}
 
-	code := GenerateValidation("UserRole", meta, reg)
+	code := GenerateCompanionSelective("UserRole", meta, reg, true, false)
 
 	// The expected message must have escaped quotes so the JS is valid.
 	// e.g. expected: "one of \"admin\" | \"moderator\" | \"user\""
@@ -149,7 +147,7 @@ func TestValidateNestedObject(t *testing.T) {
 		},
 	}
 
-	code := GenerateValidation("User", meta, reg)
+	code := GenerateCompanionSelective("User", meta, reg, true, false)
 	assertContains(t, code, "typeof input.address !== \"object\"")
 	assertContains(t, code, "typeof input.address.street !== \"string\"")
 	assertContains(t, code, "typeof input.address.city !== \"string\"")
@@ -164,7 +162,7 @@ func TestValidateNativeDate(t *testing.T) {
 		},
 	}
 
-	code := GenerateValidation("Event", meta, reg)
+	code := GenerateCompanionSelective("Event", meta, reg, true, false)
 	assertContains(t, code, "instanceof Date")
 }
 
@@ -183,7 +181,7 @@ func TestValidateTuple(t *testing.T) {
 		},
 	}
 
-	code := GenerateValidation("Shape", meta, reg)
+	code := GenerateCompanionSelective("Shape", meta, reg, true, false)
 	assertContains(t, code, "Array.isArray(input.point)")
 	assertContains(t, code, "input.point[0]")
 	assertContains(t, code, "input.point[1]")
@@ -202,7 +200,7 @@ func TestSerializeSimpleObject(t *testing.T) {
 		},
 	}
 
-	code := GenerateSerialization("UserResponse", meta, reg)
+	code := GenerateCompanionSelective("UserResponse", meta, reg, false, true)
 	assertContains(t, code, "export function serializeUserResponse(input)")
 	assertContains(t, code, "__jsonStr(input.name)")
 	assertContains(t, code, `\"id\"`)
@@ -217,7 +215,7 @@ func TestSerializeWithDate(t *testing.T) {
 		},
 	}
 
-	code := GenerateSerialization("Event", meta, reg)
+	code := GenerateCompanionSelective("Event", meta, reg, false, true)
 	assertContains(t, code, "toISOString()")
 }
 
@@ -231,7 +229,7 @@ func TestSerializeArray(t *testing.T) {
 		},
 	}
 
-	code := GenerateSerialization("Result", meta, reg)
+	code := GenerateCompanionSelective("Result", meta, reg, false, true)
 	assertContains(t, code, ".map(")
 	assertContains(t, code, ".join(\",\")")
 }
@@ -247,7 +245,7 @@ func TestSerializeOptionalProps(t *testing.T) {
 		},
 	}
 
-	code := GenerateSerialization("UpdateUserDto", meta, reg)
+	code := GenerateCompanionSelective("UpdateUserDto", meta, reg, false, true)
 
 	// Should NOT fall back to JSON.stringify for the whole object
 	assertNotContains(t, code, "return JSON.stringify(input)")
@@ -271,7 +269,7 @@ func TestSerializeMixedOptionalRequired(t *testing.T) {
 		},
 	}
 
-	code := GenerateSerialization("Profile", meta, reg)
+	code := GenerateCompanionSelective("Profile", meta, reg, false, true)
 
 	// Required props should always be pushed (without conditional)
 	assertContains(t, code, `_p0.push("\"id\":`)
@@ -299,7 +297,7 @@ func TestSerializeNestedObject(t *testing.T) {
 		},
 	}
 
-	code := GenerateSerialization("User", meta, reg)
+	code := GenerateCompanionSelective("User", meta, reg, false, true)
 	assertContains(t, code, "__jsonStr(input.address.city)")
 }
 
@@ -307,18 +305,17 @@ func TestCompanionPath(t *testing.T) {
 	tests := []struct {
 		source   string
 		typeName string
-		suffix   string
 		expected string
 	}{
-		{"src/user.dto.ts", "CreateUserDto", "validate", "src/user.dto.CreateUserDto.validate.js"},
-		{"src/user.dto.tsx", "User", "serialize", "src/user.dto.User.serialize.js"},
-		{"src/app.ts", "Config", "validate", "src/app.Config.validate.js"},
+		{"src/user.dto.ts", "CreateUserDto", "src/user.dto.CreateUserDto.tsgonest.js"},
+		{"src/user.dto.tsx", "User", "src/user.dto.User.tsgonest.js"},
+		{"src/app.ts", "Config", "src/app.Config.tsgonest.js"},
 	}
 
 	for _, tc := range tests {
-		got := companionPath(tc.source, tc.typeName, tc.suffix)
+		got := companionPath(tc.source, tc.typeName)
 		if got != tc.expected {
-			t.Errorf("companionPath(%q, %q, %q) = %q, want %q", tc.source, tc.typeName, tc.suffix, got, tc.expected)
+			t.Errorf("companionPath(%q, %q) = %q, want %q", tc.source, tc.typeName, got, tc.expected)
 		}
 	}
 }
@@ -344,7 +341,7 @@ func TestValidateMinMax(t *testing.T) {
 		},
 	}
 
-	code := GenerateValidation("Person", meta, reg)
+	code := GenerateCompanionSelective("Person", meta, reg, true, false)
 	assertContains(t, code, "input.age < 0")
 	assertContains(t, code, "input.age > 150")
 	assertContains(t, code, "minimum 0")
@@ -370,7 +367,7 @@ func TestValidateMinMaxLength(t *testing.T) {
 		},
 	}
 
-	code := GenerateValidation("User", meta, reg)
+	code := GenerateCompanionSelective("User", meta, reg, true, false)
 	assertContains(t, code, "input.name.length < 1")
 	assertContains(t, code, "input.name.length > 255")
 	assertContains(t, code, "minLength 1")
@@ -394,7 +391,7 @@ func TestValidatePattern(t *testing.T) {
 		},
 	}
 
-	code := GenerateValidation("Post", meta, reg)
+	code := GenerateCompanionSelective("Post", meta, reg, true, false)
 	assertContains(t, code, "/^[a-z]+$/.test(input.slug)")
 }
 
@@ -415,7 +412,7 @@ func TestValidateFormatEmail(t *testing.T) {
 		},
 	}
 
-	code := GenerateValidation("Contact", meta, reg)
+	code := GenerateCompanionSelective("Contact", meta, reg, true, false)
 	assertContains(t, code, "format email")
 	assertContains(t, code, "@")
 }
@@ -437,7 +434,7 @@ func TestValidateConstraintsOnOptionalProp(t *testing.T) {
 		},
 	}
 
-	code := GenerateValidation("Profile", meta, reg)
+	code := GenerateCompanionSelective("Profile", meta, reg, true, false)
 	// Should only check constraint when value is present
 	assertContains(t, code, "input.bio !== undefined")
 	assertContains(t, code, "input.bio.length > 500")
@@ -464,7 +461,7 @@ func TestValidateExclusiveMinMax(t *testing.T) {
 		},
 	}
 
-	code := GenerateValidation("Config", meta, reg)
+	code := GenerateCompanionSelective("Config", meta, reg, true, false)
 	assertContains(t, code, "input.threshold <= 0")
 	assertContains(t, code, "input.threshold >= 100")
 	assertContains(t, code, "exclusiveMinimum 0")
@@ -488,7 +485,7 @@ func TestValidateMultipleOf(t *testing.T) {
 		},
 	}
 
-	code := GenerateValidation("Grid", meta, reg)
+	code := GenerateCompanionSelective("Grid", meta, reg, true, false)
 	assertContains(t, code, "input.step % 5 !== 0")
 	assertContains(t, code, "multipleOf 5")
 }
@@ -510,7 +507,7 @@ func TestValidateNumericTypeInt32(t *testing.T) {
 		},
 	}
 
-	code := GenerateValidation("Server", meta, reg)
+	code := GenerateCompanionSelective("Server", meta, reg, true, false)
 	assertContains(t, code, "Number.isInteger(input.port)")
 	assertContains(t, code, "-2147483648")
 	assertContains(t, code, "2147483647")
@@ -534,7 +531,7 @@ func TestValidateNumericTypeUint32(t *testing.T) {
 		},
 	}
 
-	code := GenerateValidation("Counter", meta, reg)
+	code := GenerateCompanionSelective("Counter", meta, reg, true, false)
 	assertContains(t, code, "Number.isInteger(input.count)")
 	assertContains(t, code, "input.count < 0")
 	assertContains(t, code, "4294967295")
@@ -559,7 +556,7 @@ func TestValidateUniqueItems(t *testing.T) {
 		},
 	}
 
-	code := GenerateValidation("TagList", meta, reg)
+	code := GenerateCompanionSelective("TagList", meta, reg, true, false)
 	assertContains(t, code, "new Set(input.tags).size !== input.tags.length")
 	assertContains(t, code, "uniqueItems")
 }
@@ -576,7 +573,7 @@ func TestValidateFormatIPv4(t *testing.T) {
 				Constraints: &metadata.Constraints{Format: &format}},
 		},
 	}
-	code := GenerateValidation("Server", meta, reg)
+	code := GenerateCompanionSelective("Server", meta, reg, true, false)
 	assertContains(t, code, "format ipv4")
 	assertContains(t, code, ".test(input.ip)")
 }
@@ -591,7 +588,7 @@ func TestValidateFormatIPv6(t *testing.T) {
 				Constraints: &metadata.Constraints{Format: &format}},
 		},
 	}
-	code := GenerateValidation("Network", meta, reg)
+	code := GenerateCompanionSelective("Network", meta, reg, true, false)
 	assertContains(t, code, "format ipv6")
 	assertContains(t, code, ".test(input.ip)")
 }
@@ -606,7 +603,7 @@ func TestValidateFormatDate(t *testing.T) {
 				Constraints: &metadata.Constraints{Format: &format}},
 		},
 	}
-	code := GenerateValidation("Person", meta, reg)
+	code := GenerateCompanionSelective("Person", meta, reg, true, false)
 	assertContains(t, code, "format date")
 	assertContains(t, code, ".test(input.birthday)")
 }
@@ -621,7 +618,7 @@ func TestValidateFormatTime(t *testing.T) {
 				Constraints: &metadata.Constraints{Format: &format}},
 		},
 	}
-	code := GenerateValidation("Event", meta, reg)
+	code := GenerateCompanionSelective("Event", meta, reg, true, false)
 	assertContains(t, code, "format time")
 	assertContains(t, code, ".test(input.scheduledAt)")
 }
@@ -636,7 +633,7 @@ func TestValidateFormatDuration(t *testing.T) {
 				Constraints: &metadata.Constraints{Format: &format}},
 		},
 	}
-	code := GenerateValidation("Cache", meta, reg)
+	code := GenerateCompanionSelective("Cache", meta, reg, true, false)
 	assertContains(t, code, "format duration")
 	assertContains(t, code, ".test(input.ttl)")
 }
@@ -651,7 +648,7 @@ func TestValidateFormatByte(t *testing.T) {
 				Constraints: &metadata.Constraints{Format: &format}},
 		},
 	}
-	code := GenerateValidation("Payload", meta, reg)
+	code := GenerateCompanionSelective("Payload", meta, reg, true, false)
 	assertContains(t, code, "format byte")
 	assertContains(t, code, ".test(input.data)")
 }
@@ -666,7 +663,7 @@ func TestValidateFormatHostname(t *testing.T) {
 				Constraints: &metadata.Constraints{Format: &format}},
 		},
 	}
-	code := GenerateValidation("Endpoint", meta, reg)
+	code := GenerateCompanionSelective("Endpoint", meta, reg, true, false)
 	assertContains(t, code, "format hostname")
 	assertContains(t, code, ".test(input.host)")
 }
@@ -681,7 +678,7 @@ func TestValidateFormatJsonPointer(t *testing.T) {
 				Constraints: &metadata.Constraints{Format: &format}},
 		},
 	}
-	code := GenerateValidation("JsonRef", meta, reg)
+	code := GenerateCompanionSelective("JsonRef", meta, reg, true, false)
 	assertContains(t, code, "format json-pointer")
 	assertContains(t, code, ".test(input.path)")
 }
@@ -696,7 +693,7 @@ func TestValidateFormatPassword(t *testing.T) {
 				Constraints: &metadata.Constraints{Format: &format}},
 		},
 	}
-	code := GenerateValidation("Auth", meta, reg)
+	code := GenerateCompanionSelective("Auth", meta, reg, true, false)
 	// password format should NOT emit any regex check
 	assertNotContains(t, code, "format password")
 }
@@ -711,7 +708,7 @@ func TestValidateFormatRegex(t *testing.T) {
 				Constraints: &metadata.Constraints{Format: &format}},
 		},
 	}
-	code := GenerateValidation("Filter", meta, reg)
+	code := GenerateCompanionSelective("Filter", meta, reg, true, false)
 	// regex format should use try/catch, not regex
 	assertContains(t, code, "new RegExp(input.pattern)")
 	assertContains(t, code, "format regex")
@@ -727,7 +724,7 @@ func TestValidateFormatUriTemplate(t *testing.T) {
 				Constraints: &metadata.Constraints{Format: &format}},
 		},
 	}
-	code := GenerateValidation("Link", meta, reg)
+	code := GenerateCompanionSelective("Link", meta, reg, true, false)
 	assertContains(t, code, "format uri-template")
 	assertContains(t, code, ".test(input.template)")
 }
@@ -736,48 +733,40 @@ func TestValidateFormatUriTemplate(t *testing.T) {
 
 func TestManifestBasic(t *testing.T) {
 	companions := []CompanionFile{
-		{Path: "/project/dist/user.dto.CreateUserDto.validate.js", Content: "..."},
-		{Path: "/project/dist/user.dto.CreateUserDto.serialize.js", Content: "..."},
-		{Path: "/project/dist/user.dto.UserResponse.validate.js", Content: "..."},
-		{Path: "/project/dist/user.dto.UserResponse.serialize.js", Content: "..."},
+		{Path: "/project/dist/user.dto.CreateUserDto.tsgonest.js", Content: "..."},
+		{Path: "/project/dist/user.dto.UserResponse.tsgonest.js", Content: "..."},
 	}
 
 	m := GenerateManifest(companions, "/project/dist", nil)
 
-	// Check validators
-	if len(m.Validators) != 2 {
-		t.Fatalf("expected 2 validators, got %d", len(m.Validators))
+	// Check companions
+	if len(m.Companions) != 2 {
+		t.Fatalf("expected 2 companions, got %d", len(m.Companions))
 	}
-	if v, ok := m.Validators["CreateUserDto"]; !ok {
-		t.Error("missing validator for CreateUserDto")
+	if c, ok := m.Companions["CreateUserDto"]; !ok {
+		t.Error("missing companion for CreateUserDto")
 	} else {
-		if v.Fn != "assertCreateUserDto" {
-			t.Errorf("validator fn = %q, want %q", v.Fn, "assertCreateUserDto")
+		if c.Assert != "assertCreateUserDto" {
+			t.Errorf("companion assert = %q, want %q", c.Assert, "assertCreateUserDto")
 		}
-		if v.File != "./user.dto.CreateUserDto.validate.js" {
-			t.Errorf("validator file = %q, want %q", v.File, "./user.dto.CreateUserDto.validate.js")
+		if c.Validate != "validateCreateUserDto" {
+			t.Errorf("companion validate = %q, want %q", c.Validate, "validateCreateUserDto")
+		}
+		if c.Serialize != "serializeCreateUserDto" {
+			t.Errorf("companion serialize = %q, want %q", c.Serialize, "serializeCreateUserDto")
+		}
+		if c.Schema != "schemaCreateUserDto" {
+			t.Errorf("companion schema = %q, want %q", c.Schema, "schemaCreateUserDto")
+		}
+		if c.File != "./user.dto.CreateUserDto.tsgonest.js" {
+			t.Errorf("companion file = %q, want %q", c.File, "./user.dto.CreateUserDto.tsgonest.js")
 		}
 	}
-	if v, ok := m.Validators["UserResponse"]; !ok {
-		t.Error("missing validator for UserResponse")
+	if c, ok := m.Companions["UserResponse"]; !ok {
+		t.Error("missing companion for UserResponse")
 	} else {
-		if v.Fn != "assertUserResponse" {
-			t.Errorf("validator fn = %q, want %q", v.Fn, "assertUserResponse")
-		}
-	}
-
-	// Check serializers
-	if len(m.Serializers) != 2 {
-		t.Fatalf("expected 2 serializers, got %d", len(m.Serializers))
-	}
-	if s, ok := m.Serializers["CreateUserDto"]; !ok {
-		t.Error("missing serializer for CreateUserDto")
-	} else {
-		if s.Fn != "serializeCreateUserDto" {
-			t.Errorf("serializer fn = %q, want %q", s.Fn, "serializeCreateUserDto")
-		}
-		if s.File != "./user.dto.CreateUserDto.serialize.js" {
-			t.Errorf("serializer file = %q, want %q", s.File, "./user.dto.CreateUserDto.serialize.js")
+		if c.Assert != "assertUserResponse" {
+			t.Errorf("companion assert = %q, want %q", c.Assert, "assertUserResponse")
 		}
 	}
 }
@@ -785,18 +774,14 @@ func TestManifestBasic(t *testing.T) {
 func TestManifestEmpty(t *testing.T) {
 	m := GenerateManifest(nil, "/project/dist", nil)
 
-	if len(m.Validators) != 0 {
-		t.Errorf("expected 0 validators, got %d", len(m.Validators))
-	}
-	if len(m.Serializers) != 0 {
-		t.Errorf("expected 0 serializers, got %d", len(m.Serializers))
+	if len(m.Companions) != 0 {
+		t.Errorf("expected 0 companions, got %d", len(m.Companions))
 	}
 }
 
 func TestManifestJSON(t *testing.T) {
 	companions := []CompanionFile{
-		{Path: "/dist/dto.User.validate.js", Content: "..."},
-		{Path: "/dist/dto.User.serialize.js", Content: "..."},
+		{Path: "/dist/dto.User.tsgonest.js", Content: "..."},
 	}
 
 	m := GenerateManifest(companions, "/dist", nil)
@@ -806,46 +791,43 @@ func TestManifestJSON(t *testing.T) {
 	}
 
 	jsonStr := string(data)
-	assertContains(t, jsonStr, `"validators"`)
-	assertContains(t, jsonStr, `"serializers"`)
+	assertContains(t, jsonStr, `"companions"`)
 	assertContains(t, jsonStr, `"User"`)
 	assertContains(t, jsonStr, `"assertUser"`)
 	assertContains(t, jsonStr, `"serializeUser"`)
+	assertContains(t, jsonStr, `"validateUser"`)
+	assertContains(t, jsonStr, `"schemaUser"`)
 }
 
 func TestManifestRelativePaths(t *testing.T) {
 	companions := []CompanionFile{
-		{Path: "/project/dist/src/user.dto.Dto.validate.js", Content: "..."},
+		{Path: "/project/dist/src/user.dto.Dto.tsgonest.js", Content: "..."},
 	}
 
 	m := GenerateManifest(companions, "/project/dist", nil)
 
-	v := m.Validators["Dto"]
-	if v.File != "./src/user.dto.Dto.validate.js" {
-		t.Errorf("expected relative path ./src/user.dto.Dto.validate.js, got %q", v.File)
+	c := m.Companions["Dto"]
+	if c.File != "./src/user.dto.Dto.tsgonest.js" {
+		t.Errorf("expected relative path ./src/user.dto.Dto.tsgonest.js, got %q", c.File)
 	}
 }
 
 func TestParseCompanionPath(t *testing.T) {
 	tests := []struct {
-		path         string
-		wantType     string
-		wantCategory string
+		path     string
+		wantType string
 	}{
-		{"dist/user.dto.CreateUserDto.validate.js", "CreateUserDto", "validate"},
-		{"dist/user.dto.UserResponse.serialize.js", "UserResponse", "serialize"},
-		{"dist/app.Config.validate.js", "Config", "validate"},
-		{"dist/invalid.js", "", ""},
-		{"dist/file.unknown.js", "", ""},
+		{"dist/user.dto.CreateUserDto.tsgonest.js", "CreateUserDto"},
+		{"dist/user.dto.UserResponse.tsgonest.js", "UserResponse"},
+		{"dist/app.Config.tsgonest.js", "Config"},
+		{"dist/invalid.js", ""},
+		{"dist/file.unknown.js", ""},
 	}
 
 	for _, tc := range tests {
-		typeName, category := parseCompanionPath(tc.path)
+		typeName := parseCompanionPath(tc.path)
 		if typeName != tc.wantType {
 			t.Errorf("parseCompanionPath(%q) typeName = %q, want %q", tc.path, typeName, tc.wantType)
-		}
-		if category != tc.wantCategory {
-			t.Errorf("parseCompanionPath(%q) category = %q, want %q", tc.path, category, tc.wantCategory)
 		}
 	}
 }
@@ -864,7 +846,7 @@ func TestValidateTransformTrim(t *testing.T) {
 		},
 	}
 
-	code := GenerateValidation("Dto", meta, reg)
+	code := GenerateCompanionSelective("Dto", meta, reg, true, false)
 	assertContains(t, code, "input.name = input.name.trim()")
 	// trim should appear before the string type check wouldn't break
 	assertContains(t, code, "typeof input.name === \"string\"")
@@ -882,7 +864,7 @@ func TestValidateTransformToLowerCase(t *testing.T) {
 		},
 	}
 
-	code := GenerateValidation("Dto", meta, reg)
+	code := GenerateCompanionSelective("Dto", meta, reg, true, false)
 	assertContains(t, code, "input.email = input.email.toLowerCase()")
 }
 
@@ -898,7 +880,7 @@ func TestValidateTransformToUpperCase(t *testing.T) {
 		},
 	}
 
-	code := GenerateValidation("Dto", meta, reg)
+	code := GenerateCompanionSelective("Dto", meta, reg, true, false)
 	assertContains(t, code, "input.code = input.code.toUpperCase()")
 }
 
@@ -915,7 +897,7 @@ func TestValidateStartsWith(t *testing.T) {
 		},
 	}
 
-	code := GenerateValidation("Dto", meta, reg)
+	code := GenerateCompanionSelective("Dto", meta, reg, true, false)
 	assertContains(t, code, `input.url.startsWith("http")`)
 	assertContains(t, code, `startsWith http`)
 }
@@ -933,7 +915,7 @@ func TestValidateEndsWith(t *testing.T) {
 		},
 	}
 
-	code := GenerateValidation("Dto", meta, reg)
+	code := GenerateCompanionSelective("Dto", meta, reg, true, false)
 	assertContains(t, code, `input.file.endsWith(".ts")`)
 }
 
@@ -950,7 +932,7 @@ func TestValidateIncludes(t *testing.T) {
 		},
 	}
 
-	code := GenerateValidation("Dto", meta, reg)
+	code := GenerateCompanionSelective("Dto", meta, reg, true, false)
 	assertContains(t, code, `input.email.includes("@")`)
 }
 
@@ -967,7 +949,7 @@ func TestValidateUppercase(t *testing.T) {
 		},
 	}
 
-	code := GenerateValidation("Dto", meta, reg)
+	code := GenerateCompanionSelective("Dto", meta, reg, true, false)
 	assertContains(t, code, `input.code !== input.code.toUpperCase()`)
 	assertContains(t, code, `"uppercase"`)
 }
@@ -985,7 +967,7 @@ func TestValidateLowercase(t *testing.T) {
 		},
 	}
 
-	code := GenerateValidation("Dto", meta, reg)
+	code := GenerateCompanionSelective("Dto", meta, reg, true, false)
 	assertContains(t, code, `input.slug !== input.slug.toLowerCase()`)
 	assertContains(t, code, `"lowercase"`)
 }
@@ -1001,7 +983,7 @@ func TestValidateStrictMode(t *testing.T) {
 		},
 	}
 
-	code := GenerateValidation("Dto", meta, reg)
+	code := GenerateCompanionSelective("Dto", meta, reg, true, false)
 	assertContains(t, code, "Object.keys(input)")
 	assertContains(t, code, `"name"`)
 	assertContains(t, code, `"age"`)
@@ -1018,7 +1000,7 @@ func TestValidateStripMode(t *testing.T) {
 		},
 	}
 
-	code := GenerateValidation("Dto", meta, reg)
+	code := GenerateCompanionSelective("Dto", meta, reg, true, false)
 	assertContains(t, code, "Object.keys(input)")
 	assertContains(t, code, "delete input[")
 }
@@ -1037,7 +1019,7 @@ func TestValidateCustomErrorMessage(t *testing.T) {
 		},
 	}
 
-	code := GenerateValidation("Dto", meta, reg)
+	code := GenerateCompanionSelective("Dto", meta, reg, true, false)
 	assertContains(t, code, `URL must start with http`)
 }
 
@@ -1168,7 +1150,7 @@ func TestValidateCustomErrorMessage_AllConstraints(t *testing.T) {
 					{Name: "val", Type: tt.propType, Required: true, Constraints: &c},
 				},
 			}
-			code := GenerateValidation("Dto", meta, reg)
+			code := GenerateCompanionSelective("Dto", meta, reg, true, false)
 			assertContains(t, code, tt.contains)
 			assertNotContains(t, code, tt.notContains)
 		})
@@ -1234,7 +1216,7 @@ func TestValidateDefaultRuntime(t *testing.T) {
 					},
 				},
 			}
-			code := GenerateValidation("Dto", meta, reg)
+			code := GenerateCompanionSelective("Dto", meta, reg, true, false)
 			// Should contain the default assignment
 			assertContains(t, code, tt.contains)
 			// Should be inside an `if (x.val === undefined)` block
@@ -1255,7 +1237,7 @@ func TestValidateTemplateLiteral(t *testing.T) {
 		},
 	}
 
-	code := GenerateValidation("Dto", meta, reg)
+	code := GenerateCompanionSelective("Dto", meta, reg, true, false)
 	// Should contain a regex test for the template literal pattern
 	assertContains(t, code, `/^prefix_.*$/.test(`)
 	assertContains(t, code, `"pattern ^prefix_.*$"`)
@@ -1273,7 +1255,7 @@ func TestValidateTemplateLiteral_MultiInterpolation(t *testing.T) {
 		},
 	}
 
-	code := GenerateValidation("Dto", meta, reg)
+	code := GenerateCompanionSelective("Dto", meta, reg, true, false)
 	assertContains(t, code, `.test(`)
 	assertContains(t, code, `pattern`)
 }
@@ -1288,7 +1270,7 @@ func TestValidateFormatNanoid(t *testing.T) {
 				Constraints: &metadata.Constraints{Format: &f}},
 		},
 	}
-	code := GenerateValidation("Dto", meta, reg)
+	code := GenerateCompanionSelective("Dto", meta, reg, true, false)
 	assertContains(t, code, "format nanoid")
 }
 
@@ -1302,7 +1284,7 @@ func TestValidateFormatJwt(t *testing.T) {
 				Constraints: &metadata.Constraints{Format: &f}},
 		},
 	}
-	code := GenerateValidation("Dto", meta, reg)
+	code := GenerateCompanionSelective("Dto", meta, reg, true, false)
 	assertContains(t, code, "format jwt")
 }
 
@@ -1316,7 +1298,7 @@ func TestValidateFormatUlid(t *testing.T) {
 				Constraints: &metadata.Constraints{Format: &f}},
 		},
 	}
-	code := GenerateValidation("Dto", meta, reg)
+	code := GenerateCompanionSelective("Dto", meta, reg, true, false)
 	assertContains(t, code, "format ulid")
 }
 
@@ -1330,7 +1312,7 @@ func TestValidateFormatMac(t *testing.T) {
 				Constraints: &metadata.Constraints{Format: &f}},
 		},
 	}
-	code := GenerateValidation("Dto", meta, reg)
+	code := GenerateCompanionSelective("Dto", meta, reg, true, false)
 	assertContains(t, code, "format mac")
 }
 
@@ -1344,7 +1326,7 @@ func TestValidateFormatCidrv4(t *testing.T) {
 				Constraints: &metadata.Constraints{Format: &f}},
 		},
 	}
-	code := GenerateValidation("Dto", meta, reg)
+	code := GenerateCompanionSelective("Dto", meta, reg, true, false)
 	assertContains(t, code, "format cidrv4")
 }
 
@@ -1365,15 +1347,15 @@ func TestCompanionIgnoreAll(t *testing.T) {
 			t.Errorf("expected IgnoredDto to be excluded, but found file: %s", f.Path)
 		}
 	}
-	// VisibleDto should have 3 files (validate.js + validate.d.ts + serialize.js)
+	// VisibleDto should have 2 files (tsgonest.js + tsgonest.d.ts)
 	visibleCount := 0
 	for _, f := range files {
 		if strings.Contains(f.Path, "VisibleDto") {
 			visibleCount++
 		}
 	}
-	if visibleCount != 3 {
-		t.Errorf("expected 3 files for VisibleDto, got %d", visibleCount)
+	if visibleCount != 2 {
+		t.Errorf("expected 2 files for VisibleDto, got %d", visibleCount)
 	}
 }
 
@@ -1386,20 +1368,16 @@ func TestCompanionIgnoreValidation(t *testing.T) {
 	}
 
 	files := GenerateCompanionFiles("test.ts", types, reg)
+	// With consolidated companion files, the .tsgonest.js file is still generated
+	// (it contains serialization even when validation is ignored)
+	tsgonestCount := 0
 	for _, f := range files {
-		if strings.Contains(f.Path, "validate") {
-			t.Errorf("expected validate file to be excluded, but found: %s", f.Path)
+		if strings.HasSuffix(f.Path, ".tsgonest.js") {
+			tsgonestCount++
 		}
 	}
-	// Should still have serialize
-	serCount := 0
-	for _, f := range files {
-		if strings.Contains(f.Path, "serialize") {
-			serCount++
-		}
-	}
-	if serCount != 1 {
-		t.Errorf("expected 1 serialize file, got %d", serCount)
+	if tsgonestCount != 1 {
+		t.Errorf("expected 1 .tsgonest.js file, got %d", tsgonestCount)
 	}
 }
 
@@ -1415,7 +1393,7 @@ func TestValidation_StandardSchemaWrapper(t *testing.T) {
 		},
 	}
 
-	code := GenerateValidation("TestDto", meta, reg)
+	code := GenerateCompanionSelective("TestDto", meta, reg, true, false)
 
 	// Should contain Standard Schema wrapper export
 	assertContains(t, code, "export const schemaTestDto")
@@ -1445,7 +1423,7 @@ func TestValidation_StandardSchemaWrapperSyntax(t *testing.T) {
 		},
 	}
 
-	code := GenerateValidation("Foo", meta, reg)
+	code := GenerateCompanionSelective("Foo", meta, reg, true, false)
 
 	// The wrapper should end with }; (closing the const object)
 	assertContains(t, code, "};")
@@ -1457,53 +1435,49 @@ func TestValidation_StandardSchemaWrapperSyntax(t *testing.T) {
 
 func TestManifest_SchemaEntries(t *testing.T) {
 	companions := []CompanionFile{
-		{Path: "/project/dist/user.dto.CreateUserDto.validate.js", Content: "..."},
-		{Path: "/project/dist/user.dto.CreateUserDto.serialize.js", Content: "..."},
+		{Path: "/project/dist/user.dto.CreateUserDto.tsgonest.js", Content: "..."},
 	}
 
 	m := GenerateManifest(companions, "/project/dist", nil)
 
-	if len(m.Schemas) != 1 {
-		t.Fatalf("expected 1 schema entry, got %d", len(m.Schemas))
+	if len(m.Companions) != 1 {
+		t.Fatalf("expected 1 companion entry, got %d", len(m.Companions))
 	}
-	entry, ok := m.Schemas["CreateUserDto"]
+	entry, ok := m.Companions["CreateUserDto"]
 	if !ok {
-		t.Fatal("expected CreateUserDto in schemas")
+		t.Fatal("expected CreateUserDto in companions")
 	}
-	if entry.Fn != "schemaCreateUserDto" {
-		t.Errorf("expected Fn='schemaCreateUserDto', got %q", entry.Fn)
+	if entry.Schema != "schemaCreateUserDto" {
+		t.Errorf("expected Schema='schemaCreateUserDto', got %q", entry.Schema)
 	}
-	if entry.File != "./user.dto.CreateUserDto.validate.js" {
-		t.Errorf("expected File='./user.dto.CreateUserDto.validate.js', got %q", entry.File)
+	if entry.File != "./user.dto.CreateUserDto.tsgonest.js" {
+		t.Errorf("expected File='./user.dto.CreateUserDto.tsgonest.js', got %q", entry.File)
 	}
 }
 
 func TestManifest_SchemaEntriesMultiple(t *testing.T) {
 	companions := []CompanionFile{
-		{Path: "/project/dist/user.dto.CreateUserDto.validate.js", Content: "..."},
-		{Path: "/project/dist/user.dto.CreateUserDto.serialize.js", Content: "..."},
-		{Path: "/project/dist/user.dto.UserResponse.validate.js", Content: "..."},
-		{Path: "/project/dist/user.dto.UserResponse.serialize.js", Content: "..."},
+		{Path: "/project/dist/user.dto.CreateUserDto.tsgonest.js", Content: "..."},
+		{Path: "/project/dist/user.dto.UserResponse.tsgonest.js", Content: "..."},
 	}
 
 	m := GenerateManifest(companions, "/project/dist", nil)
 
-	if len(m.Schemas) != 2 {
-		t.Fatalf("expected 2 schema entries, got %d", len(m.Schemas))
+	if len(m.Companions) != 2 {
+		t.Fatalf("expected 2 companion entries, got %d", len(m.Companions))
 	}
 
-	if _, ok := m.Schemas["CreateUserDto"]; !ok {
-		t.Error("expected CreateUserDto in schemas")
+	if _, ok := m.Companions["CreateUserDto"]; !ok {
+		t.Error("expected CreateUserDto in companions")
 	}
-	if _, ok := m.Schemas["UserResponse"]; !ok {
-		t.Error("expected UserResponse in schemas")
+	if _, ok := m.Companions["UserResponse"]; !ok {
+		t.Error("expected UserResponse in companions")
 	}
 }
 
 func TestManifest_SchemaInJSON(t *testing.T) {
 	companions := []CompanionFile{
-		{Path: "/dist/dto.User.validate.js", Content: "..."},
-		{Path: "/dist/dto.User.serialize.js", Content: "..."},
+		{Path: "/dist/dto.User.tsgonest.js", Content: "..."},
 	}
 
 	m := GenerateManifest(companions, "/dist", nil)
@@ -1513,21 +1487,20 @@ func TestManifest_SchemaInJSON(t *testing.T) {
 	}
 
 	jsonStr := string(data)
-	assertContains(t, jsonStr, `"schemas"`)
+	assertContains(t, jsonStr, `"companions"`)
 	assertContains(t, jsonStr, `"schemaUser"`)
 }
 
 func TestManifest_EmptySchemas(t *testing.T) {
 	m := GenerateManifest(nil, "/project/dist", nil)
-	if len(m.Schemas) != 0 {
-		t.Errorf("expected 0 schema entries, got %d", len(m.Schemas))
+	if len(m.Companions) != 0 {
+		t.Errorf("expected 0 companion entries, got %d", len(m.Companions))
 	}
 }
 
 func TestManifest_RouteMap(t *testing.T) {
 	companions := []CompanionFile{
-		{Path: "/project/dist/user.dto.UserResponse.validate.js", Content: "..."},
-		{Path: "/project/dist/user.dto.UserResponse.serialize.js", Content: "..."},
+		{Path: "/project/dist/user.dto.UserResponse.tsgonest.js", Content: "..."},
 	}
 
 	routeMap := map[string]RouteMapping{
@@ -1567,8 +1540,7 @@ func TestManifest_RouteMap(t *testing.T) {
 
 func TestManifest_RouteMapJSON(t *testing.T) {
 	companions := []CompanionFile{
-		{Path: "/dist/dto.User.validate.js", Content: "..."},
-		{Path: "/dist/dto.User.serialize.js", Content: "..."},
+		{Path: "/dist/dto.User.tsgonest.js", Content: "..."},
 	}
 
 	routeMap := map[string]RouteMapping{
@@ -1589,7 +1561,7 @@ func TestManifest_RouteMapJSON(t *testing.T) {
 
 func TestManifest_NilRouteMapOmitted(t *testing.T) {
 	companions := []CompanionFile{
-		{Path: "/dist/dto.User.validate.js", Content: "..."},
+		{Path: "/dist/dto.User.tsgonest.js", Content: "..."},
 	}
 
 	m := GenerateManifest(companions, "/dist", nil)
@@ -1605,12 +1577,13 @@ func TestManifest_NilRouteMapOmitted(t *testing.T) {
 	}
 }
 
-func TestGenerateValidationTypes(t *testing.T) {
-	output := GenerateValidationTypes("UserDto")
+func TestGenerateCompanionTypes(t *testing.T) {
+	output := GenerateCompanionTypes("UserDto")
 
 	assertContains(t, output, "export declare function validateUserDto")
 	assertContains(t, output, "export declare function assertUserDto")
-	assertContains(t, output, "export declare function deserializeUserDto")
+	assertContains(t, output, "export declare function serializeUserDto")
+	assertNotContains(t, output, "deserializeUserDto")
 	assertContains(t, output, "export declare const schemaUserDto")
 	assertContains(t, output, "StandardSchemaV1Props")
 	assertContains(t, output, "readonly version: 1;")
@@ -1618,16 +1591,18 @@ func TestGenerateValidationTypes(t *testing.T) {
 	assertContains(t, output, "(value: unknown)")
 }
 
-func TestGenerateValidationTypes_ReturnTypes(t *testing.T) {
-	output := GenerateValidationTypes("Foo")
+func TestGenerateCompanionTypes_ReturnTypes(t *testing.T) {
+	output := GenerateCompanionTypes("Foo")
 
 	// validate returns a discriminated union result
 	assertContains(t, output, "success: true; data: Foo")
 	assertContains(t, output, "success: false; errors: Array<")
 	// assert returns the type directly
 	assertContains(t, output, "assertFoo(input: unknown): Foo")
-	// deserialize takes a string
-	assertContains(t, output, "deserializeFoo(json: string): Foo")
+	// serialize takes the type and returns string
+	assertContains(t, output, "serializeFoo(input: Foo): string")
+	// no deserialize
+	assertNotContains(t, output, "deserializeFoo")
 	// schema has ~standard
 	assertContains(t, output, "\"~standard\": StandardSchemaV1Props")
 }
@@ -1645,32 +1620,25 @@ func TestCompanion_GeneratesDTS(t *testing.T) {
 
 	files := GenerateCompanionFiles("src/foo.ts", types, reg)
 
-	// Should have validate.js, validate.d.ts, and serialize.js
-	hasValidateJS := false
-	hasValidateDTS := false
-	hasSerializeJS := false
+	// Should have .tsgonest.js and .tsgonest.d.ts
+	hasTsgonestJS := false
+	hasTsgonestDTS := false
 	for _, f := range files {
-		if strings.HasSuffix(f.Path, ".validate.js") {
-			hasValidateJS = true
+		if strings.HasSuffix(f.Path, ".tsgonest.js") {
+			hasTsgonestJS = true
 		}
-		if strings.HasSuffix(f.Path, ".validate.d.ts") {
-			hasValidateDTS = true
+		if strings.HasSuffix(f.Path, ".tsgonest.d.ts") {
+			hasTsgonestDTS = true
 			// Verify the content includes declarations
 			assertContains(t, f.Content, "export declare function validateFoo")
 			assertContains(t, f.Content, "export declare const schemaFoo")
 		}
-		if strings.HasSuffix(f.Path, ".serialize.js") {
-			hasSerializeJS = true
-		}
 	}
-	if !hasValidateJS {
-		t.Error("expected .validate.js companion file")
+	if !hasTsgonestJS {
+		t.Error("expected .tsgonest.js companion file")
 	}
-	if !hasValidateDTS {
-		t.Error("expected .validate.d.ts companion file")
-	}
-	if !hasSerializeJS {
-		t.Error("expected .serialize.js companion file")
+	if !hasTsgonestDTS {
+		t.Error("expected .tsgonest.d.ts companion file")
 	}
 }
 
@@ -1688,18 +1656,18 @@ func TestCompanion_DTSPath(t *testing.T) {
 	files := GenerateCompanionFiles("src/bar.dto.ts", types, reg)
 
 	for _, f := range files {
-		if strings.HasSuffix(f.Path, ".validate.d.ts") {
-			expected := "src/bar.dto.Bar.validate.d.ts"
+		if strings.HasSuffix(f.Path, ".tsgonest.d.ts") {
+			expected := "src/bar.dto.Bar.tsgonest.d.ts"
 			if f.Path != expected {
 				t.Errorf("expected DTS path %q, got %q", expected, f.Path)
 			}
 			return
 		}
 	}
-	t.Error("no .validate.d.ts file found")
+	t.Error("no .tsgonest.d.ts file found")
 }
 
-func TestCompanion_NoDTSWhenValidationIgnored(t *testing.T) {
+func TestCompanion_DTSWhenValidationIgnored(t *testing.T) {
 	reg := metadata.NewTypeRegistry()
 	types := map[string]*metadata.Metadata{
 		"Dto": {Kind: metadata.KindObject, Ignore: "validation", Properties: []metadata.Property{
@@ -1709,10 +1677,19 @@ func TestCompanion_NoDTSWhenValidationIgnored(t *testing.T) {
 
 	files := GenerateCompanionFiles("test.ts", types, reg)
 
+	// With consolidated companions, .d.ts is always generated (it covers serialize too)
+	var hasDTS bool
 	for _, f := range files {
 		if strings.HasSuffix(f.Path, ".d.ts") {
-			t.Errorf("expected no .d.ts file when validation is ignored, but found: %s", f.Path)
+			hasDTS = true
+			// When validation is ignored, the .d.ts should have serialize but NOT validate
+			assertContains(t, f.Content, "serialize")
+			assertNotContains(t, f.Content, "validate")
+			assertNotContains(t, f.Content, "assert")
 		}
+	}
+	if !hasDTS {
+		t.Error("expected .d.ts file to be generated even when validation is ignored")
 	}
 }
 
@@ -1731,7 +1708,7 @@ func TestValidateIndexSignature_StringValues(t *testing.T) {
 		},
 	}
 
-	code := GenerateValidation("Dto", meta, reg)
+	code := GenerateCompanionSelective("Dto", meta, reg, true, false)
 	// Should iterate over Object.keys
 	assertContains(t, code, "Object.keys(")
 	// Should exclude the declared property "id"
@@ -1753,7 +1730,7 @@ func TestValidateIndexSignature_NumberValues(t *testing.T) {
 		},
 	}
 
-	code := GenerateValidation("Dto", meta, reg)
+	code := GenerateCompanionSelective("Dto", meta, reg, true, false)
 	assertContains(t, code, "Object.keys(")
 	// Should validate values as numbers
 	assertContains(t, code, `"number"`)
@@ -1769,7 +1746,7 @@ func TestValidateIndexSignature_NoProperties(t *testing.T) {
 		},
 	}
 
-	code := GenerateValidation("Dto", meta, reg)
+	code := GenerateCompanionSelective("Dto", meta, reg, true, false)
 	// Should iterate over Object.keys without known key exclusion set
 	assertContains(t, code, "Object.keys(")
 	// Should NOT contain a Set for known keys (no properties to exclude)
@@ -1791,7 +1768,7 @@ func TestValidateIndexSignature_ObjectValues(t *testing.T) {
 		},
 	}
 
-	code := GenerateValidation("Dto", meta, reg)
+	code := GenerateCompanionSelective("Dto", meta, reg, true, false)
 	// Should validate nested object properties
 	assertContains(t, code, "Object.keys(")
 	assertContains(t, code, ".value")
@@ -1811,7 +1788,7 @@ func TestValidateIndexSignature_WithDeclaredPropsExcluded(t *testing.T) {
 		},
 	}
 
-	code := GenerateValidation("Dto", meta, reg)
+	code := GenerateCompanionSelective("Dto", meta, reg, true, false)
 	// Should have a Set with both declared property names
 	assertContains(t, code, `"name"`)
 	assertContains(t, code, `"age"`)
@@ -1864,7 +1841,7 @@ func TestValidateDiscriminatedUnion_SwitchCodegen(t *testing.T) {
 		},
 	}
 
-	code := GenerateValidation("Dto", meta, reg)
+	code := GenerateCompanionSelective("Dto", meta, reg, true, false)
 	// Should use switch instead of try-each
 	assertContains(t, code, "switch (")
 	assertContains(t, code, `["type"]`)
@@ -1898,7 +1875,7 @@ func TestValidateNonDiscriminatedUnion_StillUseTryEach(t *testing.T) {
 		},
 	}
 
-	code := GenerateValidation("Dto", meta, reg)
+	code := GenerateCompanionSelective("Dto", meta, reg, true, false)
 	// Should NOT use switch
 	assertNotContains(t, code, "switch (")
 	// Should use the try-each union pattern
@@ -1940,7 +1917,7 @@ func TestValidateDiscriminatedUnion_DefaultCaseError(t *testing.T) {
 		},
 	}
 
-	code := GenerateValidation("Dto", meta, reg)
+	code := GenerateCompanionSelective("Dto", meta, reg, true, false)
 	// Default case should include error about expected discriminant values
 	assertContains(t, code, "default:")
 	assertContains(t, code, `"circle"`)
@@ -1966,7 +1943,7 @@ func TestValidatePerConstraintError_Format(t *testing.T) {
 		},
 	}
 
-	code := GenerateValidation("Dto", meta, reg)
+	code := GenerateCompanionSelective("Dto", meta, reg, true, false)
 	// Per-constraint error should appear instead of default
 	assertContains(t, code, "Must be a valid email address")
 	assertNotContains(t, code, "format email")
@@ -1994,7 +1971,7 @@ func TestValidatePerConstraintError_MultipleConstraints(t *testing.T) {
 		},
 	}
 
-	code := GenerateValidation("Dto", meta, reg)
+	code := GenerateCompanionSelective("Dto", meta, reg, true, false)
 	// Both per-constraint errors should appear
 	assertContains(t, code, "Must be a valid email")
 	assertContains(t, code, "Email is too short")
@@ -2027,7 +2004,7 @@ func TestValidatePerConstraintError_FallsBackToGlobal(t *testing.T) {
 		},
 	}
 
-	code := GenerateValidation("Dto", meta, reg)
+	code := GenerateCompanionSelective("Dto", meta, reg, true, false)
 	// format check uses per-constraint error
 	assertContains(t, code, "Must be a valid email")
 	// minLength falls back to global ErrorMessage
@@ -2051,7 +2028,7 @@ func TestValidatePerConstraintError_Minimum(t *testing.T) {
 		},
 	}
 
-	code := GenerateValidation("Dto", meta, reg)
+	code := GenerateCompanionSelective("Dto", meta, reg, true, false)
 	assertContains(t, code, "Age must be non-negative")
 	assertNotContains(t, code, "minimum 0")
 }
@@ -2072,7 +2049,7 @@ func TestValidateCoercion_StringToNumber(t *testing.T) {
 		},
 	}
 
-	code := GenerateValidation("Dto", meta, reg)
+	code := GenerateCompanionSelective("Dto", meta, reg, true, false)
 	// Should emit string→number coercion
 	assertContains(t, code, "typeof input.page === \"string\"")
 	assertContains(t, code, "+input.page")
@@ -2093,7 +2070,7 @@ func TestValidateCoercion_StringToBoolean(t *testing.T) {
 		},
 	}
 
-	code := GenerateValidation("Dto", meta, reg)
+	code := GenerateCompanionSelective("Dto", meta, reg, true, false)
 	// Should emit string→boolean coercion
 	assertContains(t, code, `=== "true"`)
 	assertContains(t, code, `=== "false"`)
@@ -2115,7 +2092,7 @@ func TestValidateCoercion_NotAppliedToString(t *testing.T) {
 		},
 	}
 
-	code := GenerateValidation("Dto", meta, reg)
+	code := GenerateCompanionSelective("Dto", meta, reg, true, false)
 	// String type has no coercion — it's already a string
 	assertNotContains(t, code, "Number.isNaN")
 	assertNotContains(t, code, `=== "true"`)
@@ -2140,7 +2117,7 @@ func TestValidateCustomFn_EmitsFunctionCall(t *testing.T) {
 		},
 	}
 
-	code := GenerateValidation("Payment", meta, reg)
+	code := GenerateCompanionSelective("Payment", meta, reg, true, false)
 	// Should emit import statement at the top
 	assertContains(t, code, `import { isValidCard } from "./validators/credit-card";`)
 	// Should emit function call in validation
@@ -2167,7 +2144,7 @@ func TestValidateCustomFn_WithCustomError(t *testing.T) {
 		},
 	}
 
-	code := GenerateValidation("Contact", meta, reg)
+	code := GenerateCompanionSelective("Contact", meta, reg, true, false)
 	assertContains(t, code, `import { isValidEmail } from "./validators/email";`)
 	assertContains(t, code, `if (!isValidEmail(input.email))`)
 	// Should use per-constraint error, not default
@@ -2200,7 +2177,7 @@ func TestValidateCustomFn_MultipleValidators(t *testing.T) {
 		},
 	}
 
-	code := GenerateValidation("Order", meta, reg)
+	code := GenerateCompanionSelective("Order", meta, reg, true, false)
 	// Both imports should be emitted
 	assertContains(t, code, `import { isValidCard } from "./validators/credit-card";`)
 	assertContains(t, code, `import { isValidEmail } from "./validators/email";`)
@@ -2226,7 +2203,7 @@ func TestValidateCustomFn_NoImportWithoutModule(t *testing.T) {
 		},
 	}
 
-	code := GenerateValidation("TestDto", meta, reg)
+	code := GenerateCompanionSelective("TestDto", meta, reg, true, false)
 	// Should still emit function call
 	assertContains(t, code, `if (!customCheck(input.value))`)
 	// Should NOT emit import (no module)
@@ -2250,7 +2227,7 @@ func TestValidateCustomFn_StripsTsExtension(t *testing.T) {
 		},
 	}
 
-	code := GenerateValidation("InputDto", meta, reg)
+	code := GenerateCompanionSelective("InputDto", meta, reg, true, false)
 	// Should strip .ts extension from import path
 	assertContains(t, code, `import { validateData } from "./utils/validators";`)
 	assertNotContains(t, code, `validators.ts`)

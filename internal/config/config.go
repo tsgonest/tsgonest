@@ -13,6 +13,12 @@ type Config struct {
 	Transforms  TransformsConfig  `json:"transforms"`
 	OpenAPI     OpenAPIConfig     `json:"openapi"`
 	NestJS      NestJSConfig      `json:"nestjs,omitempty"`
+
+	// Dev/build settings (matching nest-cli.json conventions)
+	EntryFile     string `json:"entryFile,omitempty"`     // Entry point name without extension (default: "main")
+	SourceRoot    string `json:"sourceRoot,omitempty"`    // Source root directory (default: "src")
+	DeleteOutDir  bool   `json:"deleteOutDir,omitempty"`  // Delete output directory before build (like --clean)
+	ManualRestart bool   `json:"manualRestart,omitempty"` // Enable "rs" manual restart in dev mode
 }
 
 // ControllersConfig specifies which controller files to analyze.

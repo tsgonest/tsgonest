@@ -52,6 +52,7 @@ func main() {
 		"checker",
 		"compiler",
 		"core",
+		"execute/incremental",
 		"parser",
 		"scanner",
 		"tsoptions",

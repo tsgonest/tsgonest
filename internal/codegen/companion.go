@@ -14,8 +14,9 @@ type CompanionFile struct {
 	Content string
 }
 
-// GenerateCompanionFiles generates validation and serialization companion files
-// for all named types in the registry.
+// GenerateCompanionFiles generates consolidated companion files (.tsgonest.js)
+// for all named types in the registry. Each companion file contains validation,
+// assertion, serialization, and Standard Schema functions for the type.
 func GenerateCompanionFiles(sourceFileName string, types map[string]*metadata.Metadata, registry *metadata.TypeRegistry) []CompanionFile {
 	var files []CompanionFile
 
@@ -38,40 +39,33 @@ func GenerateCompanionFiles(sourceFileName string, types map[string]*metadata.Me
 			continue
 		}
 
-		// Generate validation companion (unless ignored)
-		if resolved.Ignore != "validation" {
-			validateJSPath := companionPath(sourceFileName, typeName, "validate")
-			validateContent := GenerateValidation(typeName, resolved, registry)
-			files = append(files, CompanionFile{
-				Path:    validateJSPath,
-				Content: validateContent,
-			})
+		// Determine which functions to include based on @tsgonest-ignore
+		includeValidation := resolved.Ignore != "validation"
+		includeSerialization := resolved.Ignore != "serialization"
 
-			// Generate type declarations (.d.ts) for the validate companion
-			dtsPath := strings.TrimSuffix(validateJSPath, ".js") + ".d.ts"
-			dtsContent := GenerateValidationTypes(typeName)
-			files = append(files, CompanionFile{
-				Path:    dtsPath,
-				Content: dtsContent,
-			})
-		}
+		// Generate consolidated companion (.tsgonest.js)
+		jsPath := companionPath(sourceFileName, typeName)
+		jsContent := GenerateCompanionSelective(typeName, resolved, registry, includeValidation, includeSerialization)
+		files = append(files, CompanionFile{
+			Path:    jsPath,
+			Content: jsContent,
+		})
 
-		// Generate serialization companion (unless ignored)
-		if resolved.Ignore != "serialization" {
-			serializeContent := GenerateSerialization(typeName, resolved, registry)
-			files = append(files, CompanionFile{
-				Path:    companionPath(sourceFileName, typeName, "serialize"),
-				Content: serializeContent,
-			})
-		}
+		// Generate type declarations (.tsgonest.d.ts)
+		dtsPath := strings.TrimSuffix(jsPath, ".js") + ".d.ts"
+		dtsContent := GenerateCompanionTypesSelective(typeName, includeValidation, includeSerialization)
+		files = append(files, CompanionFile{
+			Path:    dtsPath,
+			Content: dtsContent,
+		})
 	}
 
 	return files
 }
 
 // companionPath generates the companion file path from the source file path.
-// e.g., "src/user.dto.ts" + "CreateUserDto" + "validate" → "src/user.dto.CreateUserDto.validate.js"
-func companionPath(sourceFileName string, typeName string, suffix string) string {
+// e.g., "src/user.dto.ts" + "CreateUserDto" → "src/user.dto.CreateUserDto.tsgonest.js"
+func companionPath(sourceFileName string, typeName string) string {
 	// Strip .ts/.tsx extension
 	base := sourceFileName
 	for _, ext := range []string{".ts", ".tsx", ".mts", ".cts"} {
@@ -80,5 +74,5 @@ func companionPath(sourceFileName string, typeName string, suffix string) string
 			break
 		}
 	}
-	return base + "." + typeName + "." + suffix + ".js"
+	return base + "." + typeName + ".tsgonest.js"
 }

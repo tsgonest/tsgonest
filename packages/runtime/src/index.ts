@@ -16,7 +16,7 @@ export type { ValidationErrorDetail } from './errors';
 
 // Discovery
 export { CompanionDiscovery } from './discovery';
-export type { TsgonestManifest, ManifestEntry, RouteMapping } from './discovery';
+export type { TsgonestManifest, CompanionEntry, RouteMapping } from './discovery';
 
 // Config
 export { defineConfig } from './config';
