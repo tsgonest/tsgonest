@@ -4,6 +4,10 @@
  * These types exist purely at compile time. They produce NO runtime code.
  * The tsgonest compiler reads phantom properties (`__tsgonest_*`) to generate validators.
  *
+ * All phantom properties are optional (`?`) so that branded types remain
+ * assignable from their base types (e.g. `string` → `string & Email`).
+ * This follows the same pattern as typia's optional `"typia.tag"` property.
+ *
  * Every constraint supports two forms:
  *   - Simple:   Min<0>              — clean, no custom error
  *   - Extended: Min<{value: 0, error: "Must be positive"}>  — with per-constraint error
@@ -46,10 +50,10 @@ type StrVal<S extends string | { value: string; error?: string }> =
 type TypeVal<T, Base> =
   T extends { type: infer V } ? V : T;
 
-/** Conditionally add a _error phantom property. */
+/** Conditionally add an optional _error phantom property. */
 type WithErr<Prefix extends string, C> =
   C extends { error: infer E extends string }
-    ? { readonly [K in `${Prefix}_error`]: E }
+    ? { readonly [K in `${Prefix}_error`]?: E }
     : {};
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -78,7 +82,7 @@ export type FormatValue =
  *   Format<{type: "email", error: "Must be a valid email"}>
  */
 export type Format<F extends FormatValue | { type: FormatValue; error?: string }> = {
-  readonly __tsgonest_format: TypeVal<F, FormatValue>;
+  readonly __tsgonest_format?: TypeVal<F, FormatValue>;
 } & WithErr<"__tsgonest_format", F>;
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -90,7 +94,7 @@ export type Format<F extends FormatValue | { type: FormatValue; error?: string }
  * @example MinLength<1>  or  MinLength<{value: 1, error: "Cannot be empty"}>
  */
 export type MinLength<N extends number | { value: number; error?: string }> = {
-  readonly __tsgonest_minLength: NumVal<N>;
+  readonly __tsgonest_minLength?: NumVal<N>;
 } & WithErr<"__tsgonest_minLength", N>;
 
 /**
@@ -98,7 +102,7 @@ export type MinLength<N extends number | { value: number; error?: string }> = {
  * @example MaxLength<255>  or  MaxLength<{value: 255, error: "Too long"}>
  */
 export type MaxLength<N extends number | { value: number; error?: string }> = {
-  readonly __tsgonest_maxLength: NumVal<N>;
+  readonly __tsgonest_maxLength?: NumVal<N>;
 } & WithErr<"__tsgonest_maxLength", N>;
 
 /**
@@ -106,7 +110,7 @@ export type MaxLength<N extends number | { value: number; error?: string }> = {
  * @example Pattern<"^[a-z]+$">  or  Pattern<{value: "^[a-z]+$", error: "Letters only"}>
  */
 export type Pattern<P extends string | { value: string; error?: string }> = {
-  readonly __tsgonest_pattern: StrVal<P>;
+  readonly __tsgonest_pattern?: StrVal<P>;
 } & WithErr<"__tsgonest_pattern", P>;
 
 /**
@@ -114,7 +118,7 @@ export type Pattern<P extends string | { value: string; error?: string }> = {
  * @example StartsWith<"https://">
  */
 export type StartsWith<S extends string | { value: string; error?: string }> = {
-  readonly __tsgonest_startsWith: StrVal<S>;
+  readonly __tsgonest_startsWith?: StrVal<S>;
 } & WithErr<"__tsgonest_startsWith", S>;
 
 /**
@@ -122,7 +126,7 @@ export type StartsWith<S extends string | { value: string; error?: string }> = {
  * @example EndsWith<".json">
  */
 export type EndsWith<S extends string | { value: string; error?: string }> = {
-  readonly __tsgonest_endsWith: StrVal<S>;
+  readonly __tsgonest_endsWith?: StrVal<S>;
 } & WithErr<"__tsgonest_endsWith", S>;
 
 /**
@@ -130,7 +134,7 @@ export type EndsWith<S extends string | { value: string; error?: string }> = {
  * @example Includes<"@">
  */
 export type Includes<S extends string | { value: string; error?: string }> = {
-  readonly __tsgonest_includes: StrVal<S>;
+  readonly __tsgonest_includes?: StrVal<S>;
 } & WithErr<"__tsgonest_includes", S>;
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -142,7 +146,7 @@ export type Includes<S extends string | { value: string; error?: string }> = {
  * @example Minimum<0>  or  Min<0>  or  Min<{value: 0, error: "Must be non-negative"}>
  */
 export type Minimum<N extends number | { value: number; error?: string }> = {
-  readonly __tsgonest_minimum: NumVal<N>;
+  readonly __tsgonest_minimum?: NumVal<N>;
 } & WithErr<"__tsgonest_minimum", N>;
 
 /**
@@ -150,7 +154,7 @@ export type Minimum<N extends number | { value: number; error?: string }> = {
  * @example Maximum<100>  or  Max<100>
  */
 export type Maximum<N extends number | { value: number; error?: string }> = {
-  readonly __tsgonest_maximum: NumVal<N>;
+  readonly __tsgonest_maximum?: NumVal<N>;
 } & WithErr<"__tsgonest_maximum", N>;
 
 /**
@@ -158,7 +162,7 @@ export type Maximum<N extends number | { value: number; error?: string }> = {
  * @example ExclusiveMinimum<0>  or  Gt<0>
  */
 export type ExclusiveMinimum<N extends number | { value: number; error?: string }> = {
-  readonly __tsgonest_exclusiveMinimum: NumVal<N>;
+  readonly __tsgonest_exclusiveMinimum?: NumVal<N>;
 } & WithErr<"__tsgonest_exclusiveMinimum", N>;
 
 /**
@@ -166,7 +170,7 @@ export type ExclusiveMinimum<N extends number | { value: number; error?: string 
  * @example ExclusiveMaximum<100>  or  Lt<100>
  */
 export type ExclusiveMaximum<N extends number | { value: number; error?: string }> = {
-  readonly __tsgonest_exclusiveMaximum: NumVal<N>;
+  readonly __tsgonest_exclusiveMaximum?: NumVal<N>;
 } & WithErr<"__tsgonest_exclusiveMaximum", N>;
 
 /**
@@ -174,7 +178,7 @@ export type ExclusiveMaximum<N extends number | { value: number; error?: string 
  * @example MultipleOf<2>  or  Step<0.01>
  */
 export type MultipleOf<N extends number | { value: number; error?: string }> = {
-  readonly __tsgonest_multipleOf: NumVal<N>;
+  readonly __tsgonest_multipleOf?: NumVal<N>;
 } & WithErr<"__tsgonest_multipleOf", N>;
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -190,7 +194,7 @@ export type NumericTypeValue =
  * @example Type<"int32">  or  Type<{type: "int32", error: "Must be integer"}>
  */
 export type Type<T extends NumericTypeValue | { type: NumericTypeValue; error?: string }> = {
-  readonly __tsgonest_type: TypeVal<T, NumericTypeValue>;
+  readonly __tsgonest_type?: TypeVal<T, NumericTypeValue>;
 } & WithErr<"__tsgonest_type", T>;
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -202,7 +206,7 @@ export type Type<T extends NumericTypeValue | { type: NumericTypeValue; error?: 
  * @example MinItems<1>
  */
 export type MinItems<N extends number | { value: number; error?: string }> = {
-  readonly __tsgonest_minItems: NumVal<N>;
+  readonly __tsgonest_minItems?: NumVal<N>;
 } & WithErr<"__tsgonest_minItems", N>;
 
 /**
@@ -210,7 +214,7 @@ export type MinItems<N extends number | { value: number; error?: string }> = {
  * @example MaxItems<100>
  */
 export type MaxItems<N extends number | { value: number; error?: string }> = {
-  readonly __tsgonest_maxItems: NumVal<N>;
+  readonly __tsgonest_maxItems?: NumVal<N>;
 } & WithErr<"__tsgonest_maxItems", N>;
 
 /**
@@ -218,7 +222,7 @@ export type MaxItems<N extends number | { value: number; error?: string }> = {
  * @example UniqueItems  or  Unique  or  Unique<{error: "No duplicates"}>
  */
 export type UniqueItems<C extends { error?: string } = {}> = {
-  readonly __tsgonest_uniqueItems: true;
+  readonly __tsgonest_uniqueItems?: true;
 } & WithErr<"__tsgonest_uniqueItems", C>;
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -230,7 +234,7 @@ export type UniqueItems<C extends { error?: string } = {}> = {
  * @example Uppercase  or  Uppercase<{error: "Must be uppercase"}>
  */
 export type Uppercase<C extends { error?: string } = {}> = {
-  readonly __tsgonest_uppercase: true;
+  readonly __tsgonest_uppercase?: true;
 } & WithErr<"__tsgonest_uppercase", C>;
 
 /**
@@ -238,7 +242,7 @@ export type Uppercase<C extends { error?: string } = {}> = {
  * @example Lowercase  or  Lowercase<{error: "Must be lowercase"}>
  */
 export type Lowercase<C extends { error?: string } = {}> = {
-  readonly __tsgonest_lowercase: true;
+  readonly __tsgonest_lowercase?: true;
 } & WithErr<"__tsgonest_lowercase", C>;
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -246,13 +250,13 @@ export type Lowercase<C extends { error?: string } = {}> = {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /** Trim whitespace before validation. */
-export type Trim = { readonly __tsgonest_transform_trim: true };
+export type Trim = { readonly __tsgonest_transform_trim?: true };
 
 /** Convert to lowercase before validation. */
-export type ToLowerCase = { readonly __tsgonest_transform_toLowerCase: true };
+export type ToLowerCase = { readonly __tsgonest_transform_toLowerCase?: true };
 
 /** Convert to uppercase before validation. */
-export type ToUpperCase = { readonly __tsgonest_transform_toUpperCase: true };
+export type ToUpperCase = { readonly __tsgonest_transform_toUpperCase?: true };
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Coercion
@@ -267,7 +271,7 @@ export type ToUpperCase = { readonly __tsgonest_transform_toUpperCase: true };
  *   page: number & Coerce
  *   active: boolean & Coerce
  */
-export type Coerce = { readonly __tsgonest_coerce: true };
+export type Coerce = { readonly __tsgonest_coerce?: true };
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Custom Validators (function reference)
@@ -289,7 +293,7 @@ export type Coerce = { readonly __tsgonest_coerce: true };
 export type Validate<
   F extends ((...args: any[]) => boolean) | { fn: (...args: any[]) => boolean; error?: string }
 > = {
-  readonly __tsgonest_validate: F extends { fn: infer Fn } ? Fn : F;
+  readonly __tsgonest_validate?: F extends { fn: infer Fn } ? Fn : F;
 } & WithErr<"__tsgonest_validate", F>;
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -301,14 +305,14 @@ export type Validate<
  * Per-constraint errors (via `error` field) take precedence.
  * @example string & Format<"email"> & Error<"Invalid email">
  */
-export type Error<M extends string> = { readonly __tsgonest_error: M };
+export type Error<M extends string> = { readonly __tsgonest_error?: M };
 
 /**
  * Default value for optional properties. Assigned when value is undefined.
  * @example theme?: string & Default<"light">
  */
 export type Default<V extends string | number | boolean> = {
-  readonly __tsgonest_default: V;
+  readonly __tsgonest_default?: V;
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════

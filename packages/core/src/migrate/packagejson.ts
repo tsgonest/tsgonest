@@ -20,8 +20,10 @@ const NESTIA_DEPS = [
   "@nestia/sdk",
   "@nestia/e2e",
   "@nestia/fetcher",
+  "@nestia/benchmark",
   "nestia",
   "typia",
+  "ts-patch",
 ];
 
 /** Packages to remove when migrating from class-validator/class-transformer. */

@@ -133,9 +133,11 @@ export function transformNestia(file: SourceFile, report: MigrateReport): number
     }
   }
 
-  // Remove @nestia/core import
+  // Remove @nestia/core import (always remove — even if no decorators were
+  // transformed, the import itself is no longer needed after migration)
+  nestiaImport.remove();
+
   if (count > 0) {
-    nestiaImport.remove();
 
     // Add needed imports to @nestjs/common
     if (neededCommonImports.size > 0) {

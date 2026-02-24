@@ -82,7 +82,7 @@ function parseArgs(argv: string[]): MigrateOptions {
   }
 
   if (opts.include.length === 0) {
-    opts.include = ["src/**/*.controller.ts", "src/**/*.dto.ts", "src/**/main.ts"];
+    opts.include = ["src/**/*.ts"];
   }
 
   return opts;
