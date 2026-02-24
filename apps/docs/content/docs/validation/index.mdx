@@ -115,7 +115,7 @@ Both approaches produce identical runtime validators. You can even mix them in t
 
 ## NestJS integration
 
-tsgonest automatically injects validation into your controllers at compile time. When you build with `tsgonest build`, the controller rewriter adds `assertTypeName()` calls for `@Body()` parameters — no pipes or runtime setup needed.
+tsgonest automatically injects validation into your controllers at compile time. When you build with `tsgonest build`, the controller rewriter adds `assertTypeName()` calls for `@Body()`, `@Query()`, `@Param()`, and `@Headers()` parameters — no pipes or runtime setup needed.
 
 ```ts title="user.controller.ts"
 @Controller('users')
@@ -125,10 +125,37 @@ export class UserController {
     // dto is automatically validated at compile time via injected assertCreateUserDto()
     return this.userService.create(dto);
   }
+
+  @Get()
+  findAll(@Query() query: PaginationDto) {
+    // query is validated and number/boolean fields are auto-coerced from strings
+    return this.userService.findAll(query);
+  }
+
+  @Get(':id')
+  findOne(@Param('id') id: number) {
+    // id is auto-coerced from string to number with NaN checking
+    return this.userService.findOne(id);
+  }
 }
 ```
 
 On validation failure, a `TsgonestValidationError` is thrown with structured error details (400 Bad Request).
+
+:::warning[Factory decorators are not supported]
+tsgonest uses static analysis to detect NestJS decorators. If you create factory functions that return core decorators (e.g., a function that wraps `@Body()`, `@Query()`, `@Get()`, `@Post()`, etc.), tsgonest **cannot** introspect them and will skip validation/coercion injection for those parameters.
+
+```ts
+// This works — tsgonest detects @Body() directly
+create(@Body() dto: CreateUserDto) { ... }
+
+// This does NOT work — tsgonest cannot see through the factory
+const MyBody = () => Body();
+create(@MyBody() dto: CreateUserDto) { ... } // no validation injected
+```
+
+Import aliases (`import { Body as NestBody }`) **are** supported — tsgonest resolves the original symbol.
+:::
 
 ### Multipart / form-data
 

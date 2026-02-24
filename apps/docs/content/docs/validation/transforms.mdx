@@ -105,7 +105,7 @@ interface FilterDto {
 
 ### Auto-coercion in NestJS
 
-When using `TsgonestValidationPipe` in NestJS, tsgonest **automatically enables coercion** for `@Query()` and `@Param()` parameters typed as `number` or `boolean`. You do not need to add `Coerce` explicitly for these cases.
+When building with `tsgonest build`, tsgonest **automatically enables coercion** for `@Query()` and `@Param()` parameters typed as `number` or `boolean`. You do not need to add `Coerce` explicitly for these cases — the compiler injects coercion at build time.
 
 ```ts title="auto-coerce.controller.ts"
 @Controller('products')

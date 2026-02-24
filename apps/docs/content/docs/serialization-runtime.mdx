@@ -97,8 +97,8 @@ tsgonest injects validation and serialization directly into your controller Java
 
 During `tsgonest build`, the controller rewriter:
 
-1. **Validation**: Wraps `@Body()` parameters with `assertTypeName()` calls from the generated companion files
-2. **Serialization**: Wraps return statements with `transformTypeName()` calls that use the generated serializers
+1. **Validation**: Wraps `@Body()`, `@Query()`, `@Param()`, and `@Headers()` parameters with `assertTypeName()` calls from the generated companion files. Individual scalar `@Query('name')` and `@Param('name')` parameters get inline coercion (string to number/boolean).
+2. **Serialization**: Wraps return statements with `transformTypeName()` calls that use the generated serializers. Non-async methods that return Promises are automatically made `async` so the value is `await`ed before serialization.
 
 ```ts title="src/user/user.controller.ts (source)"
 @Controller('users')
