@@ -6,5 +6,6 @@
   "cpu": ["x64"],
   "repository": { "type": "git", "url": "https://github.com/tsgonest/tsgonest" },
   "license": "MIT",
+  "bin": { "tsgonest": "bin/tsgonest" },
   "files": ["bin/"]
 }
