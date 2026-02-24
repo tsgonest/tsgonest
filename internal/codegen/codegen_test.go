@@ -230,10 +230,9 @@ func TestSerializeArray(t *testing.T) {
 	}
 
 	code := GenerateCompanionSelective("Result", meta, reg, false, true)
-	// Array serialization uses for-loop IIFE instead of .map().join()
-	assertContains(t, code, "for (var")
-	assertContains(t, code, `+= ","`)
-	assertContains(t, code, `+ "]"`)
+	// Array serialization imports __sa from shared helpers and uses it
+	assertContains(t, code, "import { __s, __sa } from \"./_tsgonest_helpers.js\";")
+	assertContains(t, code, "__sa(")
 }
 
 func TestSerializeOptionalProps(t *testing.T) {
@@ -257,7 +256,6 @@ func TestSerializeOptionalProps(t *testing.T) {
 	// Should use ternary-based optional inclusion with comma-separated keys
 	assertContains(t, code, `",\"name\":"`)
 	assertContains(t, code, `",\"age\":"`)
-
 
 }
 
@@ -1361,7 +1359,7 @@ func TestGenerateCompanionTypes_ReturnTypes(t *testing.T) {
 	// no deserialize
 	assertNotContains(t, output, "deserializeFoo")
 	// schema has ~standard
-	assertContains(t, output, "\"~standard\": StandardSchemaV1Props")
+	assertContains(t, output, "\"~standard\": StandardSchemaV1Props<Foo, Foo>")
 }
 
 func TestCompanion_GeneratesDTS(t *testing.T) {
@@ -2232,7 +2230,7 @@ func TestGenerateIsFunction_Recursive(t *testing.T) {
 		Properties: []metadata.Property{
 			{Name: "name", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
 			{Name: "children", Type: metadata.Metadata{
-				Kind: metadata.KindArray,
+				Kind:        metadata.KindArray,
 				ElementType: &metadata.Metadata{Kind: metadata.KindRef, Ref: "Department"},
 			}, Required: true},
 		},
@@ -2277,7 +2275,7 @@ func TestGenerateStandaloneAssert_Recursive(t *testing.T) {
 		Properties: []metadata.Property{
 			{Name: "name", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
 			{Name: "children", Type: metadata.Metadata{
-				Kind: metadata.KindArray,
+				Kind:        metadata.KindArray,
 				ElementType: &metadata.Metadata{Kind: metadata.KindRef, Ref: "Dept"},
 			}, Required: true},
 		},
@@ -2301,7 +2299,7 @@ func TestGenerateValidate_RecursiveOptimized(t *testing.T) {
 		Properties: []metadata.Property{
 			{Name: "name", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
 			{Name: "children", Type: metadata.Metadata{
-				Kind: metadata.KindArray,
+				Kind:        metadata.KindArray,
 				ElementType: &metadata.Metadata{Kind: metadata.KindRef, Ref: "Dept"},
 			}, Required: true},
 		},
@@ -2410,8 +2408,8 @@ func TestSerializationHelper_NoRegexBranch(t *testing.T) {
 
 	code := GenerateCompanionSelective("Dto", meta, reg, false, true)
 
-	// Should have simplified __s() without the regex branch
-	assertContains(t, code, "function __s(s)")
+	// Should import __s from shared helpers instead of inlining
+	assertContains(t, code, "import { __s, __sa } from \"./_tsgonest_helpers.js\";")
 	assertNotContains(t, code, "s.length > 64")
 	assertNotContains(t, code, "__esc")
 }
@@ -2593,6 +2591,111 @@ func TestTransformTypeDeclaration_NoTransformWithoutSerialization(t *testing.T) 
 	assertNotContains(t, code, "transformUserDto")
 }
 
+func TestIdnHostnameConsecutiveHyphens(t *testing.T) {
+	// Verify the idn-hostname regex allows consecutive hyphens
+	pattern, ok := formatRegexes["idn-hostname"]
+	if !ok {
+		t.Fatal("expected idn-hostname format to exist")
+	}
+	// Old pattern had (-[a-z0-9...]+ which doesn't allow consecutive hyphens
+	if strings.Contains(pattern, "(-[a-z") {
+		t.Error("idn-hostname regex should not use (-[a-z pattern that blocks consecutive hyphens")
+	}
+	// New pattern should use a character class that allows hyphens within labels
+	if !strings.Contains(pattern, "-]*") {
+		t.Error("idn-hostname regex should allow hyphens within labels via [a-z0-9...-]* pattern")
+	}
+}
+
+func TestSerializeInfinityNaN(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+	meta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Name: "NumericDto",
+		Properties: []metadata.Property{
+			{Name: "value", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "number"}, Required: true},
+		},
+	}
+
+	code := GenerateCompanionSelective("NumericDto", meta, reg, false, true)
+
+	// Should contain Number.isFinite check for number serialization
+	assertContains(t, code, "Number.isFinite")
+	// Should fallback to "null" for non-finite numbers
+	assertContains(t, code, "\"null\"")
+}
+
+func TestKindIntersection(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+	meta := &metadata.Metadata{
+		Kind: metadata.KindIntersection,
+		IntersectionMembers: []metadata.Metadata{
+			{
+				Kind: metadata.KindObject,
+				Properties: []metadata.Property{
+					{Name: "id", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "number"}, Required: true},
+				},
+			},
+			{
+				Kind: metadata.KindObject,
+				Properties: []metadata.Property{
+					{Name: "name", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+				},
+			},
+		},
+	}
+
+	// Test validate
+	code := GenerateCompanionSelective("Merged", meta, reg, true, true)
+	assertContains(t, code, "typeof input.id")
+	assertContains(t, code, "typeof input.name")
+
+	// Test is function
+	assertContains(t, code, "export function isMerged(input)")
+
+	// Test serialize (should merge properties from both members)
+	assertContains(t, code, "serializeMerged")
+
+	// Test transform
+	assertContains(t, code, "transformMerged")
+}
+
+func TestExactOptionalPropertyTypes(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+	meta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Name: "ExactDto",
+		Properties: []metadata.Property{
+			{Name: "name", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+			{Name: "bio", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string", Optional: true}, Required: false, ExactOptional: true},
+		},
+	}
+
+	code := GenerateCompanionSelective("ExactDto", meta, reg, true, false)
+
+	// ExactOptional should use "in" check instead of !== undefined
+	assertContains(t, code, "\"bio\" in input")
+
+	// is() function should use !("bio" in input) instead of === undefined
+	assertContains(t, code, "!(\"bio\" in input)")
+}
+
+func TestNonExactOptionalPropertyTypes(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+	meta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Name: "NormalDto",
+		Properties: []metadata.Property{
+			{Name: "bio", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string", Optional: true}, Required: false, ExactOptional: false},
+		},
+	}
+
+	code := GenerateCompanionSelective("NormalDto", meta, reg, true, false)
+
+	// Non-exact should use !== undefined
+	assertContains(t, code, "input.bio !== undefined")
+}
+
 func assertContains(t *testing.T, haystack string, needle string) {
 	t.Helper()
 	if !strings.Contains(haystack, needle) {
@@ -2604,5 +2707,97 @@ func assertNotContains(t *testing.T, haystack string, needle string) {
 	t.Helper()
 	if strings.Contains(haystack, needle) {
 		t.Errorf("expected output NOT to contain %q.\nGot:\n%s", needle, haystack)
+	}
+}
+
+// --- Shared helpers generation tests ---
+
+func TestGenerateHelpers_ContainsSerializationFunctions(t *testing.T) {
+	code := GenerateHelpers()
+
+	assertContains(t, code, "export function __s(s)")
+	assertContains(t, code, "export function __sa(a, f)")
+	assertContains(t, code, "JSON.stringify(s)")
+}
+
+func TestGenerateHelpers_ContainsFormatRegexes(t *testing.T) {
+	code := GenerateHelpers()
+
+	assertContains(t, code, "export const __fmt_email =")
+	assertContains(t, code, "export const __fmt_uuid =")
+	assertContains(t, code, "export const __fmt_date_time =")
+	assertContains(t, code, "export const __fmt_url =")
+	// password and regex should NOT have constants (empty patterns)
+	assertNotContains(t, code, "__fmt_password")
+	assertNotContains(t, code, "__fmt_regex")
+}
+
+func TestGenerateHelpersTypes(t *testing.T) {
+	code := GenerateHelpersTypes()
+
+	assertContains(t, code, "export declare function __s(s: string): string;")
+	assertContains(t, code, "export declare function __sa(a: readonly unknown[], f: (v: unknown) => string): string;")
+	assertContains(t, code, "export declare const __fmt_email: RegExp;")
+	assertContains(t, code, "export declare const __fmt_uuid: RegExp;")
+}
+
+func TestFormatConstName(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"email", "__fmt_email"},
+		{"date-time", "__fmt_date_time"},
+		{"uri-reference", "__fmt_uri_reference"},
+		{"uuid", "__fmt_uuid"},
+		{"relative-json-pointer", "__fmt_relative_json_pointer"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := FormatConstName(tt.input)
+			if got != tt.expected {
+				t.Errorf("FormatConstName(%q) = %q, want %q", tt.input, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestGenerateHelpersFile(t *testing.T) {
+	files := GenerateHelpersFile("dist")
+
+	if len(files) != 2 {
+		t.Fatalf("expected 2 files, got %d", len(files))
+	}
+
+	// JS file
+	if files[0].Path != "dist/_tsgonest_helpers.js" {
+		t.Errorf("expected JS path 'dist/_tsgonest_helpers.js', got %q", files[0].Path)
+	}
+	assertContains(t, files[0].Content, "export function __s(s)")
+
+	// DTS file
+	if files[1].Path != "dist/_tsgonest_helpers.d.ts" {
+		t.Errorf("expected DTS path 'dist/_tsgonest_helpers.d.ts', got %q", files[1].Path)
+	}
+	assertContains(t, files[1].Content, "export declare function __s")
+}
+
+func TestHelpersFilePath(t *testing.T) {
+	tests := []struct {
+		outDir   string
+		expected string
+	}{
+		{"dist", "dist/_tsgonest_helpers.js"},
+		{"dist/", "dist/_tsgonest_helpers.js"},
+		{"", "_tsgonest_helpers.js"},
+		{"out/js", "out/js/_tsgonest_helpers.js"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.outDir, func(t *testing.T) {
+			got := HelpersFilePath(tt.outDir)
+			if got != tt.expected {
+				t.Errorf("HelpersFilePath(%q) = %q, want %q", tt.outDir, got, tt.expected)
+			}
+		})
 	}
 }

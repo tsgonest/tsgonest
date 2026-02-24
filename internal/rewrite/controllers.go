@@ -22,9 +22,9 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 
 	// Collect return transformations
 	type returnTransform struct {
-		methodName    string
-		typeName      string
-		isArray       bool
+		methodName string
+		typeName   string
+		isArray    bool
 	}
 
 	var validations []bodyValidation

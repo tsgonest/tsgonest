@@ -109,11 +109,12 @@ const (
 
 // Property represents a property in an object type.
 type Property struct {
-	Name        string       `json:"name"`
-	Type        Metadata     `json:"type"`
-	Required    bool         `json:"required"`
-	Readonly    bool         `json:"readonly,omitempty"`
-	Constraints *Constraints `json:"constraints,omitempty"`
+	Name          string       `json:"name"`
+	Type          Metadata     `json:"type"`
+	Required      bool         `json:"required"`
+	Readonly      bool         `json:"readonly,omitempty"`
+	ExactOptional bool         `json:"exactOptional,omitempty"`
+	Constraints   *Constraints `json:"constraints,omitempty"`
 }
 
 // Constraints represents validation constraints extracted from JSDoc tags.

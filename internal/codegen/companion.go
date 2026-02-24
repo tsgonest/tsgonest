@@ -76,3 +76,27 @@ func companionPath(sourceFileName string, typeName string) string {
 	}
 	return base + "." + typeName + ".tsgonest.js"
 }
+
+// HelpersFilePath returns the path for the shared helpers file given an output directory.
+// The helpers file is named _tsgonest_helpers.js and placed in the output directory.
+func HelpersFilePath(outDir string) string {
+	if outDir == "" {
+		return "_tsgonest_helpers.js"
+	}
+	if outDir[len(outDir)-1] == '/' {
+		return outDir + "_tsgonest_helpers.js"
+	}
+	return outDir + "/_tsgonest_helpers.js"
+}
+
+// GenerateHelpersFile returns the shared helpers file (.js and .d.ts) as CompanionFile entries.
+// The outDir parameter is the output directory where companion files are written.
+// This should be called once per build, not per source file.
+func GenerateHelpersFile(outDir string) []CompanionFile {
+	jsPath := HelpersFilePath(outDir)
+	dtsPath := strings.TrimSuffix(jsPath, ".js") + ".d.ts"
+	return []CompanionFile{
+		{Path: jsPath, Content: GenerateHelpers()},
+		{Path: dtsPath, Content: GenerateHelpersTypes()},
+	}
+}

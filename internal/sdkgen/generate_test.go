@@ -92,9 +92,9 @@ func TestGenerate_VersionedFixture(t *testing.T) {
 		"client.ts",
 		"index.ts",
 		"package.json",
-		"health/index.ts",        // unversioned
-		"v1/orders/index.ts",     // versioned
-		"v2/orders/index.ts",     // versioned
+		"health/index.ts",    // unversioned
+		"v1/orders/index.ts", // versioned
+		"v2/orders/index.ts", // versioned
 	}
 	for _, f := range expectedFiles {
 		path := filepath.Join(outputDir, f)

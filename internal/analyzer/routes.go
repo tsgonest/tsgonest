@@ -30,6 +30,9 @@ type ControllerInfo struct {
 	Routes []Route
 	// SourceFile is the path of the source file containing this controller.
 	SourceFile string
+	// IgnoreOpenAPI is true when the controller should be excluded from OpenAPI generation.
+	// Set by @tsgonest-ignore openapi, @hidden, or @exclude JSDoc on the class.
+	IgnoreOpenAPI bool
 }
 
 // Route represents a single HTTP route extracted from a controller method.
@@ -226,6 +229,9 @@ func (a *ControllerAnalyzer) analyzeClass(classNode *ast.Node, sourceFile string
 		className = classDecl.Name().Text()
 	}
 
+	// Check class-level JSDoc for @tsgonest-ignore openapi, @hidden, @exclude
+	ignoreOpenAPI := isControllerIgnoredForOpenAPI(classNode)
+
 	// Derive tag from class name
 	tag := deriveTag(className)
 
@@ -245,10 +251,11 @@ func (a *ControllerAnalyzer) analyzeClass(classNode *ast.Node, sourceFile string
 	}
 
 	return &ControllerInfo{
-		Name:       className,
-		Path:       controllerPath,
-		Routes:     routes,
-		SourceFile: sourceFile,
+		Name:          className,
+		Path:          controllerPath,
+		Routes:        routes,
+		SourceFile:    sourceFile,
+		IgnoreOpenAPI: ignoreOpenAPI,
 	}
 }
 
@@ -808,6 +815,37 @@ func (a *ControllerAnalyzer) extractReturnsDecoratorType(info *DecoratorInfo) (r
 	}
 
 	return
+}
+
+// isControllerIgnoredForOpenAPI checks if a controller class has JSDoc annotations
+// that exclude it from OpenAPI generation. Recognized annotations:
+//   - @tsgonest-ignore openapi — explicit OpenAPI exclusion
+//   - @hidden — compatible with NestJS/Swagger convention
+//   - @exclude — compatible with NestJS/Swagger convention
+func isControllerIgnoredForOpenAPI(classNode *ast.Node) bool {
+	if classNode == nil {
+		return false
+	}
+	jsdocs := classNode.JSDoc(nil)
+	if len(jsdocs) == 0 {
+		return false
+	}
+	jsdoc := jsdocs[len(jsdocs)-1].AsJSDoc()
+	if jsdoc.Tags == nil {
+		return false
+	}
+	for _, tagNode := range jsdoc.Tags.Nodes {
+		tagName, comment := extractJSDocTagInfo(tagNode)
+		switch strings.ToLower(tagName) {
+		case "hidden", "exclude":
+			return true
+		case "tsgonest-ignore":
+			if strings.TrimSpace(strings.ToLower(comment)) == "openapi" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // extractMethodJSDoc extracts OpenAPI-relevant JSDoc tags from a method declaration.

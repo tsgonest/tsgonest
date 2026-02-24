@@ -418,4 +418,3 @@ func controllerFactoryName(name string) string {
 func methodOptionsTypeName(methodName string) string {
 	return capitalize(methodName) + "Options"
 }
-

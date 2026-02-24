@@ -2586,3 +2586,81 @@ func TestGenerator_SSEWithQueryParams(t *testing.T) {
 		t.Error("expected text/event-stream response")
 	}
 }
+
+func TestSchemaGenerator_ReadOnlyProperty(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+	gen := NewSchemaGenerator(reg)
+
+	m := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Name: "UserDto",
+		Properties: []metadata.Property{
+			{Name: "id", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "number"}, Required: true, Readonly: true},
+			{Name: "name", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+		},
+	}
+
+	schema := gen.MetadataToSchema(m)
+	// It should return a $ref, look up the registered schema
+	registered := gen.Schemas()["UserDto"]
+	if registered == nil {
+		t.Fatal("expected UserDto to be registered")
+	}
+
+	idSchema := registered.Properties["id"]
+	if idSchema == nil {
+		t.Fatal("expected 'id' property in schema")
+	}
+	if idSchema.ReadOnly == nil || !*idSchema.ReadOnly {
+		t.Error("expected readOnly=true for 'id' property")
+	}
+
+	nameSchema := registered.Properties["name"]
+	if nameSchema == nil {
+		t.Fatal("expected 'name' property in schema")
+	}
+	if nameSchema.ReadOnly != nil {
+		t.Error("expected readOnly to be nil for 'name' property")
+	}
+
+	// Verify JSON output contains readOnly
+	data, _ := json.Marshal(registered)
+	jsonStr := string(data)
+	if !strings.Contains(jsonStr, `"readOnly":true`) {
+		t.Errorf("expected JSON to contain readOnly:true, got: %s", jsonStr)
+	}
+
+	_ = schema
+}
+
+func TestGenerator_IgnoreOpenAPI(t *testing.T) {
+	registry := metadata.NewTypeRegistry()
+	gen := NewGenerator(registry)
+
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name: "VisibleController",
+			Path: "visible",
+			Routes: []analyzer.Route{
+				{Method: "GET", Path: "/visible", OperationID: "getVisible", StatusCode: 200, ReturnType: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Tags: []string{"Visible"}},
+			},
+		},
+		{
+			Name:          "HiddenController",
+			Path:          "hidden",
+			IgnoreOpenAPI: true,
+			Routes: []analyzer.Route{
+				{Method: "GET", Path: "/hidden", OperationID: "getHidden", StatusCode: 200, ReturnType: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Tags: []string{"Hidden"}},
+			},
+		},
+	}
+
+	doc := gen.Generate(controllers)
+
+	if _, ok := doc.Paths["/visible"]; !ok {
+		t.Error("expected /visible path to be in OpenAPI document")
+	}
+	if _, ok := doc.Paths["/hidden"]; ok {
+		t.Error("expected /hidden path to be excluded from OpenAPI document (IgnoreOpenAPI=true)")
+	}
+}

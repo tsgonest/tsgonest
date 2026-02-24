@@ -231,7 +231,7 @@ func runBuild(args []string) int {
 
 	// Handle --dump-metadata: skip emit, just analyze types
 	if dumpMetadata {
-		return runDumpMetadata(program)
+		return runDumpMetadata(program, opts)
 	}
 
 	// Step 3: Gather diagnostics (forces type checking).
@@ -310,6 +310,9 @@ func runBuild(args []string) int {
 		}
 		defer checkerRelease()
 		sharedWalker = analyzer.NewTypeWalker(sharedChecker)
+		if opts.ExactOptionalPropertyTypes == core.TSTrue {
+			sharedWalker.SetExactOptionalPropertyTypes(true)
+		}
 		timing.Checker = time.Since(checkerStart)
 
 		// Build source→output map (needed before emit for companion path computation)
@@ -343,10 +346,10 @@ func runBuild(args []string) int {
 
 			// Build RewriteContext
 			rewriteCtx = &rewrite.RewriteContext{
-				CompanionMap:  companionMap,
-				MarkerCalls:   markerCalls,
-				PathResolver:  pathResolver,
-				ModuleFormat:  rewrite.DetectModuleFormat(moduleFormatFromOpts(opts)),
+				CompanionMap:   companionMap,
+				MarkerCalls:    markerCalls,
+				PathResolver:   pathResolver,
+				ModuleFormat:   rewrite.DetectModuleFormat(moduleFormatFromOpts(opts)),
 				SourceToOutput: sourceToOutput,
 				OutputToSource: rewrite.BuildOutputToSourceMap(sourceToOutput),
 			}
@@ -460,6 +463,17 @@ func runBuild(args []string) int {
 		timing.Total = time.Since(buildStart)
 		timing.Print()
 		return 1
+	}
+
+	// ── Generate shared helpers file in every directory that has companions ────
+	if len(allCompanions) > 0 {
+		helpersDirs := make(map[string]bool)
+		for _, comp := range allCompanions {
+			helpersDirs[filepath.Dir(comp.Path)] = true
+		}
+		for dir := range helpersDirs {
+			allCompanions = append(allCompanions, codegen.GenerateHelpersFile(dir)...)
+		}
 	}
 
 	// ── Write companion files to disk (Option B: batch after emit) ──────
@@ -790,6 +804,26 @@ func generateCompanionsWithWalker(program *shimcompiler.Program, cfg *config.Con
 		}
 	}
 
+	// Generate shared helpers file in every directory that has companions
+	if len(allCompanions) > 0 {
+		helpersDirs := make(map[string]bool)
+		for _, comp := range allCompanions {
+			helpersDirs[filepath.Dir(comp.Path)] = true
+		}
+		for dir := range helpersDirs {
+			for _, hf := range codegen.GenerateHelpersFile(dir) {
+				hfDir := filepath.Dir(hf.Path)
+				if err := os.MkdirAll(hfDir, 0755); err != nil {
+					return allCompanions, fmt.Errorf("creating dir %s: %w", hfDir, err)
+				}
+				if err := os.WriteFile(hf.Path, []byte(hf.Content), 0644); err != nil {
+					return allCompanions, fmt.Errorf("writing %s: %w", hf.Path, err)
+				}
+				allCompanions = append(allCompanions, hf)
+			}
+		}
+	}
+
 	return allCompanions, nil
 }
 
@@ -1042,7 +1076,7 @@ type fileDump struct {
 
 // runDumpMetadata extracts type metadata from all non-declaration source files
 // and outputs it as JSON to stdout.
-func runDumpMetadata(program *shimcompiler.Program) int {
+func runDumpMetadata(program *shimcompiler.Program, opts *core.CompilerOptions) int {
 	checker, release := shimcompiler.Program_GetTypeChecker(program, context.Background())
 	if checker == nil {
 		fmt.Fprintln(os.Stderr, "error: could not get type checker")
@@ -1051,6 +1085,9 @@ func runDumpMetadata(program *shimcompiler.Program) int {
 	defer release()
 
 	walker := analyzer.NewTypeWalker(checker)
+	if opts.ExactOptionalPropertyTypes == core.TSTrue {
+		walker.SetExactOptionalPropertyTypes(true)
+	}
 
 	var files []fileDump
 	for _, sf := range program.GetSourceFiles() {

@@ -64,6 +64,36 @@ func generateTransformExpr(accessor string, meta *metadata.Metadata, registry *m
 		// Unknown ref: pass through
 		return accessor
 
+	case metadata.KindIntersection:
+		// For intersection types, if all members are objects, merge and transform
+		allObjects := true
+		for _, member := range meta.IntersectionMembers {
+			resolved := &member
+			if member.Kind == metadata.KindRef {
+				if r, ok := registry.Types[member.Ref]; ok {
+					resolved = r
+				}
+			}
+			if resolved.Kind != metadata.KindObject {
+				allObjects = false
+				break
+			}
+		}
+		if allObjects && len(meta.IntersectionMembers) > 0 {
+			merged := &metadata.Metadata{Kind: metadata.KindObject}
+			for _, member := range meta.IntersectionMembers {
+				resolved := &member
+				if member.Kind == metadata.KindRef {
+					if r, ok := registry.Types[member.Ref]; ok {
+						resolved = r
+					}
+				}
+				merged.Properties = append(merged.Properties, resolved.Properties...)
+			}
+			return generateTransformExpr(accessor, merged, registry, depth, ctx)
+		}
+		return accessor
+
 	case metadata.KindUnion:
 		return generateTransformUnion(accessor, meta, registry, depth, ctx)
 

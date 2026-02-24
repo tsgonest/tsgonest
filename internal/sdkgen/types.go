@@ -23,21 +23,21 @@ type ControllerGroup struct {
 
 // SDKMethod represents a single API method in the SDK.
 type SDKMethod struct {
-	Name           string     // e.g., "listOrders"
-	HTTPMethod     string     // "GET", "POST", etc.
-	Path           string     // "/orders/{id}" (full path including version prefix)
-	PathParams     []SDKParam // from path parameters
-	QueryParams    []SDKParam // from query parameters
-	HeaderParams   []SDKParam // from header parameters
-	Body           *SDKBody   // request body, nil if none
-	ResponseType        string // TypeScript type string for 2xx response
-	ResponseStatus      int    // e.g., 200, 201, 204
-	ResponseContentType string // e.g., "application/json", "application/pdf", "text/event-stream"
-	SSEEventType        string // TypeScript type for SSE event data (e.g., "OrderUpdate"), empty if untyped SSE
-	IsVoid              bool   // true if 204 or no response body
-	Summary        string
-	Description    string
-	Deprecated     bool
+	Name                string     // e.g., "listOrders"
+	HTTPMethod          string     // "GET", "POST", etc.
+	Path                string     // "/orders/{id}" (full path including version prefix)
+	PathParams          []SDKParam // from path parameters
+	QueryParams         []SDKParam // from query parameters
+	HeaderParams        []SDKParam // from header parameters
+	Body                *SDKBody   // request body, nil if none
+	ResponseType        string     // TypeScript type string for 2xx response
+	ResponseStatus      int        // e.g., 200, 201, 204
+	ResponseContentType string     // e.g., "application/json", "application/pdf", "text/event-stream"
+	SSEEventType        string     // TypeScript type for SSE event data (e.g., "OrderUpdate"), empty if untyped SSE
+	IsVoid              bool       // true if 204 or no response body
+	Summary             string
+	Description         string
+	Deprecated          bool
 }
 
 // SDKParam represents a parameter in an SDK method.

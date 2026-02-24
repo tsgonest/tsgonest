@@ -477,6 +477,10 @@ func (g *Generator) GenerateWithOptions(controllers []analyzer.ControllerInfo, o
 	tagSet := make(map[string]bool)
 
 	for _, ctrl := range controllers {
+		// Skip controllers annotated with @tsgonest-ignore openapi, @hidden, or @exclude
+		if ctrl.IgnoreOpenAPI {
+			continue
+		}
 		for _, route := range ctrl.Routes {
 			// Convert NestJS-style path params (:id) to OpenAPI-style ({id})
 			openapiPath := convertPath(route.Path)

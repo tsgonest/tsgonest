@@ -35,16 +35,8 @@ func GenerateCompanionSelective(typeName string, meta *metadata.Metadata, regist
 	}
 
 	if includeSerialization {
-		// Serialization helpers — must be before any serialize function that uses them.
-		// __s: fast string serializer — charCode scan, falls back to JSON.stringify only when escaping needed.
-		e.Block("function __s(s)")
-		e.Line("for (var i = 0; i < s.length; i++) { var c = s.charCodeAt(i); if (c < 32 || c === 34 || c === 92) return JSON.stringify(s); }")
-		e.Line("return '\"' + s + '\"';")
-		e.EndBlock()
-		// __sa: fast array serializer — for-loop with string accumulation.
-		e.Block("function __sa(a, f)")
-		e.Line("var r = \"[\"; for (var i = 0; i < a.length; i++) { if (i) r += \",\"; r += f(a[i]); } return r + \"]\";")
-		e.EndBlock()
+		// Import serialization helpers from shared module instead of inlining them.
+		e.Line("import { __s, __sa } from \"./_tsgonest_helpers.js\";")
 		e.Blank()
 	}
 
@@ -114,11 +106,12 @@ func GenerateCompanionTypesSelective(typeName string, includeValidation bool, in
 	e.Blank()
 
 	if includeValidation {
-		// Define the StandardSchemaV1Props interface inline
-		e.Line("interface StandardSchemaV1Props {")
+		// Define the StandardSchemaV1Props interface inline (generic for type inference)
+		e.Line("interface StandardSchemaV1Props<Input = unknown, Output = Input> {")
 		e.Line("  readonly version: 1;")
 		e.Line("  readonly vendor: string;")
-		e.Line("  readonly validate: (value: unknown) => { value: any } | { issues: Array<{ message: string; path?: Array<{ key: string }> }> };")
+		e.Line("  readonly validate: (value: unknown) => { value: Output } | { issues: Array<{ message: string; path?: Array<{ key: string }> }> };")
+		e.Line("  readonly types?: { readonly input: Input; readonly output: Output };")
 		e.Line("}")
 		e.Blank()
 
@@ -138,7 +131,7 @@ func GenerateCompanionTypesSelective(typeName string, includeValidation bool, in
 	}
 
 	if includeValidation {
-		e.Line("export declare const schema%s: { readonly \"~standard\": StandardSchemaV1Props };", typeName)
+		e.Line("export declare const schema%s: { readonly \"~standard\": StandardSchemaV1Props<%s, %s> };", typeName, typeName, typeName)
 	}
 
 	return e.String()
@@ -415,6 +408,12 @@ func generateTypeCheckWithPathInner(e *Emitter, accessor string, pathExpr string
 		e.Block("if (%s !== undefined)", accessor)
 		e.Line("errors.push({ path: %s, expected: \"void\", received: typeof %s });", pathExpr, accessor)
 		e.EndBlock()
+
+	case metadata.KindIntersection:
+		for _, member := range meta.IntersectionMembers {
+			memberCopy := member
+			generateTypeCheckWithPathInner(e, accessor, pathExpr, &memberCopy, registry, depth, ctx)
+		}
 	}
 }
 
@@ -523,6 +522,17 @@ func generateAssertChecksInner(e *Emitter, accessor string, pathExpr string, met
 				generateAssertConstraintChecks(e, propAccessor, propPathExpr, &prop)
 				e.indent--
 				e.Line("}")
+			} else if prop.ExactOptional {
+				e.Block("if (%q in %s)", prop.Name, accessor)
+				e.Block("if (%s === undefined)", propAccessor)
+				e.Line("throw new TypeError(\"Expected %s at \" + %s + \", received explicit undefined\");", describeType(&prop.Type), propPathExpr)
+				e.EndBlockSuffix(" else {")
+				e.indent++
+				generateAssertChecks(e, propAccessor, propPathExpr, &prop.Type, registry, depth+1, ctx, isRecursive)
+				generateAssertConstraintChecks(e, propAccessor, propPathExpr, &prop)
+				e.indent--
+				e.Line("}")
+				e.EndBlock()
 			} else {
 				generateAssertChecks(e, propAccessor, propPathExpr, &prop.Type, registry, depth+1, ctx, isRecursive)
 				if prop.Constraints != nil {
@@ -649,6 +659,12 @@ func generateAssertChecksInner(e *Emitter, accessor string, pathExpr string, met
 		e.Block("if (%s !== undefined)", accessor)
 		e.Line("throw new TypeError(\"Expected void at \" + %s);", pathExpr)
 		e.EndBlock()
+
+	case metadata.KindIntersection:
+		for _, member := range meta.IntersectionMembers {
+			memberCopy := member
+			generateAssertChecksInner(e, accessor, pathExpr, &memberCopy, registry, depth, ctx, isRecursive)
+		}
 	}
 }
 
@@ -754,6 +770,12 @@ func hasRecursiveRef(meta *metadata.Metadata, registry *metadata.TypeRegistry, v
 	case metadata.KindUnion:
 		for i := range meta.UnionMembers {
 			if hasRecursiveRef(&meta.UnionMembers[i], registry, visited, target) {
+				return true
+			}
+		}
+	case metadata.KindIntersection:
+		for i := range meta.IntersectionMembers {
+			if hasRecursiveRef(&meta.IntersectionMembers[i], registry, visited, target) {
 				return true
 			}
 		}
@@ -874,6 +896,17 @@ func generateIsExprInner(accessor string, meta *metadata.Metadata, registry *met
 	case metadata.KindVoid:
 		return fmt.Sprintf("%s === undefined", accessor)
 
+	case metadata.KindIntersection:
+		parts := make([]string, len(meta.IntersectionMembers))
+		for i, member := range meta.IntersectionMembers {
+			memberCopy := member
+			parts[i] = generateIsExprInner(accessor, &memberCopy, registry, depth+1, ctx)
+		}
+		if len(parts) == 0 {
+			return "true"
+		}
+		return "(" + strings.Join(parts, " && ") + ")"
+
 	default:
 		return "true"
 	}
@@ -909,7 +942,11 @@ func generateIsObjectExpr(accessor string, meta *metadata.Metadata, registry *me
 		} else {
 			// Optional — only validate if present
 			innerExpr := generateIsExpr(propAccessor, &prop.Type, registry, depth+1, ctx)
-			parts = append(parts, fmt.Sprintf("(%s === undefined || %s)", propAccessor, innerExpr))
+			if prop.ExactOptional {
+				parts = append(parts, fmt.Sprintf("(!(%q in %s) || %s)", prop.Name, accessor, innerExpr))
+			} else {
+				parts = append(parts, fmt.Sprintf("(%s === undefined || %s)", propAccessor, innerExpr))
+			}
 		}
 		// Inline constraint checks for is()
 		if prop.Constraints != nil {
@@ -1144,6 +1181,13 @@ func generateTypeCheckInner(e *Emitter, accessor string, path string, meta *meta
 		e.Block("if (%s !== undefined)", accessor)
 		e.Line("errors.push({ path: %q, expected: \"void\", received: typeof %s });", path, accessor)
 		e.EndBlock()
+
+	case metadata.KindIntersection:
+		// Intersection: all members must pass validation
+		for _, member := range meta.IntersectionMembers {
+			memberCopy := member
+			generateTypeCheckInner(e, accessor, path, &memberCopy, registry, depth, ctx)
+		}
 	}
 }
 
@@ -1252,6 +1296,24 @@ func generateObjectCheck(e *Emitter, accessor string, path string, meta *metadat
 			}
 			e.indent--
 			e.Line("}")
+		} else if prop.ExactOptional {
+			// exactOptionalPropertyTypes: property can be missing but not explicitly undefined
+			e.Block("if (%q in %s)", prop.Name, accessor)
+			e.Block("if (%s === undefined)", propAccessor)
+			e.Line("errors.push({ path: %q, expected: \"%s (not undefined)\", received: \"undefined\" });", propPath, describeType(&prop.Type))
+			e.EndBlockSuffix(" else {")
+			e.indent++
+			generateTypeCheck(e, propAccessor, propPath, &prop.Type, registry, depth+1, ctx)
+			if prop.Constraints != nil {
+				if isAtomicType(&prop.Type) {
+					generateConstraintChecksVerified(e, propAccessor, propPath, &prop)
+				} else {
+					generateConstraintChecks(e, propAccessor, propPath, &prop)
+				}
+			}
+			e.indent--
+			e.Line("}")
+			e.EndBlock()
 		} else {
 			generateTypeCheck(e, propAccessor, propPath, &prop.Type, registry, depth+1, ctx)
 			// After type check, emit constraint checks (only if value is present)

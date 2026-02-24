@@ -16,6 +16,11 @@ import (
 // (e.g., TypedOmit<Prisma.Entity, 'x'> creating unique anonymous types at each level).
 const maxWalkDepth = 20
 
+// maxTotalTypes is the maximum number of types that can be walked in a single
+// TypeWalker session. Prevents excessive memory usage from wide type hierarchies
+// (e.g., schema.org-style types with hundreds of interconnected types).
+const maxTotalTypes = 500
+
 // TypeWalker extracts Metadata from TypeScript types using the tsgo checker.
 type TypeWalker struct {
 	checker  *shimchecker.Checker
@@ -28,6 +33,12 @@ type TypeWalker struct {
 	typeIdToName map[shimchecker.TypeId]string
 	// depth tracks the current recursion depth for safety limits.
 	depth int
+	// totalTypesWalked tracks the total number of types processed to prevent
+	// excessive memory usage from wide type hierarchies.
+	totalTypesWalked int
+	// exactOptionalPropertyTypes mirrors the tsconfig flag of the same name.
+	// When true, optional properties cannot have explicit undefined values.
+	exactOptionalPropertyTypes bool
 }
 
 // NewTypeWalker creates a new TypeWalker.
@@ -38,6 +49,12 @@ func NewTypeWalker(checker *shimchecker.Checker) *TypeWalker {
 		visiting:     make(map[shimchecker.TypeId]bool),
 		typeIdToName: make(map[shimchecker.TypeId]string),
 	}
+}
+
+// SetExactOptionalPropertyTypes configures the walker to mark optional properties
+// with ExactOptional when the tsconfig flag is enabled.
+func (w *TypeWalker) SetExactOptionalPropertyTypes(v bool) {
+	w.exactOptionalPropertyTypes = v
 }
 
 // Registry returns the type registry with all discovered named types.
@@ -99,6 +116,12 @@ func (w *TypeWalker) WalkType(t *shimchecker.Type) metadata.Metadata {
 	}
 	w.depth++
 	defer func() { w.depth-- }()
+
+	// Safety breadth limit: prevents excessive memory from wide type hierarchies
+	w.totalTypesWalked++
+	if w.totalTypesWalked > maxTotalTypes {
+		return metadata.Metadata{Kind: metadata.KindAny, Name: "breadth-exceeded"}
+	}
 
 	flags := t.Flags()
 
@@ -648,11 +671,12 @@ func (w *TypeWalker) analyzeObjectProperties(t *shimchecker.Type, name string) m
 		}
 
 		properties = append(properties, metadata.Property{
-			Name:        prop.Name,
-			Type:        propMeta,
-			Required:    !isOptional,
-			Readonly:    isReadonly,
-			Constraints: constraints,
+			Name:          prop.Name,
+			Type:          propMeta,
+			Required:      !isOptional,
+			Readonly:      isReadonly,
+			ExactOptional: w.exactOptionalPropertyTypes && isOptional,
+			Constraints:   constraints,
 		})
 	}
 

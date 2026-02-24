@@ -73,6 +73,38 @@ func generateSerializeExpr(accessor string, meta *metadata.Metadata, registry *m
 	case metadata.KindNative:
 		return generateSerializeNative(accessor, meta)
 
+	case metadata.KindIntersection:
+		// For intersection types, if all members are objects, merge properties
+		// Otherwise fallback to JSON.stringify
+		allObjects := true
+		for _, member := range meta.IntersectionMembers {
+			resolved := &member
+			if member.Kind == metadata.KindRef {
+				if r, ok := registry.Types[member.Ref]; ok {
+					resolved = r
+				}
+			}
+			if resolved.Kind != metadata.KindObject {
+				allObjects = false
+				break
+			}
+		}
+		if allObjects && len(meta.IntersectionMembers) > 0 {
+			// Merge all properties into a single object metadata and serialize
+			merged := &metadata.Metadata{Kind: metadata.KindObject}
+			for _, member := range meta.IntersectionMembers {
+				resolved := &member
+				if member.Kind == metadata.KindRef {
+					if r, ok := registry.Types[member.Ref]; ok {
+						resolved = r
+					}
+				}
+				merged.Properties = append(merged.Properties, resolved.Properties...)
+			}
+			return generateSerializeExpr(accessor, merged, registry, depth, ctx)
+		}
+		return fmt.Sprintf("JSON.stringify(%s)", accessor)
+
 	case metadata.KindEnum:
 		if len(meta.EnumValues) > 0 {
 			allStrings := true
@@ -92,10 +124,10 @@ func generateSerializeExpr(accessor string, meta *metadata.Metadata, registry *m
 				return fmt.Sprintf("__s(%s)", accessor)
 			}
 			if allNumbers {
-				return fmt.Sprintf("\"\" + %s", accessor)
+				return fmt.Sprintf("(Number.isFinite(%s) ? \"\" + %s : \"null\")", accessor, accessor)
 			}
 			// Mixed enum
-			return fmt.Sprintf("(typeof %s === \"string\" ? __s(%s) : \"\" + %s)", accessor, accessor, accessor)
+			return fmt.Sprintf("(typeof %s === \"string\" ? __s(%s) : (Number.isFinite(%s) ? \"\" + %s : \"null\"))", accessor, accessor, accessor, accessor)
 		}
 		return fmt.Sprintf("JSON.stringify(%s)", accessor)
 
@@ -115,9 +147,14 @@ func generateSerializeAtomicCtx(accessor string, atomic string, inTemplate bool)
 	switch atomic {
 	case "string":
 		return fmt.Sprintf("__s(%s)", accessor)
-	case "number", "bigint":
+	case "number":
 		if inTemplate {
-			return accessor // template literals handle coercion natively via ${input.age}
+			return fmt.Sprintf("(Number.isFinite(%s) ? %s : \"null\")", accessor, accessor)
+		}
+		return fmt.Sprintf("(Number.isFinite(%s) ? \"\" + %s : \"null\")", accessor, accessor)
+	case "bigint":
+		if inTemplate {
+			return accessor
 		}
 		return fmt.Sprintf("\"\" + %s", accessor)
 	case "boolean":
@@ -431,7 +468,14 @@ func generateSerializeAtomicUnion(accessor string, members []metadata.Metadata) 
 
 	// Number and bigint both just need coercion
 	if atomics["number"] || atomics["bigint"] {
-		cases = append(cases, fmt.Sprintf("\"\" + %s", accessor))
+		if atomics["number"] && !atomics["bigint"] {
+			cases = append(cases, fmt.Sprintf("(Number.isFinite(%s) ? \"\" + %s : \"null\")", accessor, accessor))
+		} else if atomics["bigint"] && !atomics["number"] {
+			cases = append(cases, fmt.Sprintf("\"\" + %s", accessor))
+		} else {
+			// Both number and bigint
+			cases = append(cases, fmt.Sprintf("(typeof %s === \"number\" ? (Number.isFinite(%s) ? \"\" + %s : \"null\") : \"\" + %s)", accessor, accessor, accessor, accessor))
+		}
 	} else {
 		// Final fallback
 		cases = append(cases, fmt.Sprintf("JSON.stringify(%s)", accessor))
