@@ -62,6 +62,11 @@ func (w *TypeWalker) Registry() *metadata.TypeRegistry {
 	return w.registry
 }
 
+// TotalTypesWalked returns the total number of types walked so far.
+func (w *TypeWalker) TotalTypesWalked() int {
+	return w.totalTypesWalked
+}
+
 // WalkNamedType converts a tsgo Type into Metadata, using the given name for
 // cycle detection and registry. Use this for type aliases, whose resolved types
 // are anonymous but should still be tracked by name.
@@ -85,8 +90,10 @@ func (w *TypeWalker) WalkNamedType(name string, t *shimchecker.Type) metadata.Me
 	m := w.WalkType(t)
 	delete(w.visiting, t.Id())
 
-	// If the result is an inline object, promote it to a named ref
-	if m.Kind == metadata.KindObject && m.Name == "" {
+	// If the result is unnamed, promote it to a named ref so that companion
+	// files are generated for the alias name. This handles type aliases to
+	// objects, unions, intersections, arrays, etc.
+	if m.Name == "" && (m.Kind == metadata.KindObject || m.Kind == metadata.KindUnion || m.Kind == metadata.KindIntersection || m.Kind == metadata.KindArray) {
 		m.Name = name
 		w.registry.Register(name, &m)
 		// Cache the TypeId → name so that subsequent WalkType calls on the same
@@ -113,6 +120,12 @@ func (w *TypeWalker) WalkType(t *shimchecker.Type) metadata.Metadata {
 	// Safety depth limit: prevents stack overflow from infinitely expanding types
 	if w.depth >= maxWalkDepth {
 		return metadata.Metadata{Kind: metadata.KindAny, Name: "depth-exceeded"}
+	}
+	// Reset breadth counter at the start of each top-level walk.
+	// The limit should apply per type-graph traversal (one @Body, one @Param,
+	// one return type, etc.), not across the entire program analysis.
+	if w.depth == 0 {
+		w.totalTypesWalked = 0
 	}
 	w.depth++
 	defer func() { w.depth-- }()
@@ -815,9 +828,25 @@ func (w *TypeWalker) getTypeName(t *shimchecker.Type) string {
 }
 
 // WalkTypeNode extracts Metadata from an AST type node.
+// If the node is a named type reference (e.g., `LoginRequest`), the Name field
+// of the result will be set to the type name.
 func (w *TypeWalker) WalkTypeNode(node *ast.Node) metadata.Metadata {
 	t := shimchecker.Checker_getTypeFromTypeNode(w.checker, node)
-	return w.WalkType(t)
+	result := w.WalkType(t)
+
+	// Preserve the type name for named type references.
+	// Skip wrapper types (Promise, Observable) — their inner type is already unwrapped.
+	if result.Name == "" && node.Kind == ast.KindTypeReference {
+		ref := node.AsTypeReferenceNode()
+		if ref.TypeName != nil {
+			name := ref.TypeName.Text()
+			if name != "Promise" && name != "Observable" && name != "Array" {
+				result.Name = name
+			}
+		}
+	}
+
+	return result
 }
 
 // extractTemplateLiteralPattern converts a template literal type to a regex pattern.

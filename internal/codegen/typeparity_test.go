@@ -340,8 +340,9 @@ func TestTypeStructureParity_Validate(t *testing.T) {
 				t.Error("expected assert function export")
 			}
 
-			if !strings.Contains(output, "export const schema") {
-				t.Error("expected schema export")
+			// Standard Schema is opt-in, verify it's NOT present by default
+			if strings.Contains(output, "export const schema") {
+				t.Error("expected no schema export (Standard Schema is opt-in)")
 			}
 		})
 	}

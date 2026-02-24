@@ -134,7 +134,7 @@ func BenchmarkGenerateCompanionFiles(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		GenerateCompanionFiles("src/test.ts", types, registry)
+		GenerateCompanionFiles("src/test.ts", types, registry, CompanionOptions{})
 	}
 }
 

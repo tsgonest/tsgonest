@@ -2,6 +2,7 @@
   "include": ["src/**/*.ts"],
   "transforms": {
     "validation": true,
-    "serialization": true
+    "serialization": true,
+    "include": ["src/**/*.dto.ts"]
   }
 }

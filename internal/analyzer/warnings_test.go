@@ -512,3 +512,121 @@ func TestControllerAnalyzer_Warnings_PathParamObject(t *testing.T) {
 		t.Errorf("expected 'param-non-scalar' warning, got: %v", warnings)
 	}
 }
+
+func TestControllerAnalyzer_PathParamString_NoWarning(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+		function Param(name: string): ParameterDecorator { return () => {}; }
+
+		@Controller("companies/:companyId/items")
+		export class ItemController {
+			@Get(":id")
+			get(@Param("companyId") companyId: string, @Param("id") id: string): void {}
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 || len(controllers[0].Routes) != 1 {
+		t.Fatalf("expected 1 controller with 1 route, got %d controllers", len(controllers))
+	}
+
+	route := controllers[0].Routes[0]
+	if len(route.Parameters) != 2 {
+		t.Fatalf("expected 2 parameters, got %d", len(route.Parameters))
+	}
+
+	// Both params should be string type, no warnings
+	for _, p := range route.Parameters {
+		if p.Type.Kind != metadata.KindAtomic || p.Type.Atomic != "string" {
+			t.Errorf("param %q: expected KindAtomic/string, got Kind=%q Atomic=%q", p.Name, p.Type.Kind, p.Type.Atomic)
+		}
+	}
+
+	warnings := ca.Warnings()
+	for _, w := range warnings {
+		if w.Kind == "param-any" {
+			t.Errorf("unexpected param-any warning: %s", w.Message)
+		}
+	}
+}
+
+func TestControllerAnalyzer_PathParamString_WithGuards_NoWarning(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+		function Post(path?: string): MethodDecorator { return (t, k, d) => d; }
+		function Param(name: string): ParameterDecorator { return () => {}; }
+		function Body(): ParameterDecorator { return () => {}; }
+		function UseGuards(...guards: any[]): ClassDecorator & MethodDecorator { return (target) => target; }
+
+		class AuthGuard {}
+		class RoleGuard {}
+
+		interface CreateItemDTO { name: string; }
+
+		@UseGuards(AuthGuard, RoleGuard)
+		@Controller("companies/:companyId/items")
+		export class ItemController {
+			@Get(":itemId")
+			getItem(
+				@Param("companyId") companyId: string,
+				@Param("itemId") itemId: string,
+			): void {}
+
+			@Post()
+			createItem(
+				@Param("companyId") companyId: string,
+				@Body() body: CreateItemDTO,
+			): void {}
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 {
+		t.Fatalf("expected 1 controller, got %d", len(controllers))
+	}
+	if len(controllers[0].Routes) != 2 {
+		t.Fatalf("expected 2 routes, got %d", len(controllers[0].Routes))
+	}
+
+	// getItem should have 2 string params
+	getRoute := controllers[0].Routes[0]
+	for _, p := range getRoute.Parameters {
+		if p.Category == "param" {
+			if p.Type.Kind != metadata.KindAtomic || p.Type.Atomic != "string" {
+				t.Errorf("getItem param %q: expected KindAtomic/string, got Kind=%q Atomic=%q", p.Name, p.Type.Kind, p.Type.Atomic)
+			}
+		}
+	}
+
+	// createItem should have 1 string param + 1 body param
+	postRoute := controllers[0].Routes[1]
+	for _, p := range postRoute.Parameters {
+		if p.Category == "param" {
+			if p.Type.Kind != metadata.KindAtomic || p.Type.Atomic != "string" {
+				t.Errorf("createItem param %q: expected KindAtomic/string, got Kind=%q Atomic=%q", p.Name, p.Type.Kind, p.Type.Atomic)
+			}
+		}
+		if p.Category == "body" {
+			if p.Type.Kind != metadata.KindObject && p.Type.Kind != metadata.KindRef {
+				t.Errorf("createItem body: expected KindObject or KindRef, got Kind=%q", p.Type.Kind)
+			}
+		}
+	}
+
+	warnings := ca.Warnings()
+	for _, w := range warnings {
+		if w.Kind == "param-any" {
+			t.Errorf("unexpected param-any warning: %s", w.Message)
+		}
+	}
+}

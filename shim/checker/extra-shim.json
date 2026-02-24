@@ -25,7 +25,8 @@
       "GetNonNullableType",
       "IsNullableType",
       "getIndexInfosOfType",
-      "isReadonlySymbol"
+      "isReadonlySymbol",
+      "GetAliasedSymbol"
     ]
   },
   "ExtraFields": {

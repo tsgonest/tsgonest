@@ -42,6 +42,7 @@ type ControllersConfig struct {
 type TransformsConfig struct {
 	Validation        bool     `json:"validation"`
 	Serialization     bool     `json:"serialization"`
+	StandardSchema    bool     `json:"standardSchema,omitempty"`    // Generate Standard Schema v1 wrappers (default: false)
 	ResponseTypeCheck string   `json:"responseTypeCheck,omitempty"` // "safe" (default), "guard", or "none" — controls type checking on response serialization
 	Include           []string `json:"include,omitempty"`           // Glob patterns for source files to generate companions for (e.g., ["src/**/*.dto.ts"])
 	Exclude           []string `json:"exclude,omitempty"`           // Type name patterns to exclude from codegen (e.g., "Legacy*", "SomeInternalDto")

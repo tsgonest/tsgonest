@@ -1532,5 +1532,134 @@ func TestControllerAnalyzer_CustomDecorator_NoIn_NoType_Silent(t *testing.T) {
 	}
 }
 
+func TestControllerAnalyzer_AliasedBodyDecorator(t *testing.T) {
+	env := setupWalkerMultiFile(t, map[string]string{
+		"decorators.ts": `
+			export function Controller(path: string): ClassDecorator { return (target) => target; }
+			export function Post(path?: string): MethodDecorator { return (t, k, d) => d; }
+			export function Body(): ParameterDecorator { return (target, key, index) => {}; }
+		`,
+		"controller.ts": `
+			import { Controller, Post, Body as NestBody } from "./decorators";
+
+			interface CreateUserDto {
+				name: string;
+				email: string;
+			}
+
+			@Controller("users")
+			export class UserController {
+				@Post()
+				create(@NestBody() body: CreateUserDto): string { return ""; }
+			}
+		`,
+	}, "controller.ts")
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 {
+		t.Fatalf("expected 1 controller, got %d", len(controllers))
+	}
+	if len(controllers[0].Routes) != 1 {
+		t.Fatalf("expected 1 route, got %d", len(controllers[0].Routes))
+	}
+
+	route := controllers[0].Routes[0]
+	if len(route.Parameters) != 1 {
+		t.Fatalf("expected 1 parameter, got %d", len(route.Parameters))
+	}
+	param := route.Parameters[0]
+	if param.Category != "body" {
+		t.Errorf("expected Category='body', got %q", param.Category)
+	}
+	if param.LocalName != "body" {
+		t.Errorf("expected LocalName='body', got %q", param.LocalName)
+	}
+}
+
+func TestControllerAnalyzer_AliasedQueryDecorator(t *testing.T) {
+	env := setupWalkerMultiFile(t, map[string]string{
+		"decorators.ts": `
+			export function Controller(path: string): ClassDecorator { return (target) => target; }
+			export function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+			export function Query(): ParameterDecorator { return (target, key, index) => {}; }
+		`,
+		"controller.ts": `
+			import { Controller, Get, Query as NestQuery } from "./decorators";
+
+			interface PaginationQuery {
+				page?: number;
+				limit?: number;
+			}
+
+			@Controller("items")
+			export class ItemController {
+				@Get()
+				findAll(@NestQuery() query: PaginationQuery): string { return ""; }
+			}
+		`,
+	}, "controller.ts")
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 || len(controllers[0].Routes) != 1 {
+		t.Fatalf("expected 1 controller with 1 route")
+	}
+
+	route := controllers[0].Routes[0]
+	if len(route.Parameters) != 1 {
+		t.Fatalf("expected 1 parameter, got %d", len(route.Parameters))
+	}
+	param := route.Parameters[0]
+	if param.Category != "query" {
+		t.Errorf("expected Category='query', got %q", param.Category)
+	}
+}
+
+func TestControllerAnalyzer_AliasedControllerDecorator(t *testing.T) {
+	env := setupWalkerMultiFile(t, map[string]string{
+		"decorators.ts": `
+			export function Controller(path: string): ClassDecorator { return (target) => target; }
+			export function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+		`,
+		"controller.ts": `
+			import { Controller as NestController, Get as NestGet } from "./decorators";
+
+			@NestController("products")
+			export class ProductController {
+				@NestGet()
+				findAll(): string { return ""; }
+			}
+		`,
+	}, "controller.ts")
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 {
+		t.Fatalf("expected 1 controller, got %d", len(controllers))
+	}
+	if controllers[0].Name != "ProductController" {
+		t.Errorf("expected Name='ProductController', got %q", controllers[0].Name)
+	}
+	if controllers[0].Path != "products" {
+		t.Errorf("expected Path='products', got %q", controllers[0].Path)
+	}
+	if len(controllers[0].Routes) != 1 {
+		t.Fatalf("expected 1 route, got %d", len(controllers[0].Routes))
+	}
+	if controllers[0].Routes[0].Method != "GET" {
+		t.Errorf("expected Method='GET', got %q", controllers[0].Routes[0].Method)
+	}
+}
+
 // The following ensures we're using the shimcompiler import correctly.
 var _ = (*shimcompiler.Program)(nil)

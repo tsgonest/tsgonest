@@ -9,3 +9,6 @@ export type { ValidationErrorDetail } from './errors';
 // FormData
 export { FormDataBody, TSGONEST_FORM_DATA_FACTORY } from './form-data-body';
 export { FormDataInterceptor } from './form-data-interceptor';
+
+// Serialization
+export { TsgonestSerializeInterceptor } from './serialize-interceptor';

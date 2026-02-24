@@ -37,6 +37,10 @@ type RewriteContext struct {
 
 	// ModuleFormat is "esm" or "cjs".
 	ModuleFormat string
+
+	// HelpersPath is the absolute path to the _tsgonest_helpers.js file.
+	// Used for inline scalar coercion imports in controllers.
+	HelpersPath string
 }
 
 // MakeWriteFile returns a WriteFile callback that applies all rewrites during emit.
