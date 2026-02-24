@@ -1,0 +1,70 @@
+#!/usr/bin/env node
+"use strict";
+
+// Launcher script for the tsgonest binary.
+// Locates the platform-specific binary from @tsgonest/cli-<platform> and
+// executes it with the same arguments. Follows the esbuild pattern.
+
+const { execFileSync } = require("child_process");
+const { existsSync } = require("fs");
+const path = require("path");
+
+const PLATFORMS = {
+  "darwin-arm64": { pkg: "@tsgonest/cli-darwin-arm64", bin: "tsgonest" },
+  "darwin-x64":   { pkg: "@tsgonest/cli-darwin-x64",   bin: "tsgonest" },
+  "linux-x64":    { pkg: "@tsgonest/cli-linux-x64",    bin: "tsgonest" },
+  "linux-arm64":  { pkg: "@tsgonest/cli-linux-arm64",  bin: "tsgonest" },
+  "win32-x64":    { pkg: "@tsgonest/cli-win32-x64",    bin: "tsgonest.exe" },
+  "win32-arm64":  { pkg: "@tsgonest/cli-win32-arm64",  bin: "tsgonest.exe" },
+};
+
+function getBinaryPath() {
+  // 1. Check TSGONEST_BINARY_PATH environment variable (override)
+  if (process.env.TSGONEST_BINARY_PATH) {
+    return process.env.TSGONEST_BINARY_PATH;
+  }
+
+  // 2. Check for a locally-built binary (development: go build -o packages/core/bin/tsgonest-native)
+  const localBinary = path.join(__dirname, "tsgonest-native");
+  if (existsSync(localBinary)) {
+    return localBinary;
+  }
+
+  // 3. Resolve from platform-specific optional dependency
+  const entry = PLATFORMS[`${process.platform}-${process.arch}`];
+  if (!entry) {
+    console.error(
+      `tsgonest: unsupported platform ${process.platform}-${process.arch}\n` +
+      `No pre-built binary is available for this platform.`
+    );
+    process.exit(1);
+  }
+
+  try {
+    return require.resolve(`${entry.pkg}/bin/${entry.bin}`);
+  } catch {
+    console.error(
+      `tsgonest: could not find binary package ${entry.pkg}\n` +
+      `Make sure it is installed. You may need to run "npm install" or "pnpm install".`
+    );
+    process.exit(1);
+  }
+}
+
+const binPath = getBinaryPath();
+
+try {
+  execFileSync(binPath, process.argv.slice(2), {
+    stdio: "inherit",
+    env: process.env,
+  });
+} catch (err) {
+  // execFileSync throws on non-zero exit code — forward it
+  if (err.status != null) {
+    process.exit(err.status);
+  }
+  // Actual execution error (binary missing, permission denied, etc.)
+  console.error(`tsgonest: failed to execute ${binPath}`);
+  console.error(err.message);
+  process.exit(1);
+}

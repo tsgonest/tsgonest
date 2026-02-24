@@ -3,7 +3,9 @@
 /tsgonest
 /tsgonest.exe
 packages/cli-*/bin/
-packages/core/bin/
+packages/core/bin/tsgonest-native
+packages/core/bin/tsgonest-native.exe
+packages/core/bin/migrate.cjs
 dist/
 release/
 runtime/dist/
