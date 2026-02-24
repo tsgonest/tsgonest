@@ -203,6 +203,11 @@ func generateTransformArray(accessor string, meta *metadata.Metadata, registry *
 		return accessor
 	}
 
+	// If the element expression starts with '{', it's an object literal that
+	// must be wrapped in parentheses to avoid being parsed as a block statement.
+	if len(elemExpr) > 0 && elemExpr[0] == '{' {
+		return fmt.Sprintf("%s.map(%s => (%s))", accessor, elemVar, elemExpr)
+	}
 	return fmt.Sprintf("%s.map(%s => %s)", accessor, elemVar, elemExpr)
 }
 

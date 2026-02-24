@@ -14,11 +14,18 @@ type CompanionFile struct {
 	Content string
 }
 
+// CompanionOptions controls optional features in companion file generation.
+type CompanionOptions struct {
+	ModuleFormat   string // "cjs" or "esm" (default: "esm")
+	StandardSchema bool   // Generate Standard Schema v1 wrappers (default: false)
+}
+
 // GenerateCompanionFiles generates consolidated companion files (.tsgonest.js)
 // for all named types in the registry. Each companion file contains validation,
-// assertion, serialization, and Standard Schema functions for the type.
-func GenerateCompanionFiles(sourceFileName string, types map[string]*metadata.Metadata, registry *metadata.TypeRegistry) []CompanionFile {
+// assertion, and serialization functions for the type.
+func GenerateCompanionFiles(sourceFileName string, types map[string]*metadata.Metadata, registry *metadata.TypeRegistry, opts CompanionOptions) []CompanionFile {
 	var files []CompanionFile
+	isCJS := opts.ModuleFormat == "cjs"
 
 	for typeName, meta := range types {
 		// Resolve refs through the registry
@@ -29,8 +36,11 @@ func GenerateCompanionFiles(sourceFileName string, types map[string]*metadata.Me
 			}
 		}
 
-		// Only generate companions for object types (DTOs)
-		if resolved.Kind != metadata.KindObject {
+		// Only generate companions for structured types (objects, unions, arrays, intersections)
+		switch resolved.Kind {
+		case metadata.KindObject, metadata.KindUnion, metadata.KindArray, metadata.KindIntersection:
+			// ok
+		default:
 			continue
 		}
 
@@ -45,7 +55,10 @@ func GenerateCompanionFiles(sourceFileName string, types map[string]*metadata.Me
 
 		// Generate consolidated companion (.tsgonest.js)
 		jsPath := companionPath(sourceFileName, typeName)
-		jsContent := GenerateCompanionSelective(typeName, resolved, registry, includeValidation, includeSerialization)
+		jsContent := GenerateCompanionSelective(typeName, resolved, registry, includeValidation, includeSerialization, opts.StandardSchema)
+		if isCJS {
+			jsContent = ConvertToCommonJS(jsContent)
+		}
 		files = append(files, CompanionFile{
 			Path:    jsPath,
 			Content: jsContent,
@@ -53,7 +66,10 @@ func GenerateCompanionFiles(sourceFileName string, types map[string]*metadata.Me
 
 		// Generate type declarations (.tsgonest.d.ts)
 		dtsPath := strings.TrimSuffix(jsPath, ".js") + ".d.ts"
-		dtsContent := GenerateCompanionTypesSelective(typeName, includeValidation, includeSerialization)
+		dtsContent := GenerateCompanionTypesSelective(typeName, includeValidation, includeSerialization, opts.StandardSchema)
+		if isCJS {
+			dtsContent = ConvertDtsToCommonJS(dtsContent)
+		}
 		files = append(files, CompanionFile{
 			Path:    dtsPath,
 			Content: dtsContent,
@@ -92,11 +108,18 @@ func HelpersFilePath(outDir string) string {
 // GenerateHelpersFile returns the shared helpers file (.js and .d.ts) as CompanionFile entries.
 // The outDir parameter is the output directory where companion files are written.
 // This should be called once per build, not per source file.
-func GenerateHelpersFile(outDir string) []CompanionFile {
+// moduleFormat should be "cjs" or "esm".
+func GenerateHelpersFile(outDir string, moduleFormat ...string) []CompanionFile {
 	jsPath := HelpersFilePath(outDir)
 	dtsPath := strings.TrimSuffix(jsPath, ".js") + ".d.ts"
+	jsContent := GenerateHelpers()
+	dtsContent := GenerateHelpersTypes()
+	if len(moduleFormat) > 0 && moduleFormat[0] == "cjs" {
+		jsContent = ConvertToCommonJS(jsContent)
+		dtsContent = ConvertDtsToCommonJS(dtsContent)
+	}
 	return []CompanionFile{
-		{Path: jsPath, Content: GenerateHelpers()},
-		{Path: dtsPath, Content: GenerateHelpersTypes()},
+		{Path: jsPath, Content: jsContent},
+		{Path: dtsPath, Content: dtsContent},
 	}
 }

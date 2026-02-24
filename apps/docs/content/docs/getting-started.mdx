@@ -158,7 +158,7 @@ tsgonest v0.3.0 build
   total: 192ms
 ```
 
-That's it — zero runtime setup needed. tsgonest injects `assertTypeName()` calls for `@Body()` parameters and wraps return statements with `transformTypeName()` at compile time. No pipes, interceptors, or manifest needed.
+That's it — zero runtime setup needed. tsgonest injects `assertTypeName()` calls for `@Body()`, `@Query()`, `@Param()`, and `@Headers()` parameters, and wraps return statements with `transformTypeName()` at compile time. Query and path parameters get automatic string-to-number/boolean coercion. No pipes, interceptors, or manifest needed.
 
 ## Development mode
 

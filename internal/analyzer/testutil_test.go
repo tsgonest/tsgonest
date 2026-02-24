@@ -89,6 +89,57 @@ func setupWalker(t *testing.T, tsSource string) *walkerEnv {
 	}
 }
 
+// setupWalkerMultiFile creates a tsgo program from multiple virtual files.
+// files is a map of relative file names (e.g., "decorators.ts", "controller.ts") to their content.
+// mainFile is the file name to return as the primary source file for analysis.
+func setupWalkerMultiFile(t *testing.T, files map[string]string, mainFile string) *walkerEnv {
+	t.Helper()
+
+	rootDir := walkerTestDir()
+
+	virtualFiles := make(map[string]string)
+	for name, content := range files {
+		virtualFiles[tspath.ResolvePath(rootDir, name)] = content
+	}
+	fs := testutil.NewDefaultOverlayVFS(virtualFiles)
+	host := shimcompiler.NewCompilerHost(rootDir, fs, bundled.LibPath(), nil, nil)
+
+	configParseResult, diags := tsoptions.GetParsedCommandLineOfConfigFile(
+		"tsconfig.json", &core.CompilerOptions{}, nil, host, nil,
+	)
+	if len(diags) > 0 {
+		t.Fatalf("tsconfig parse errors: %v", diags[0].String())
+	}
+
+	program := shimcompiler.NewProgram(shimcompiler.ProgramOptions{
+		Config:                      configParseResult,
+		SingleThreaded:              core.TSTrue,
+		Host:                        host,
+		UseSourceOfProjectReference: true,
+	})
+	if program == nil {
+		t.Fatal("failed to create program")
+	}
+	program.BindSourceFiles()
+
+	sourceFile := program.GetSourceFile(mainFile)
+	if sourceFile == nil {
+		t.Fatalf("source file %q not found in program", mainFile)
+	}
+
+	checker, release := shimcompiler.Program_GetTypeChecker(program, context.Background())
+	if checker == nil {
+		t.Fatal("failed to get type checker")
+	}
+
+	return &walkerEnv{
+		program:    program,
+		checker:    checker,
+		sourceFile: sourceFile,
+		release:    release,
+	}
+}
+
 // walkExportedType looks up an exported type alias by name in the source file
 // and walks it through the TypeWalker, returning the resulting Metadata.
 func (env *walkerEnv) walkExportedType(t *testing.T, typeName string) metadata.Metadata {

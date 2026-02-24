@@ -1240,7 +1240,7 @@ func TestCompanionIgnoreAll(t *testing.T) {
 		}},
 	}
 
-	files := GenerateCompanionFiles("test.ts", types, reg)
+	files := GenerateCompanionFiles("test.ts", types, reg, CompanionOptions{})
 	for _, f := range files {
 		if strings.Contains(f.Path, "IgnoredDto") {
 			t.Errorf("expected IgnoredDto to be excluded, but found file: %s", f.Path)
@@ -1266,7 +1266,7 @@ func TestCompanionIgnoreValidation(t *testing.T) {
 		}},
 	}
 
-	files := GenerateCompanionFiles("test.ts", types, reg)
+	files := GenerateCompanionFiles("test.ts", types, reg, CompanionOptions{})
 	// With consolidated companion files, the .tsgonest.js file is still generated
 	// (it contains serialization even when validation is ignored)
 	tsgonestCount := 0
@@ -1292,7 +1292,7 @@ func TestValidation_StandardSchemaWrapper(t *testing.T) {
 		},
 	}
 
-	code := GenerateCompanionSelective("TestDto", meta, reg, true, false)
+	code := GenerateCompanionSelective("TestDto", meta, reg, true, false, true)
 
 	// Should contain Standard Schema wrapper export
 	assertContains(t, code, "export const schemaTestDto")
@@ -1322,7 +1322,7 @@ func TestValidation_StandardSchemaWrapperSyntax(t *testing.T) {
 		},
 	}
 
-	code := GenerateCompanionSelective("Foo", meta, reg, true, false)
+	code := GenerateCompanionSelective("Foo", meta, reg, true, false, true)
 
 	// The wrapper should end with }; (closing the const object)
 	assertContains(t, code, "};")
@@ -1339,6 +1339,14 @@ func TestGenerateCompanionTypes(t *testing.T) {
 	assertContains(t, output, "export declare function assertUserDto")
 	assertContains(t, output, "export declare function serializeUserDto")
 	assertNotContains(t, output, "deserializeUserDto")
+	// Standard Schema is opt-in, not included by default
+	assertNotContains(t, output, "export declare const schemaUserDto")
+	assertNotContains(t, output, "StandardSchemaV1Props")
+}
+
+func TestGenerateCompanionTypes_WithStandardSchema(t *testing.T) {
+	output := GenerateCompanionTypesSelective("UserDto", true, true, true)
+
 	assertContains(t, output, "export declare const schemaUserDto")
 	assertContains(t, output, "StandardSchemaV1Props")
 	assertContains(t, output, "readonly version: 1;")
@@ -1358,7 +1366,13 @@ func TestGenerateCompanionTypes_ReturnTypes(t *testing.T) {
 	assertContains(t, output, "serializeFoo(input: Foo): string")
 	// no deserialize
 	assertNotContains(t, output, "deserializeFoo")
-	// schema has ~standard
+	// Standard Schema not included by default
+	assertNotContains(t, output, "\"~standard\": StandardSchemaV1Props<Foo, Foo>")
+}
+
+func TestGenerateCompanionTypes_ReturnTypes_WithStandardSchema(t *testing.T) {
+	output := GenerateCompanionTypesSelective("Foo", true, true, true)
+
 	assertContains(t, output, "\"~standard\": StandardSchemaV1Props<Foo, Foo>")
 }
 
@@ -1373,7 +1387,7 @@ func TestCompanion_GeneratesDTS(t *testing.T) {
 		},
 	}
 
-	files := GenerateCompanionFiles("src/foo.ts", types, reg)
+	files := GenerateCompanionFiles("src/foo.ts", types, reg, CompanionOptions{})
 
 	// Should have .tsgonest.js and .tsgonest.d.ts
 	hasTsgonestJS := false
@@ -1386,7 +1400,8 @@ func TestCompanion_GeneratesDTS(t *testing.T) {
 			hasTsgonestDTS = true
 			// Verify the content includes declarations
 			assertContains(t, f.Content, "export declare function validateFoo")
-			assertContains(t, f.Content, "export declare const schemaFoo")
+			// Standard Schema is opt-in
+			assertNotContains(t, f.Content, "export declare const schemaFoo")
 		}
 	}
 	if !hasTsgonestJS {
@@ -1408,7 +1423,7 @@ func TestCompanion_DTSPath(t *testing.T) {
 		},
 	}
 
-	files := GenerateCompanionFiles("src/bar.dto.ts", types, reg)
+	files := GenerateCompanionFiles("src/bar.dto.ts", types, reg, CompanionOptions{})
 
 	for _, f := range files {
 		if strings.HasSuffix(f.Path, ".tsgonest.d.ts") {
@@ -1430,7 +1445,7 @@ func TestCompanion_DTSWhenValidationIgnored(t *testing.T) {
 		}},
 	}
 
-	files := GenerateCompanionFiles("test.ts", types, reg)
+	files := GenerateCompanionFiles("test.ts", types, reg, CompanionOptions{})
 
 	// With consolidated companions, .d.ts is always generated (it covers serialize too)
 	var hasDTS bool
@@ -1853,6 +1868,50 @@ func TestValidateCoercion_NotAppliedToString(t *testing.T) {
 	assertNotContains(t, code, `=== "true"`)
 }
 
+func TestAssertCoercion_StringToNumber(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+	coerce := true
+	meta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Properties: []metadata.Property{
+			{
+				Name: "page", Required: true,
+				Type:        metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "number"},
+				Constraints: &metadata.Constraints{Coerce: &coerce},
+			},
+		},
+	}
+
+	code := GenerateCompanionSelective("Dto", meta, reg, true, false)
+	// Assert function should also emit coercion
+	assertContains(t, code, "export function assertDto")
+	assertContains(t, code, "typeof input.page === \"string\"")
+	assertContains(t, code, "+input.page")
+}
+
+func TestAssertCoercion_StringToBoolean(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+	coerce := true
+	meta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Properties: []metadata.Property{
+			{
+				Name: "active", Required: true,
+				Type:        metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "boolean"},
+				Constraints: &metadata.Constraints{Coerce: &coerce},
+			},
+		},
+	}
+
+	code := GenerateCompanionSelective("Dto", meta, reg, true, false)
+	// Assert function should also emit boolean coercion with "1"/"0"
+	assertContains(t, code, "export function assertDto")
+	assertContains(t, code, `=== "true"`)
+	assertContains(t, code, `=== "1"`)
+	assertContains(t, code, `=== "false"`)
+	assertContains(t, code, `=== "0"`)
+}
+
 // --- Validate<typeof fn> codegen tests ---
 
 func TestValidateCustomFn_EmitsFunctionCall(t *testing.T) {
@@ -1961,8 +2020,8 @@ func TestValidateCustomFn_NoImportWithoutModule(t *testing.T) {
 	code := GenerateCompanionSelective("TestDto", meta, reg, true, false)
 	// Should still emit function call
 	assertContains(t, code, `if (!customCheck(input.value))`)
-	// Should NOT emit import (no module)
-	assertNotContains(t, code, "import {")
+	// Should NOT emit import for the custom function (no module), only __e helper
+	assertNotContains(t, code, "import { customCheck")
 }
 
 func TestValidateCustomFn_StripsTsExtension(t *testing.T) {
@@ -2260,8 +2319,8 @@ func TestGenerateStandaloneAssert(t *testing.T) {
 	code := GenerateCompanionSelective("Dto", meta, reg, true, false)
 
 	assertContains(t, code, "export function assertDto(input)")
-	// Should throw TypeError directly, not wrap validate
-	assertContains(t, code, "throw new TypeError")
+	// Should throw TsgonestValidationError (__e) directly, not wrap validate
+	assertContains(t, code, "throw new __e")
 	// The old assert wrapped validate — the new one should NOT have "result = validateDto"
 	assertNotContains(t, code, "const result = validateDto(input)")
 	// The assert function should contain its own checks and return input
@@ -2432,7 +2491,7 @@ func TestGenerateCompanionTypes_NoStringifyWithoutSerialization(t *testing.T) {
 
 // --- Transform codegen tests ---
 
-func TestTransformSimpleObject(t *testing.T) {
+func TestNoTransformGenerated_SimpleObject(t *testing.T) {
 	reg := metadata.NewTypeRegistry()
 	meta := &metadata.Metadata{
 		Kind: metadata.KindObject,
@@ -2446,149 +2505,31 @@ func TestTransformSimpleObject(t *testing.T) {
 
 	code := GenerateCompanionSelective("UserResponse", meta, reg, false, true)
 
-	assertContains(t, code, "export function transformUserResponse(input)")
-	assertContains(t, code, "id: input.id")
-	assertContains(t, code, "name: input.name")
-	assertContains(t, code, "email: input.email")
+	assertContains(t, code, "export function serializeUserResponse(input)")
+	assertNotContains(t, code, "export function transformUserResponse(input)")
 }
 
-func TestTransformOptionalProps(t *testing.T) {
+func TestNoTransformGenerated(t *testing.T) {
 	reg := metadata.NewTypeRegistry()
 	meta := &metadata.Metadata{
 		Kind: metadata.KindObject,
-		Name: "Profile",
+		Name: "UserResponse",
 		Properties: []metadata.Property{
 			{Name: "id", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "number"}, Required: true},
-			{Name: "bio", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string", Optional: true}, Required: false},
-		},
-	}
-
-	code := GenerateCompanionSelective("Profile", meta, reg, false, true)
-
-	assertContains(t, code, "export function transformProfile(input)")
-	assertContains(t, code, "id: input.id")
-	assertContains(t, code, "if (input.bio !== undefined)")
-	assertContains(t, code, "_r.bio =")
-}
-
-func TestTransformNestedObject(t *testing.T) {
-	reg := metadata.NewTypeRegistry()
-	addressMeta := &metadata.Metadata{
-		Kind: metadata.KindObject,
-		Name: "Address",
-		Properties: []metadata.Property{
-			{Name: "street", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
-			{Name: "city", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
-		},
-	}
-	reg.Register("Address", addressMeta)
-
-	meta := &metadata.Metadata{
-		Kind: metadata.KindObject,
-		Name: "User",
-		Properties: []metadata.Property{
 			{Name: "name", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
-			{Name: "address", Type: metadata.Metadata{Kind: metadata.KindRef, Ref: "Address"}, Required: true},
 		},
 	}
 
-	code := GenerateCompanionSelective("User", meta, reg, false, true)
-
-	assertContains(t, code, "export function transformUser(input)")
-	assertContains(t, code, "name: input.name")
-	// Nested object should be inlined since Address is not recursive
-	assertContains(t, code, "street: input.address.street")
-	assertContains(t, code, "city: input.address.city")
+	code := GenerateCompanionSelective("UserResponse", meta, reg, false, true)
+	assertNotContains(t, code, "export function transformUserResponse")
+	assertContains(t, code, "export function serializeUserResponse")
 }
 
-func TestTransformArray(t *testing.T) {
-	reg := metadata.NewTypeRegistry()
-	meta := &metadata.Metadata{
-		Kind: metadata.KindObject,
-		Name: "Response",
-		Properties: []metadata.Property{
-			{Name: "items", Type: metadata.Metadata{
-				Kind: metadata.KindArray,
-				ElementType: &metadata.Metadata{
-					Kind: metadata.KindObject,
-					Name: "Item",
-					Properties: []metadata.Property{
-						{Name: "id", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "number"}, Required: true},
-						{Name: "label", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
-					},
-				},
-			}, Required: true},
-		},
-	}
-
-	code := GenerateCompanionSelective("Response", meta, reg, false, true)
-
-	assertContains(t, code, "export function transformResponse(input)")
-	assertContains(t, code, ".map(")
-	assertContains(t, code, "id:")
-	assertContains(t, code, "label:")
-}
-
-func TestTransformNullable(t *testing.T) {
-	reg := metadata.NewTypeRegistry()
-	meta := &metadata.Metadata{
-		Kind: metadata.KindObject,
-		Name: "Box",
-		Properties: []metadata.Property{
-			{Name: "value", Type: metadata.Metadata{
-				Kind: metadata.KindAtomic, Atomic: "string", Nullable: true,
-			}, Required: true},
-		},
-	}
-
-	code := GenerateCompanionSelective("Box", meta, reg, false, true)
-
-	assertContains(t, code, "export function transformBox(input)")
-	assertContains(t, code, "== null ? null :")
-}
-
-func TestTransformRecursiveType(t *testing.T) {
-	reg := metadata.NewTypeRegistry()
-	meta := &metadata.Metadata{
-		Kind: metadata.KindObject,
-		Name: "TreeNode",
-		Properties: []metadata.Property{
-			{Name: "value", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
-			{Name: "child", Type: metadata.Metadata{Kind: metadata.KindRef, Ref: "TreeNode", Nullable: true}, Required: true},
-		},
-	}
-	reg.Register("TreeNode", meta)
-
-	code := GenerateCompanionSelective("TreeNode", meta, reg, false, true)
-
-	assertContains(t, code, "export function transformTreeNode(input)")
-	assertContains(t, code, "transformTreeNode(input.child)")
-}
-
-func TestTransformAtomicPassthrough(t *testing.T) {
-	reg := metadata.NewTypeRegistry()
-	e := NewEmitter()
-	ctx := &transformCtx{generating: map[string]bool{}}
-	expr := generateTransformExpr("input.value", &metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, reg, 0, ctx)
-	_ = e
-	if expr != "input.value" {
-		t.Errorf("expected atomic passthrough, got: %s", expr)
-	}
-
-	expr = generateTransformExpr("input.count", &metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "number"}, reg, 0, ctx)
-	if expr != "input.count" {
-		t.Errorf("expected atomic passthrough, got: %s", expr)
-	}
-}
-
-func TestTransformTypeDeclaration(t *testing.T) {
+func TestNoTransformTypeDeclaration(t *testing.T) {
 	code := GenerateCompanionTypesSelective("UserDto", true, true)
-	assertContains(t, code, "export declare function transformUserDto(input: UserDto): UserDto;")
-}
-
-func TestTransformTypeDeclaration_NoTransformWithoutSerialization(t *testing.T) {
-	code := GenerateCompanionTypesSelective("UserDto", true, false)
 	assertNotContains(t, code, "transformUserDto")
+	assertContains(t, code, "serializeUserDto")
+	assertContains(t, code, "stringifyUserDto")
 }
 
 func TestIdnHostnameConsecutiveHyphens(t *testing.T) {
@@ -2656,8 +2597,8 @@ func TestKindIntersection(t *testing.T) {
 	// Test serialize (should merge properties from both members)
 	assertContains(t, code, "serializeMerged")
 
-	// Test transform
-	assertContains(t, code, "transformMerged")
+	// Transform functions should no longer be generated
+	assertNotContains(t, code, "transformMerged")
 }
 
 func TestExactOptionalPropertyTypes(t *testing.T) {

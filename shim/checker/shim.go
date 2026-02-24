@@ -121,6 +121,8 @@ func Checker_getDeclaredTypeOfSymbol(recv *checker.Checker, symbol *ast.Symbol) 
 func Checker_getBaseTypeOfLiteralType(recv *checker.Checker, t *checker.Type) *checker.Type
 //go:linkname Checker_getBaseConstraintOfType github.com/microsoft/typescript-go/internal/checker.(*Checker).getBaseConstraintOfType
 func Checker_getBaseConstraintOfType(recv *checker.Checker, t *checker.Type) *checker.Type
+//go:linkname Checker_GetAliasedSymbol github.com/microsoft/typescript-go/internal/checker.(*Checker).GetAliasedSymbol
+func Checker_GetAliasedSymbol(recv *checker.Checker, symbol *ast.Symbol) *ast.Symbol
 //go:linkname Checker_getPropertyNameForKnownSymbolName github.com/microsoft/typescript-go/internal/checker.(*Checker).getPropertyNameForKnownSymbolName
 func Checker_getPropertyNameForKnownSymbolName(recv *checker.Checker, symbolName string) string
 //go:linkname Checker_isTypeAssignableTo github.com/microsoft/typescript-go/internal/checker.(*Checker).isTypeAssignableTo

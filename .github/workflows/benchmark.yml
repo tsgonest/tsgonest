@@ -35,7 +35,7 @@ jobs:
         with:
           node-version: "24"
           cache: "pnpm"
-          cache-dependency-path: "benchmarks/pnpm-lock.yaml"
+          cache-dependency-path: "pnpm-lock.yaml"
 
       - name: Init submodule
         run: just init
@@ -58,12 +58,17 @@ jobs:
         run: git checkout ${{ github.event.pull_request.base.sha }}
 
       - name: Rebuild for base
+        id: base-build
+        continue-on-error: true
         run: |
           just init
           just build
           cd benchmarks && pnpm run build
 
       - name: Run base benchmarks
+        id: base-bench
+        if: steps.base-build.outcome == 'success'
+        continue-on-error: true
         run: cd benchmarks && npx tsx --tsconfig bench/tsconfig.json bench/bench-all.ts --json > /tmp/base-bench.json
 
       # ── Comparison ──
@@ -73,7 +78,20 @@ jobs:
           clean: false
 
       - name: Generate comparison
+        if: steps.base-bench.outcome == 'success'
         run: node .github/scripts/compare-benchmarks.js /tmp/base-bench.json /tmp/pr-bench.json > /tmp/bench-comment.md
+
+      - name: Generate PR-only report
+        if: steps.base-bench.outcome != 'success'
+        run: |
+          echo "## Benchmark Results (PR only)" > /tmp/bench-comment.md
+          echo "" >> /tmp/bench-comment.md
+          echo "Base benchmark could not be run (build or runtime error on base branch)." >> /tmp/bench-comment.md
+          echo "Showing PR benchmark results only:" >> /tmp/bench-comment.md
+          echo "" >> /tmp/bench-comment.md
+          echo '```json' >> /tmp/bench-comment.md
+          cat /tmp/pr-bench.json >> /tmp/bench-comment.md
+          echo '```' >> /tmp/bench-comment.md
 
       - name: Post benchmark comment
         uses: marocchino/sticky-pull-request-comment@v2

@@ -208,6 +208,34 @@ The `@in` tag accepts:
 
 This allows tsgonest to correctly represent custom extraction logic in the OpenAPI document without any changes to your decorator implementation.
 
+## Limitations
+
+### Factory decorators are not supported
+
+tsgonest uses **static analysis** to detect NestJS parameter decorators (`@Body()`, `@Query()`, `@Param()`, `@Headers()`), HTTP method decorators (`@Get()`, `@Post()`, `@Put()`, `@Delete()`, `@Patch()`), and `@Controller()`. If you wrap these core decorators in factory functions, tsgonest cannot see through the indirection and will **not** generate OpenAPI parameters, inject validation, or apply coercion for them.
+
+```ts
+// Works — tsgonest detects @Query() directly
+findAll(@Query() query: PaginationDto) { ... }
+
+// Does NOT work — tsgonest cannot introspect the factory
+const MyQuery = () => Query();
+findAll(@MyQuery() query: PaginationDto) { ... }
+```
+
+The affected decorators are all core NestJS decorators that tsgonest actively introspects:
+
+| Category | Decorators |
+|---|---|
+| Parameters | `@Body`, `@Query`, `@Param`, `@Headers` |
+| HTTP methods | `@Get`, `@Post`, `@Put`, `@Delete`, `@Patch`, `@Head`, `@Options` |
+| Controller | `@Controller` |
+| Metadata | `@HttpCode`, `@Version`, `@Sse`, `@UseInterceptors`, `@UseGuards` |
+
+**Import aliases are supported.** `import { Body as NestBody }` works correctly — tsgonest resolves the original symbol via the TypeScript checker.
+
+Custom decorators created with `createParamDecorator` are supported via the `@in` JSDoc tag (see [Custom Decorators](#custom-decorators-with-in) above).
+
 ## Skipped Decorators
 
 The following NestJS decorators are **not** treated as API parameters and are excluded from the OpenAPI document:

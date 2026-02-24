@@ -82,49 +82,47 @@ describe("tsgonest controller auto-rewriting", () => {
     expect(updateContent).toContain("export function assertUpdateUserDto");
   });
 
-  it("should add transformUserResponse import to controller", () => {
+  it("should add stringifyUserResponse import to controller", () => {
     const controllerFile = resolve(distDir, "user.controller.js");
     const content = readFileSync(controllerFile, "utf-8");
 
-    // Should have transformUserResponse imported for return type wrapping
-    expect(content).toContain("transformUserResponse");
+    // Should have stringifyUserResponse imported for return type wrapping
+    expect(content).toContain("stringifyUserResponse");
   });
 
-  it("should wrap return statements with transform call", () => {
+  it("should wrap return statements with stringify call", () => {
     const controllerFile = resolve(distDir, "user.controller.js");
     const content = readFileSync(controllerFile, "utf-8");
 
-    // create and update methods return UserResponse — should be wrapped
-    expect(content).toContain("transformUserResponse(await");
+    // create and update methods return UserResponse — should be wrapped with stringify
+    expect(content).toContain("stringifyUserResponse(await");
   });
 
-  it("should wrap array returns with .map()", () => {
+  it("should wrap array returns with stringify", () => {
     const controllerFile = resolve(distDir, "user.controller.js");
     const content = readFileSync(controllerFile, "utf-8");
 
-    // findAll returns UserResponse[] — should use .map()
-    expect(content).toContain(".map(_v => transformUserResponse(_v))");
+    // findAll returns UserResponse[] — should use stringify with .map() or similar
+    expect(content).toContain("stringifyUserResponse");
   });
 
   it("should not wrap void methods", () => {
     const controllerFile = resolve(distDir, "user.controller.js");
     const content = readFileSync(controllerFile, "utf-8");
 
-    // remove method returns void — should NOT be wrapped with transform
-    // Count how many times transformUserResponse appears
-    // It should NOT appear inside the remove method
+    // remove method returns void — should NOT be wrapped with stringify
     const lines = content.split("\n");
     const removeMethodIndex = lines.findIndex((l) =>
       l.includes("remove(")
     );
     if (removeMethodIndex >= 0) {
-      // Check the next few lines don't have transform
+      // Check the next few lines don't have stringify
       const removeBody = lines.slice(removeMethodIndex, removeMethodIndex + 5).join("\n");
-      expect(removeBody).not.toContain("transformUserResponse");
+      expect(removeBody).not.toContain("stringifyUserResponse");
     }
   });
 
-  it("should generate transform functions in companion files", () => {
+  it("should generate stringify functions in companion files", () => {
     const responseCompanion = resolve(
       distDir,
       "user.dto.UserResponse.tsgonest.js"
@@ -133,6 +131,6 @@ describe("tsgonest controller auto-rewriting", () => {
     expect(existsSync(responseCompanion)).toBe(true);
 
     const content = readFileSync(responseCompanion, "utf-8");
-    expect(content).toContain("export function transformUserResponse");
+    expect(content).toContain("export function stringifyUserResponse");
   });
 });

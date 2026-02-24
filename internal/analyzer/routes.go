@@ -45,6 +45,8 @@ type Route struct {
 	OperationID string
 	// Parameters holds the route parameters (@Body, @Query, @Param, @Headers).
 	Parameters []RouteParameter
+	// ReturnTypeName is the original return type name from source code (e.g., "UserResponse").
+	ReturnTypeName string
 	// ReturnType is the resolved return type metadata (Promise<T> unwrapped to T).
 	ReturnType metadata.Metadata
 	// StatusCode is the HTTP status code (from @HttpCode or convention).
@@ -105,6 +107,9 @@ type RouteParameter struct {
 	// LocalName is the local variable name from the method signature (e.g., "body", "id").
 	// Used by the rewriter to inject validation at the correct parameter.
 	LocalName string
+	// TypeName is the original type name from the source code (e.g., "RegisterRequest").
+	// Set when the parameter type is a named type alias, interface, or class.
+	TypeName string
 	// Type is the resolved type metadata.
 	Type metadata.Metadata
 	// Required indicates whether the parameter is required.
@@ -213,9 +218,20 @@ func (a *ControllerAnalyzer) analyzeClass(classNode *ast.Node, sourceFile string
 	isController := false
 	for _, dec := range classNode.Decorators() {
 		info := ParseDecorator(dec)
-		if info != nil && IsControllerDecorator(info) {
+		if info == nil {
+			continue
+		}
+		if IsControllerDecorator(info) {
 			isController = true
 			controllerPath = GetControllerPath(info)
+			break
+		}
+		// Try resolving import alias
+		if origName := a.resolveDecoratorOriginalName(dec); origName == "Controller" {
+			isController = true
+			if len(info.Args) > 0 {
+				controllerPath = cleanPath(info.Args[0])
+			}
 			break
 		}
 	}
@@ -301,6 +317,33 @@ func (a *ControllerAnalyzer) analyzeMethod(methodNode *ast.Node, controllerPath 
 			}
 		case "Returns":
 			returnsDecoratorInfo = info
+		default:
+			// Try resolving import alias
+			if origName := a.resolveDecoratorOriginalName(dec); origName != "" {
+				switch origName {
+				case "Get", "Post", "Put", "Delete", "Patch", "Head", "Options":
+					httpMethod = httpMethodForDecorator(origName)
+					if len(info.Args) > 0 {
+						subPath = info.Args[0]
+					}
+				case "Sse":
+					httpMethod = "GET"
+					isSSE = true
+					if len(info.Args) > 0 {
+						subPath = info.Args[0]
+					}
+				case "HttpCode":
+					if info.NumericArg != nil {
+						statusCode = int(*info.NumericArg)
+					}
+				case "Version":
+					if len(info.Args) > 0 {
+						version = info.Args[0]
+					}
+				case "Returns":
+					returnsDecoratorInfo = info
+				}
+			}
 		}
 	}
 
@@ -500,14 +543,39 @@ func (a *ControllerAnalyzer) analyzeParameter(paramNode *ast.Node, className str
 			// Skip — raw request/response objects, not API parameters
 			return nil
 		default:
-			// Try resolving @in JSDoc on the decorator's declaration site
-			if resolved := a.resolveDecoratorIn(dec); resolved != "" {
-				category = resolved
-				if len(info.Args) > 0 {
-					paramName = info.Args[0]
+			// Try resolving import alias first
+			if origName := a.resolveDecoratorOriginalName(dec); origName != "" {
+				switch origName {
+				case "Body":
+					category = "body"
+				case "FormDataBody":
+					category = "body"
+					isFormData = true
+				case "Query":
+					category = "query"
+				case "Param":
+					category = "param"
+				case "Headers":
+					category = "headers"
+				case "Req", "Request", "Res", "Response":
+					return nil
 				}
-			} else {
-				unresolvedDecorators = append(unresolvedDecorators, info.Name)
+				if category != "" {
+					if len(info.Args) > 0 {
+						paramName = info.Args[0]
+					}
+				}
+			}
+			// If alias didn't resolve, try @in JSDoc on the decorator's declaration site
+			if category == "" {
+				if resolved := a.resolveDecoratorIn(dec); resolved != "" {
+					category = resolved
+					if len(info.Args) > 0 {
+						paramName = info.Args[0]
+					}
+				} else {
+					unresolvedDecorators = append(unresolvedDecorators, info.Name)
+				}
 			}
 		}
 	}
@@ -522,8 +590,11 @@ func (a *ControllerAnalyzer) analyzeParameter(paramNode *ast.Node, className str
 
 	// Extract parameter type
 	var paramType metadata.Metadata
+	var paramTypeName string
 	if paramDecl.Type != nil {
 		paramType = a.walker.WalkTypeNode(paramDecl.Type)
+		// Extract the type name from the type annotation (e.g., "RegisterRequest")
+		paramTypeName = resolveTypeNodeName(paramDecl.Type, a.checker)
 	} else {
 		// Try to infer from checker
 		sym := a.checker.GetSymbolAtLocation(paramNode)
@@ -538,7 +609,7 @@ func (a *ControllerAnalyzer) analyzeParameter(paramNode *ast.Node, className str
 	// Auto-enable coercion for query and path parameters that are typed as
 	// number or boolean. These arrive as strings from HTTP and need coercion.
 	if category == "param" || category == "query" {
-		autoEnableCoercion(&paramType)
+		AutoEnableCoercion(&paramType)
 	}
 
 	// Determine if required (not optional, not nullable)
@@ -554,6 +625,7 @@ func (a *ControllerAnalyzer) analyzeParameter(paramNode *ast.Node, className str
 		Category:  category,
 		Name:      paramName,
 		LocalName: localName,
+		TypeName:  paramTypeName,
 		Type:      paramType,
 		Required:  required,
 	}
@@ -566,10 +638,38 @@ func (a *ControllerAnalyzer) analyzeParameter(paramNode *ast.Node, className str
 	return rp
 }
 
-// autoEnableCoercion sets Coerce=true on number/boolean atomic properties in query/path
+// resolveTypeNodeName extracts the type name from a type annotation AST node.
+// For `body: RegisterRequest`, this returns "RegisterRequest".
+// Returns empty string for anonymous/inline types.
+func resolveTypeNodeName(typeNode *ast.Node, checker *shimchecker.Checker) string {
+	if typeNode == nil {
+		return ""
+	}
+	// TypeReference nodes have a TypeName child
+	if typeNode.Kind == ast.KindTypeReference {
+		ref := typeNode.AsTypeReferenceNode()
+		if ref.TypeName != nil {
+			return ref.TypeName.Text()
+		}
+	}
+	// For intersections (e.g., `Type & tags.Something`), check the first constituent
+	if typeNode.Kind == ast.KindIntersectionType {
+		for _, member := range typeNode.AsIntersectionTypeNode().Types.Nodes {
+			if member.Kind == ast.KindTypeReference {
+				ref := member.AsTypeReferenceNode()
+				if ref.TypeName != nil {
+					return ref.TypeName.Text()
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// AutoEnableCoercion sets Coerce=true on number/boolean atomic properties in query/path
 // parameters. HTTP query and path values arrive as strings — number and boolean types
 // need automatic string→type coercion at runtime.
-func autoEnableCoercion(m *metadata.Metadata) {
+func AutoEnableCoercion(m *metadata.Metadata) {
 	if m.Kind == metadata.KindAtomic && (m.Atomic == "number" || m.Atomic == "boolean") {
 		if m.Constraints == nil {
 			m.Constraints = &metadata.Constraints{}
@@ -579,15 +679,27 @@ func autoEnableCoercion(m *metadata.Metadata) {
 			m.Constraints.Coerce = &b
 		}
 	}
-	// For whole-object query params, enable coercion on each property
+	// For whole-object query params, enable coercion on each property.
+	// Coercion is set on BOTH Property.Constraints (used by codegen) and
+	// Property.Type.Constraints for consistency.
 	if m.Kind == metadata.KindObject || m.Kind == metadata.KindRef {
 		for i := range m.Properties {
-			autoEnableCoercion(&m.Properties[i].Type)
+			prop := &m.Properties[i]
+			if prop.Type.Kind == metadata.KindAtomic && (prop.Type.Atomic == "number" || prop.Type.Atomic == "boolean") {
+				if prop.Constraints == nil {
+					prop.Constraints = &metadata.Constraints{}
+				}
+				if prop.Constraints.Coerce == nil {
+					b := true
+					prop.Constraints.Coerce = &b
+				}
+			}
+			AutoEnableCoercion(&prop.Type)
 		}
 	}
 	// For array query params, enable coercion on the element type
 	if m.Kind == metadata.KindArray && m.ElementType != nil {
-		autoEnableCoercion(m.ElementType)
+		AutoEnableCoercion(m.ElementType)
 	}
 }
 
@@ -656,6 +768,49 @@ func (a *ControllerAnalyzer) resolveDecoratorIn(dec *ast.Node) string {
 	return extractInTag(decl)
 }
 
+// resolveDecoratorOriginalName resolves the original name of an imported decorator
+// when it has been aliased (e.g., `import { Body as NestBody }`).
+// Returns the original name if aliased, empty string otherwise.
+func (a *ControllerAnalyzer) resolveDecoratorOriginalName(dec *ast.Node) string {
+	if dec.Kind != ast.KindDecorator {
+		return ""
+	}
+	expr := dec.AsDecorator().Expression
+
+	// Get the callee expression (the identifier before the call)
+	var calleeNode *ast.Node
+	switch expr.Kind {
+	case ast.KindIdentifier:
+		calleeNode = expr
+	case ast.KindCallExpression:
+		calleeNode = expr.AsCallExpression().Expression
+	default:
+		return ""
+	}
+
+	if calleeNode == nil || calleeNode.Kind != ast.KindIdentifier {
+		return ""
+	}
+
+	sym := a.checker.GetSymbolAtLocation(calleeNode)
+	if sym == nil {
+		return ""
+	}
+
+	// Check if this is an alias symbol
+	if sym.Flags&ast.SymbolFlagsAlias == 0 {
+		return ""
+	}
+
+	// Resolve the aliased (original) symbol
+	original := a.checker.GetAliasedSymbol(sym)
+	if original == nil || original.Name == "" {
+		return ""
+	}
+
+	return original.Name
+}
+
 // extractInTag reads JSDoc from a node (or its ancestor VariableStatement)
 // and returns the @in tag value if it matches a valid parameter category.
 func extractInTag(node *ast.Node) string {
@@ -709,11 +864,44 @@ func (a *ControllerAnalyzer) extractReturnType(methodNode *ast.Node, className s
 
 	// Fast path: explicit return type annotation — use the type node directly.
 	if methodDecl.Type != nil {
-		return a.walker.WalkTypeNode(methodDecl.Type)
+		result := a.walker.WalkTypeNode(methodDecl.Type)
+		// Preserve the inner type name for Promise<T> / Observable<T>
+		if result.Name == "" {
+			result.Name = resolveInnerTypeName(methodDecl.Type)
+		}
+		return result
 	}
 
 	// No annotation — infer via the checker.
 	return a.inferReturnType(methodNode, className, methodName, sourceFile)
+}
+
+// resolveInnerTypeName extracts the type name from a type node, unwrapping
+// Promise<T> and Observable<T> wrappers to get the inner type name.
+func resolveInnerTypeName(typeNode *ast.Node) string {
+	if typeNode == nil || typeNode.Kind != ast.KindTypeReference {
+		return ""
+	}
+	ref := typeNode.AsTypeReferenceNode()
+	if ref.TypeName == nil {
+		return ""
+	}
+	name := ref.TypeName.Text()
+
+	// Unwrap Promise<T> and Observable<T> to get inner type name
+	if name == "Promise" || name == "Observable" {
+		if ref.TypeArguments != nil && len(ref.TypeArguments.Nodes) > 0 {
+			return resolveInnerTypeName(ref.TypeArguments.Nodes[0])
+		}
+		return ""
+	}
+
+	// Skip built-in types that shouldn't get companions
+	if name == "Array" || name == "string" || name == "number" || name == "boolean" || name == "void" {
+		return ""
+	}
+
+	return name
 }
 
 // inferReturnType uses the checker to resolve the return type of a method that

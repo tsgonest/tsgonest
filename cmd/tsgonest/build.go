@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -181,6 +182,7 @@ func runBuild(args []string) int {
 	}
 
 	opts := parsedConfig.CompilerOptions()
+	modFmt := rewrite.DetectModuleFormat(moduleFormatFromOpts(opts))
 
 	// Auto-infer rootDir if not set, so users get flat dist/ output without configuring it.
 	// Computes common prefix of all source files (like tsc does).
@@ -316,13 +318,47 @@ func runBuild(args []string) int {
 		timing.Checker = time.Since(checkerStart)
 
 		// Build source→output map (needed before emit for companion path computation)
-		// We compute output paths from tsconfig rootDir/outDir, no emitted file list needed.
 		sourceToOutput := buildSourceToOutputMapFromConfig(program, opts.RootDir, opts.OutDir)
 
-		// Generate companion file content in memory (don't write to disk yet)
+		// ── Step 1: Analyze controllers to discover needed types ─────────
+		controllerStart := time.Now()
+		if needControllers {
+			ca := analyzer.NewControllerAnalyzerWithWalker(program, sharedChecker, sharedWalker)
+			controllers = ca.AnalyzeProgram(cfg.Controllers.Include, cfg.Controllers.Exclude)
+			controllerRegistry = ca.Registry()
+			controllerWarnings = ca.Warnings()
+		}
+		timing.Controllers = time.Since(controllerStart)
+
+		// ── Step 2: Extract marker calls to discover explicitly used types ─
+		markerCalls := make(map[string][]rewrite.MarkerCall)
+		for _, sf := range program.GetSourceFiles() {
+			if sf.IsDeclarationFile {
+				continue
+			}
+			calls := rewrite.ExtractMarkerCalls(sf, sharedChecker)
+			if len(calls) > 0 {
+				markerCalls[sf.FileName()] = calls
+			}
+		}
+
+		// ── Step 3: Collect the set of type names that actually need companions ─
+		// Only types referenced by controllers, marker calls, or transforms.include get companions.
+		var neededTypes map[string]bool
+		if len(cfg.Transforms.Include) > 0 {
+			// When transforms.include is set, generate for ALL matching types (nil = no filter)
+			neededTypes = nil
+		} else {
+			neededTypes = collectNeededTypes(controllers, markerCalls)
+		}
+
+		// Collect query/param DTO type names that need coercion
+		coercionTypes := collectCoercionTypes(controllers)
+
+		// ── Step 4: Generate companions only for needed types ────────────
 		companionStart := time.Now()
-		if needCompanions {
-			companions, typesByFile, compErr := generateCompanionsInMemory(program, cfg, sourceToOutput, sharedChecker, sharedWalker, syntaxErrorFiles)
+		if needCompanions && (neededTypes == nil || len(neededTypes) > 0) {
+			companions, typesByFile, compErr := generateCompanionsInMemory(program, cfg, sourceToOutput, sharedChecker, sharedWalker, syntaxErrorFiles, modFmt, neededTypes, coercionTypes)
 			if compErr != nil {
 				fmt.Fprintf(os.Stderr, "error generating companions: %v\n", compErr)
 				return 1
@@ -331,18 +367,6 @@ func runBuild(args []string) int {
 
 			// Build companion map for rewriting
 			companionMap := rewrite.BuildCompanionMap(sourceToOutput, typesByFile)
-
-			// Extract marker calls from source files
-			markerCalls := make(map[string][]rewrite.MarkerCall)
-			for _, sf := range program.GetSourceFiles() {
-				if sf.IsDeclarationFile {
-					continue
-				}
-				calls := rewrite.ExtractMarkerCalls(sf, sharedChecker)
-				if len(calls) > 0 {
-					markerCalls[sf.FileName()] = calls
-				}
-			}
 
 			// Build RewriteContext
 			rewriteCtx = &rewrite.RewriteContext{
@@ -353,29 +377,19 @@ func runBuild(args []string) int {
 				SourceToOutput: sourceToOutput,
 				OutputToSource: rewrite.BuildOutputToSourceMap(sourceToOutput),
 			}
-
-			// Note: "generated N companion file(s)" message deferred to after cache check
 		}
 		timing.Companions = time.Since(companionStart)
 
-		// Analyze controllers
-		controllerStart := time.Now()
+		// Attach controller data to rewrite context
 		if needControllers {
-			ca := analyzer.NewControllerAnalyzerWithWalker(program, sharedChecker, sharedWalker)
-			controllers = ca.AnalyzeProgram(cfg.Controllers.Include, cfg.Controllers.Exclude)
-			controllerRegistry = ca.Registry()
-			controllerWarnings = ca.Warnings()
-
-			// Add controller data to rewrite context
 			if rewriteCtx != nil {
 				rewriteCtx.Controllers = controllers
 				rewriteCtx.ControllerSourceFiles = rewrite.BuildControllerSourceFiles(controllers)
 			} else {
 				// Controllers without companions — still need rewrite context for controller injection
-				companionMap := make(map[string]string)
 				rewriteCtx = &rewrite.RewriteContext{
-					CompanionMap:          companionMap,
-					MarkerCalls:           make(map[string][]rewrite.MarkerCall),
+					CompanionMap:          make(map[string]string),
+					MarkerCalls:           markerCalls,
 					Controllers:           controllers,
 					ControllerSourceFiles: rewrite.BuildControllerSourceFiles(controllers),
 					PathResolver:          pathResolver,
@@ -385,7 +399,6 @@ func runBuild(args []string) int {
 				}
 			}
 		}
-		timing.Controllers = time.Since(controllerStart)
 	}
 
 	// If we only have path aliases but no companions/controllers, still set up
@@ -465,14 +478,37 @@ func runBuild(args []string) int {
 		return 1
 	}
 
-	// ── Generate shared helpers file in every directory that has companions ────
+	// ── Generate a single shared helpers file at the output root ────────
 	if len(allCompanions) > 0 {
-		helpersDirs := make(map[string]bool)
-		for _, comp := range allCompanions {
-			helpersDirs[filepath.Dir(comp.Path)] = true
+		helpersRoot := opts.OutDir
+		if helpersRoot == "" {
+			helpersRoot = determineOutputDir(allCompanions, emittedFiles, cwd)
 		}
-		for dir := range helpersDirs {
-			allCompanions = append(allCompanions, codegen.GenerateHelpersFile(dir)...)
+		// Ensure helpersRoot is absolute for correct relative path computation
+		if !filepath.IsAbs(helpersRoot) {
+			helpersRoot = filepath.Join(cwd, helpersRoot)
+		}
+		allCompanions = append(allCompanions, codegen.GenerateHelpersFile(helpersRoot, modFmt)...)
+		helpersDir := helpersRoot
+		// Fix relative import paths in each companion: "./_tsgonest_helpers.js" → correct relative path
+		for i := range allCompanions {
+			comp := &allCompanions[i]
+			if strings.HasSuffix(comp.Path, "_tsgonest_helpers.js") || strings.HasSuffix(comp.Path, "_tsgonest_helpers.d.ts") {
+				continue
+			}
+			compDir := filepath.Dir(comp.Path)
+			if compDir == helpersDir {
+				continue // same directory, "./" is already correct
+			}
+			rel, err := filepath.Rel(compDir, helpersDir)
+			if err != nil {
+				continue
+			}
+			relImport := filepath.ToSlash(rel) + "/_tsgonest_helpers.js"
+			if !strings.HasPrefix(relImport, ".") {
+				relImport = "./" + relImport
+			}
+			comp.Content = strings.Replace(comp.Content, "\"./_tsgonest_helpers.js\"", "\""+relImport+"\"", 1)
 		}
 	}
 
@@ -715,141 +751,132 @@ func generateOpenAPIFromControllers(controllers []analyzer.ControllerInfo, regis
 	return nil
 }
 
-// generateCompanionsWithWalker analyzes types and generates companion files using a shared checker + walker.
-// Files in skipFiles (source files with syntax errors) are excluded from companion generation.
-func generateCompanionsWithWalker(program *shimcompiler.Program, cfg *config.Config, emittedFiles []string, rootDir, outDir string, checker *shimchecker.Checker, walker *analyzer.TypeWalker, skipFiles map[string]bool) ([]codegen.CompanionFile, error) {
-	// Build a map from source file name -> emitted JS path
-	// so we can write companions alongside the emitted JS.
-	sourceToOutput := buildSourceToOutputMap(program, emittedFiles, rootDir, outDir)
-
-	var allCompanions []codegen.CompanionFile
-
-	for _, sf := range program.GetSourceFiles() {
-		if sf.IsDeclarationFile {
-			continue
-		}
-
-		// Skip files with syntax errors — their type metadata may be wrong
-		if skipFiles[sf.FileName()] {
-			fmt.Fprintf(os.Stderr, "warning: skipping companion generation for %s (syntax errors)\n", filepath.Base(sf.FileName()))
-			continue
-		}
-
-		// Filter source files using transforms.include patterns (if specified)
-		if len(cfg.Transforms.Include) > 0 {
-			if !analyzer.MatchesGlob(sf.FileName(), cfg.Transforms.Include, nil) {
-				continue
-			}
-		}
-
-		// Determine output base path for this source file
-		outputBase, ok := sourceToOutput[sf.FileName()]
-		if !ok {
-			continue
-		}
-
-		// Collect named types from this file
-		types := make(map[string]*metadata.Metadata)
-		for _, stmt := range sf.Statements.Nodes {
-			switch stmt.Kind {
-			case ast.KindTypeAliasDeclaration:
-				decl := stmt.AsTypeAliasDeclaration()
-				name := decl.Name().Text()
-				resolvedType := shimchecker.Checker_getTypeFromTypeNode(checker, decl.Type)
-				m := walker.WalkNamedType(name, resolvedType)
-				types[name] = &m
-			case ast.KindInterfaceDeclaration:
-				decl := stmt.AsInterfaceDeclaration()
-				name := decl.Name().Text()
-				sym := checker.GetSymbolAtLocation(decl.Name())
-				if sym != nil {
-					resolvedType := shimchecker.Checker_getDeclaredTypeOfSymbol(checker, sym)
-					m := walker.WalkType(resolvedType)
-					types[name] = &m
-				}
-			case ast.KindClassDeclaration:
-				decl := stmt.AsClassDeclaration()
-				if decl.Name() != nil {
-					// Skip controller classes — they have @Controller() decorator
-					// and their companion files are useless (validates method names as any).
-					if isControllerClass(stmt) {
-						continue
-					}
-					name := decl.Name().Text()
-					sym := checker.GetSymbolAtLocation(decl.Name())
-					if sym != nil {
-						resolvedType := shimchecker.Checker_getDeclaredTypeOfSymbol(checker, sym)
-						m := walker.WalkType(resolvedType)
-						types[name] = &m
-					}
+// collectNeededTypes gathers the set of type names that actually need companion files.
+// A type is "needed" if it's referenced as a controller body parameter, return type,
+// or in an explicit marker call (tsgonest.validate<T>(), tsgonest.assert<T>(), etc.).
+// collectCoercionTypes returns the set of type names used as whole-object
+// @Query() or @Param() parameters. These need string→number/boolean coercion
+// enabled in their companion assert functions.
+func collectCoercionTypes(controllers []analyzer.ControllerInfo) map[string]bool {
+	types := make(map[string]bool)
+	for _, ctrl := range controllers {
+		for _, route := range ctrl.Routes {
+			for _, param := range route.Parameters {
+				if (param.Category == "query" || param.Category == "param" || param.Category == "headers") && param.Name == "" && param.TypeName != "" {
+					types[param.TypeName] = true
 				}
 			}
 		}
+	}
+	return types
+}
 
-		if len(types) == 0 {
-			continue
-		}
+func collectNeededTypes(controllers []analyzer.ControllerInfo, markerCalls map[string][]rewrite.MarkerCall) map[string]bool {
+	needed := make(map[string]bool)
 
-		// Generate companion files using the output base path
-		companions := codegen.GenerateCompanionFiles(outputBase, types, walker.Registry())
-		for _, comp := range companions {
-			dir := filepath.Dir(comp.Path)
-			if err := os.MkdirAll(dir, 0755); err != nil {
-				return allCompanions, fmt.Errorf("creating dir %s: %w", dir, err)
+	// Types from controller routes:
+	// - @Body() params need assert companions (validation injection)
+	// - Whole-object @Query/@Param/@Headers need assert companions (validation + coercion injection)
+	// - Return types need stringify companions (serialization injection)
+	// - Individual named scalar @Param/@Query params get inline coercion (no companion needed)
+	for _, ctrl := range controllers {
+		for _, route := range ctrl.Routes {
+			for _, param := range route.Parameters {
+				switch param.Category {
+				case "body":
+					// Use the explicit TypeName from AST analysis first
+					if param.TypeName != "" {
+						needed[param.TypeName] = true
+					}
+					// Also scan metadata for nested refs
+					collectTypeNamesFromMetadata(&param.Type, needed)
+				case "query", "headers", "param":
+					// Whole-object params need assert companions
+					if param.TypeName != "" && param.Name == "" {
+						needed[param.TypeName] = true
+					}
+				}
 			}
-			if err := os.WriteFile(comp.Path, []byte(comp.Content), 0644); err != nil {
-				return allCompanions, fmt.Errorf("writing %s: %w", comp.Path, err)
-			}
-			allCompanions = append(allCompanions, comp)
+			// Return types
+			collectTypeNamesFromMetadata(&route.ReturnType, needed)
 		}
 	}
 
-	// Generate shared helpers file in every directory that has companions
-	if len(allCompanions) > 0 {
-		helpersDirs := make(map[string]bool)
-		for _, comp := range allCompanions {
-			helpersDirs[filepath.Dir(comp.Path)] = true
-		}
-		for dir := range helpersDirs {
-			for _, hf := range codegen.GenerateHelpersFile(dir) {
-				hfDir := filepath.Dir(hf.Path)
-				if err := os.MkdirAll(hfDir, 0755); err != nil {
-					return allCompanions, fmt.Errorf("creating dir %s: %w", hfDir, err)
-				}
-				if err := os.WriteFile(hf.Path, []byte(hf.Content), 0644); err != nil {
-					return allCompanions, fmt.Errorf("writing %s: %w", hf.Path, err)
-				}
-				allCompanions = append(allCompanions, hf)
+	// Types from marker calls
+	for _, calls := range markerCalls {
+		for _, call := range calls {
+			if call.TypeName != "" {
+				needed[call.TypeName] = true
 			}
 		}
 	}
 
-	return allCompanions, nil
+	if os.Getenv("TSGONEST_DEBUG_COMPANIONS") == "1" {
+		fmt.Fprintf(os.Stderr, "debug: needed types (%d): ", len(needed))
+		for name := range needed {
+			fmt.Fprintf(os.Stderr, "%s ", name)
+		}
+		fmt.Fprintln(os.Stderr)
+	}
+
+	return needed
+}
+
+// collectTypeNamesFromMetadata recursively extracts named type references from metadata.
+// It checks both .Name (set by type walker for named types) and .Ref (for cross-type references).
+func collectTypeNamesFromMetadata(m *metadata.Metadata, names map[string]bool) {
+	if m == nil {
+		return
+	}
+	if m.Name != "" {
+		names[m.Name] = true
+	}
+	if m.Ref != "" {
+		names[m.Ref] = true
+	}
+	// For arrays, collect the element type name (e.g., Promise<UserDto[]> → UserDto)
+	if m.ElementType != nil {
+		if m.ElementType.Name != "" {
+			names[m.ElementType.Name] = true
+		}
+		if m.ElementType.Ref != "" {
+			names[m.ElementType.Ref] = true
+		}
+	}
+	// Do NOT recurse into Properties, UnionMembers — nested types are inlined
+	// by codegen and don't need separate companion files.
 }
 
 // generateCompanionsInMemory generates companion file content in memory without writing to disk.
 // Returns both the companion files and a map of source file → type names found in that file.
-// This is used in the new pipeline where companions are written after emit.
-func generateCompanionsInMemory(program *shimcompiler.Program, cfg *config.Config, sourceToOutput map[string]string, checker *shimchecker.Checker, walker *analyzer.TypeWalker, skipFiles map[string]bool) ([]codegen.CompanionFile, map[string][]string, error) {
-	var allCompanions []codegen.CompanionFile
+// Only generates companions for types in the neededTypes set.
+// fileTypeInfo holds the type walking results for a source file.
+type fileTypeInfo struct {
+	sourceName string
+	outputBase string
+	types      map[string]*metadata.Metadata
+}
+
+func generateCompanionsInMemory(program *shimcompiler.Program, cfg *config.Config, sourceToOutput map[string]string, checker *shimchecker.Checker, walker *analyzer.TypeWalker, skipFiles map[string]bool, moduleFormat string, neededTypes map[string]bool, coercionTypes map[string]bool) ([]codegen.CompanionFile, map[string][]string, error) {
 	typesByFile := make(map[string][]string)
+
+	// ── Phase 1: Walk types (sequential — uses shared checker) ──────────
+	walkStart := time.Now()
+	var fileInfos []fileTypeInfo
 
 	for _, sf := range program.GetSourceFiles() {
 		if sf.IsDeclarationFile {
 			continue
 		}
-
 		if skipFiles[sf.FileName()] {
 			fmt.Fprintf(os.Stderr, "warning: skipping companion generation for %s (syntax errors)\n", filepath.Base(sf.FileName()))
 			continue
 		}
-
 		if len(cfg.Transforms.Include) > 0 {
 			if !analyzer.MatchesGlob(sf.FileName(), cfg.Transforms.Include, nil) {
 				continue
 			}
 		}
-
 		outputBase, ok := sourceToOutput[sf.FileName()]
 		if !ok {
 			continue
@@ -861,31 +888,23 @@ func generateCompanionsInMemory(program *shimcompiler.Program, cfg *config.Confi
 			case ast.KindTypeAliasDeclaration:
 				decl := stmt.AsTypeAliasDeclaration()
 				name := decl.Name().Text()
+				if neededTypes != nil && !neededTypes[name] {
+					continue
+				}
 				resolvedType := shimchecker.Checker_getTypeFromTypeNode(checker, decl.Type)
 				m := walker.WalkNamedType(name, resolvedType)
 				types[name] = &m
 			case ast.KindInterfaceDeclaration:
 				decl := stmt.AsInterfaceDeclaration()
 				name := decl.Name().Text()
+				if neededTypes != nil && !neededTypes[name] {
+					continue
+				}
 				sym := checker.GetSymbolAtLocation(decl.Name())
 				if sym != nil {
 					resolvedType := shimchecker.Checker_getDeclaredTypeOfSymbol(checker, sym)
 					m := walker.WalkType(resolvedType)
 					types[name] = &m
-				}
-			case ast.KindClassDeclaration:
-				decl := stmt.AsClassDeclaration()
-				if decl.Name() != nil {
-					if isControllerClass(stmt) {
-						continue
-					}
-					name := decl.Name().Text()
-					sym := checker.GetSymbolAtLocation(decl.Name())
-					if sym != nil {
-						resolvedType := shimchecker.Checker_getDeclaredTypeOfSymbol(checker, sym)
-						m := walker.WalkType(resolvedType)
-						types[name] = &m
-					}
 				}
 			}
 		}
@@ -901,9 +920,65 @@ func generateCompanionsInMemory(program *shimcompiler.Program, cfg *config.Confi
 		}
 		typesByFile[sf.FileName()] = fileTypeNames
 
-		// Generate companion content (in memory, no disk write)
-		companions := codegen.GenerateCompanionFiles(outputBase, types, walker.Registry())
-		allCompanions = append(allCompanions, companions...)
+		fileInfos = append(fileInfos, fileTypeInfo{
+			sourceName: sf.FileName(),
+			outputBase: outputBase,
+			types:      types,
+		})
+	}
+	walkDuration := time.Since(walkStart)
+
+	// Enable string→number/boolean coercion on registry entries for query/param DTOs.
+	// This must happen after Phase 1 (types walked into registry) and before Phase 2 (codegen).
+	if len(coercionTypes) > 0 {
+		registry := walker.Registry()
+		for typeName := range coercionTypes {
+			if m, ok := registry.Types[typeName]; ok {
+				analyzer.AutoEnableCoercion(m)
+			}
+		}
+	}
+
+	// ── Phase 2: Generate companion code (parallel) ──────────────────────
+	codegenStart := time.Now()
+	registry := walker.Registry()
+	companionOpts := codegen.CompanionOptions{
+		ModuleFormat:   moduleFormat,
+		StandardSchema: cfg.Transforms.StandardSchema,
+	}
+
+	type codegenResult struct {
+		companions []codegen.CompanionFile
+	}
+	results := make([]codegenResult, len(fileInfos))
+
+	var wg sync.WaitGroup
+	// Use a semaphore to limit concurrency to available CPUs
+	sem := make(chan struct{}, runtime.NumCPU())
+
+	for i, fi := range fileInfos {
+		wg.Add(1)
+		go func(idx int, info fileTypeInfo) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			results[idx] = codegenResult{
+				companions: codegen.GenerateCompanionFiles(info.outputBase, info.types, registry, companionOpts),
+			}
+		}(i, fi)
+	}
+	wg.Wait()
+
+	// Collect results
+	var allCompanions []codegen.CompanionFile
+	for _, r := range results {
+		allCompanions = append(allCompanions, r.companions...)
+	}
+	codegenDuration := time.Since(codegenStart)
+
+	if os.Getenv("TSGONEST_DEBUG_COMPANIONS") == "1" {
+		fmt.Fprintf(os.Stderr, "companion stats: files=%d companions=%d walk=%s codegen=%s\n",
+			len(fileInfos), len(allCompanions), walkDuration, codegenDuration)
 	}
 
 	return allCompanions, typesByFile, nil
@@ -995,72 +1070,6 @@ func determineOutputDir(companions []codegen.CompanionFile, emittedFiles []strin
 
 	// Last resort: cwd/dist
 	return filepath.Join(cwd, "dist")
-}
-
-// buildSourceToOutputMap creates a mapping from source .ts file paths to their
-// emitted .js file paths (without extension), based on the emitted file list.
-//
-// It maps by relative path from rootDir to avoid collisions when multiple source
-// files share the same base name (e.g., multiple index.ts or types.ts files).
-func buildSourceToOutputMap(program *shimcompiler.Program, emittedFiles []string, rootDir, outDir string) map[string]string {
-	result := make(map[string]string)
-
-	// Build set of emitted .js files keyed by their path relative to outDir (without extension).
-	// e.g., "auth/dto/auth.dto" -> "/abs/dist/auth/dto/auth.dto"
-	jsFiles := make(map[string]string) // relative (no ext) -> full path (no ext)
-	for _, f := range emittedFiles {
-		if !strings.HasSuffix(f, ".js") {
-			continue
-		}
-		base := f[:len(f)-3]
-		if outDir != "" {
-			rel, err := filepath.Rel(outDir, base)
-			if err == nil {
-				jsFiles[rel] = base
-				continue
-			}
-		}
-		// Fallback to base name if we can't compute relative path
-		jsFiles[filepath.Base(base)] = base
-	}
-
-	// Match source files to their emitted JS counterparts.
-	// For each source file, compute its path relative to rootDir. The compiler
-	// mirrors this relative structure in the outDir.
-	for _, sf := range program.GetSourceFiles() {
-		if sf.IsDeclarationFile {
-			continue
-		}
-		srcName := sf.FileName()
-
-		// Strip TS extension to get the base without extension
-		srcNoExt := srcName
-		for _, ext := range []string{".ts", ".tsx", ".mts", ".cts"} {
-			if strings.HasSuffix(srcNoExt, ext) {
-				srcNoExt = srcNoExt[:len(srcNoExt)-len(ext)]
-				break
-			}
-		}
-
-		// Compute relative path from rootDir
-		var lookupKey string
-		if rootDir != "" {
-			rel, err := filepath.Rel(rootDir, srcNoExt)
-			if err == nil {
-				lookupKey = rel
-			}
-		}
-		if lookupKey == "" {
-			lookupKey = filepath.Base(srcNoExt)
-		}
-
-		// Find matching emitted file
-		if jsBase, ok := jsFiles[lookupKey]; ok {
-			result[srcName] = jsBase + ".ts" // fake .ts extension for companionPath to strip
-		}
-	}
-
-	return result
 }
 
 // metadataDump is the JSON output structure for --dump-metadata.
@@ -1170,15 +1179,3 @@ func hashFileContent(path string) string {
 	return hex.EncodeToString(h[:])
 }
 
-// isControllerClass checks if a class declaration has a @Controller() decorator.
-// Used to skip companion generation for NestJS controller classes, which produce
-// useless validators (they validate method names as any-typed properties).
-func isControllerClass(classNode *ast.Node) bool {
-	for _, dec := range classNode.Decorators() {
-		info := analyzer.ParseDecorator(dec)
-		if info != nil && analyzer.IsControllerDecorator(info) {
-			return true
-		}
-	}
-	return false
-}
