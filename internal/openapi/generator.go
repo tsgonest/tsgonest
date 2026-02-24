@@ -61,15 +61,17 @@ type PathItem struct {
 
 // Operation represents an HTTP operation.
 type Operation struct {
-	OperationID string                `json:"operationId,omitempty"`
-	Summary     string                `json:"summary,omitempty"`
-	Description string                `json:"description,omitempty"`
-	Tags        []string              `json:"tags,omitempty"`
-	Deprecated  bool                  `json:"deprecated,omitempty"`
-	Security    []map[string][]string `json:"security,omitempty"`
-	Parameters  []Parameter           `json:"parameters,omitempty"`
-	RequestBody *RequestBody          `json:"requestBody,omitempty"`
-	Responses   Responses             `json:"responses"`
+	OperationID         string                `json:"operationId,omitempty"`
+	Summary             string                `json:"summary,omitempty"`
+	Description         string                `json:"description,omitempty"`
+	Tags                []string              `json:"tags,omitempty"`
+	Deprecated          bool                  `json:"deprecated,omitempty"`
+	Security            []map[string][]string `json:"security,omitempty"`
+	Parameters          []Parameter           `json:"parameters,omitempty"`
+	RequestBody         *RequestBody          `json:"requestBody,omitempty"`
+	Responses           Responses             `json:"responses"`
+	XTsgonestController string                `json:"x-tsgonest-controller,omitempty"`
+	XTsgonestMethod     string                `json:"x-tsgonest-method,omitempty"`
 }
 
 // Parameter represents an OpenAPI parameter (query, path, header).
@@ -158,86 +160,20 @@ func NewGenerator(registry *metadata.TypeRegistry) *Generator {
 
 // Generate creates an OpenAPI 3.2 document from a list of controllers.
 func (g *Generator) Generate(controllers []analyzer.ControllerInfo) *Document {
-	doc := &Document{
-		OpenAPI: "3.2.0",
-		Info: Info{
-			Title:   "API",
-			Version: "1.0.0",
-		},
-		Paths: make(map[string]*PathItem),
-	}
-
-	// Collect all unique tags
-	tagSet := make(map[string]bool)
-
-	for _, ctrl := range controllers {
-		for _, route := range ctrl.Routes {
-			// Get or create path item
-			// Convert NestJS-style path params (:id) to OpenAPI-style ({id})
-			openapiPath := convertPath(route.Path)
-
-			pathItem, exists := doc.Paths[openapiPath]
-			if !exists {
-				pathItem = &PathItem{}
-				doc.Paths[openapiPath] = pathItem
-			}
-
-			// Create operation
-			op := g.buildOperation(route)
-
-			// Set operation on the correct method
-			switch route.Method {
-			case "GET":
-				pathItem.Get = op
-			case "POST":
-				pathItem.Post = op
-			case "PUT":
-				pathItem.Put = op
-			case "DELETE":
-				pathItem.Delete = op
-			case "PATCH":
-				pathItem.Patch = op
-			case "HEAD":
-				pathItem.Head = op
-			case "OPTIONS":
-				pathItem.Options = op
-			}
-
-			// Collect tags
-			for _, tag := range route.Tags {
-				tagSet[tag] = true
-			}
-		}
-	}
-
-	// Add tags to document
-	var tags []Tag
-	for tag := range tagSet {
-		tags = append(tags, Tag{Name: tag})
-	}
-	sort.Slice(tags, func(i, j int) bool { return tags[i].Name < tags[j].Name })
-	if len(tags) > 0 {
-		doc.Tags = tags
-	}
-
-	// Add component schemas
-	schemas := g.schemaGen.Schemas()
-	if len(schemas) > 0 {
-		doc.Components = &Components{Schemas: schemas}
-	}
-
-	return doc
+	return g.GenerateWithOptions(controllers, nil)
 }
 
 // buildOperation creates an Operation from a Route.
-func (g *Generator) buildOperation(route analyzer.Route) *Operation {
+func (g *Generator) buildOperation(route analyzer.Route, controllerName string) *Operation {
 	op := &Operation{
-		OperationID: route.OperationID,
-		Summary:     route.Summary,
-		Description: route.Description,
-		Tags:        route.Tags,
-		Deprecated:  route.Deprecated,
-		Responses:   make(Responses),
+		OperationID:         route.OperationID,
+		Summary:             route.Summary,
+		Description:         route.Description,
+		Tags:                route.Tags,
+		Deprecated:          route.Deprecated,
+		Responses:           make(Responses),
+		XTsgonestController: controllerName,
+		XTsgonestMethod:     route.OperationID,
 	}
 
 	// Map security requirements
@@ -528,10 +464,6 @@ func (doc *Document) ApplyConfig(cfg DocumentConfig) {
 // It iterates over controllers and routes, building paths with version and prefix transforms
 // applied during path construction for correct per-route versioning support.
 func (g *Generator) GenerateWithOptions(controllers []analyzer.ControllerInfo, opts *GenerateOptions) *Document {
-	if opts == nil {
-		return g.Generate(controllers)
-	}
-
 	doc := &Document{
 		OpenAPI: "3.2.0",
 		Info: Info{
@@ -550,7 +482,7 @@ func (g *Generator) GenerateWithOptions(controllers []analyzer.ControllerInfo, o
 			openapiPath := convertPath(route.Path)
 
 			// Apply URI versioning
-			if opts.VersioningType == "URI" {
+			if opts != nil && opts.VersioningType == "URI" {
 				version := route.Version
 				if version == "" {
 					version = opts.DefaultVersion
@@ -565,7 +497,7 @@ func (g *Generator) GenerateWithOptions(controllers []analyzer.ControllerInfo, o
 			}
 
 			// Apply global prefix
-			if opts.GlobalPrefix != "" {
+			if opts != nil && opts.GlobalPrefix != "" {
 				prefix := "/" + strings.Trim(opts.GlobalPrefix, "/")
 				openapiPath = prefix + openapiPath
 			}
@@ -577,10 +509,10 @@ func (g *Generator) GenerateWithOptions(controllers []analyzer.ControllerInfo, o
 			}
 
 			// Create operation
-			op := g.buildOperation(route)
+			op := g.buildOperation(route, ctrl.Name)
 
 			// For HEADER versioning, add a version header parameter
-			if opts.VersioningType == "HEADER" {
+			if opts != nil && opts.VersioningType == "HEADER" {
 				version := route.Version
 				if version == "" {
 					version = opts.DefaultVersion

@@ -7,13 +7,17 @@
     "bench:validation": "tsx --tsconfig bench/tsconfig.json bench/validation.ts",
     "bench:serialization": "tsx --tsconfig bench/tsconfig.json bench/serialization.ts",
     "bench:compile": "bash bench/compilation.sh",
+    "bench:all": "tsx --tsconfig bench/tsconfig.json bench/bench-all.ts",
+    "bench:json": "tsx --tsconfig bench/tsconfig.json bench/bench-all.ts --json",
     "bench": "pnpm run build && pnpm run bench:validation && pnpm run bench:serialization"
   },
   "dependencies": {
-    "class-validator": "^0.14.1",
+    "@sinclair/typebox": "^0.34.48",
     "class-transformer": "^0.5.1",
+    "class-validator": "^0.14.1",
     "reflect-metadata": "^0.2.2",
     "tinybench": "^3.0.8",
-    "tsx": "^4.21.0"
+    "tsx": "^4.21.0",
+    "zod": "^4.3.6"
   }
 }

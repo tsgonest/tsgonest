@@ -16,6 +16,7 @@ type Config struct {
 	Controllers ControllersConfig `json:"controllers"`
 	Transforms  TransformsConfig  `json:"transforms"`
 	OpenAPI     OpenAPIConfig     `json:"openapi"`
+	SDK         SDKConfig         `json:"sdk,omitempty"`
 	NestJS      NestJSConfig      `json:"nestjs,omitempty"`
 
 	// Dev/build settings (matching nest-cli.json conventions)
@@ -23,6 +24,12 @@ type Config struct {
 	SourceRoot    string `json:"sourceRoot,omitempty"`    // Source root directory (default: "src")
 	DeleteOutDir  bool   `json:"deleteOutDir,omitempty"`  // Delete output directory before build (like --clean)
 	ManualRestart bool   `json:"manualRestart,omitempty"` // Enable "rs" manual restart in dev mode
+}
+
+// SDKConfig specifies TypeScript SDK generation settings.
+type SDKConfig struct {
+	Output string `json:"output,omitempty"` // Output directory for generated SDK (default: "./sdk")
+	Input  string `json:"input,omitempty"`  // Path to OpenAPI JSON input (defaults to openapi.output)
 }
 
 // ControllersConfig specifies which controller files to analyze.
@@ -33,10 +40,11 @@ type ControllersConfig struct {
 
 // TransformsConfig specifies which code transformations to apply.
 type TransformsConfig struct {
-	Validation    bool     `json:"validation"`
-	Serialization bool     `json:"serialization"`
-	Include       []string `json:"include,omitempty"` // Glob patterns for source files to generate companions for (e.g., ["src/**/*.dto.ts"])
-	Exclude       []string `json:"exclude,omitempty"` // Type name patterns to exclude from codegen (e.g., "Legacy*", "SomeInternalDto")
+	Validation        bool     `json:"validation"`
+	Serialization     bool     `json:"serialization"`
+	ResponseTypeCheck string   `json:"responseTypeCheck,omitempty"` // "safe" (default), "guard", or "none" — controls type checking on response serialization
+	Include           []string `json:"include,omitempty"`           // Glob patterns for source files to generate companions for (e.g., ["src/**/*.dto.ts"])
+	Exclude           []string `json:"exclude,omitempty"`           // Type name patterns to exclude from codegen (e.g., "Legacy*", "SomeInternalDto")
 }
 
 // OpenAPIConfig specifies OpenAPI generation settings.
@@ -100,8 +108,9 @@ func DefaultConfig() Config {
 			Include: []string{"src/**/*.controller.ts"},
 		},
 		Transforms: TransformsConfig{
-			Validation:    true,
-			Serialization: true,
+			Validation:        true,
+			Serialization:     true,
+			ResponseTypeCheck: "safe",
 		},
 		OpenAPI: OpenAPIConfig{
 			Output: "dist/openapi.json",
@@ -260,6 +269,14 @@ func (c *Config) Validate() error {
 	ext := filepath.Ext(c.OpenAPI.Output)
 	if ext != ".json" {
 		return fmt.Errorf("openapi.output must have a .json extension, got %q", ext)
+	}
+
+	// Validate responseTypeCheck
+	switch c.Transforms.ResponseTypeCheck {
+	case "", "safe", "guard", "none":
+		// valid — empty defaults to "safe"
+	default:
+		return fmt.Errorf("transforms.responseTypeCheck must be one of \"safe\", \"guard\", \"none\", got %q", c.Transforms.ResponseTypeCheck)
 	}
 
 	return nil

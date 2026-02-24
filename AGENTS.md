@@ -5,7 +5,7 @@ tsgonest is a Go binary wrapping typescript-go (tsgo) that:
 1. Compiles TypeScript via tsgo (fast, native-speed)
 2. Generates companion files (`.tsgonest.js`) with runtime validators and fast JSON serializers
 3. Generates an OpenAPI 3.2 document from NestJS controllers via static analysis
-4. Provides a lightweight `@tsgonest/runtime` npm package with a `ValidationPipe` and `SerializationInterceptor`
+4. Provides a lightweight `@tsgonest/runtime` npm package with `defineConfig` and error types
 5. Replaces `nest` CLI with `tsgonest dev` (watch+reload) and `tsgonest build` (with tsconfig path alias resolution)
 
 ## CRITICAL: typescript-go Submodule Warning
@@ -57,8 +57,7 @@ packages/
   core/                    tsgonest — main npm package (name: "tsgonest")
                              • Node.js launcher (esbuild pattern) resolves platform binary at runtime
                              • workspace:* deps on @tsgonest/runtime and @tsgonest/types
-  runtime/                 @tsgonest/runtime — NestJS ValidationPipe, SerializationInterceptor,
-                             FastInterceptor, CompanionDiscovery
+  runtime/                 @tsgonest/runtime — defineConfig, TsgonestValidationError
   types/                   @tsgonest/types — zero-runtime branded phantom types
                              (string & tags.Email, tags.MinLength<1>, …)
   cli-darwin-arm64/        @tsgonest/cli-darwin-arm64 — macOS Apple Silicon binary
@@ -76,7 +75,7 @@ internal/
   config/                  Config file parsing and validation
   analyzer/                AST analysis (type walking, NestJS decorator recognition)
   metadata/                Type metadata schema (Go equivalent of typia's Metadata)
-  codegen/                 Code generation (companions: validate/assert/serialize/schema, manifest)
+  codegen/                 Code generation (companions: validate/assert/serialize/schema)
   openapi/                 OpenAPI 3.2 document assembly
   testutil/                Test utilities (OverlayVFS)
 shim/                      [GENERATED] Go bindings to tsgo internals (DO NOT EDIT)
@@ -132,9 +131,8 @@ The code within `./shim/` is generated. **Do not edit it.** Regenerate with `jus
 5. Check post-processing cache — skip steps 6-9 if nothing changed (`internal/buildcache/`)
 6. Walk AST with type checker to extract type metadata (`internal/analyzer/`)
 7. Generate companion files (`*.tsgonest.js` + `*.tsgonest.d.ts`) (`internal/codegen/`)
-8. Generate manifest (`internal/codegen/manifest.go`)
-9. Generate OpenAPI 3.2 document (`internal/openapi/`)
-10. Save post-processing cache
+8. Generate OpenAPI 3.2 document (`internal/openapi/`)
+9. Save post-processing cache
 
 ### Design Decisions
 
@@ -145,7 +143,7 @@ The code within `./shim/` is generated. **Do not edit it.** Regenerate with `jus
 - **Output**: Companion files (`*.tsgonest.js` + `*.tsgonest.d.ts`) alongside tsgo output — each companion exports validate, assert, serialize, and schema functions
 - **OpenAPI**: 3.2 only, static analysis (no runtime/reflect-metadata)
 - **Config**: `tsgonest.config.ts` (recommended, evaluated via Node.js) or `tsgonest.config.json`
-- **Runtime**: `@tsgonest/runtime` npm package provides `TsgonestValidationPipe` + `TsgonestSerializationInterceptor`
+- **Runtime**: `@tsgonest/runtime` npm package provides `defineConfig` and `TsgonestValidationError`; validation and serialization are injected at compile time (no pipes/interceptors needed)
 - **Standard Schema**: v1 wrappers for 60+ framework interop
 - **CLI replacement**: `tsgonest dev` + `tsgonest build` replace `nest start --watch` + `nest build`
 - **Distribution**: Per-platform npm packages + GitHub releases
@@ -162,24 +160,6 @@ dist/
 ```
 
 Controller classes are detected via `@Controller()` decorator and **skipped** for companion generation.
-
-### Manifest Format
-
-```json
-{
-  "version": 1,
-  "companions": {
-    "UserDto": {
-      "file": "./user.dto.UserDto.tsgonest.js",
-      "validate": "validateUserDto",
-      "assert": "assertUserDto",
-      "serialize": "serializeUserDto",
-      "schema": "schemaUserDto"
-    }
-  },
-  "routes": { ... }
-}
-```
 
 ### Shim Layer
 
@@ -323,13 +303,12 @@ pnpm --filter docs start   # Serve the static export locally
 - Emitter: `internal/codegen/emitter_test.go`
 - OpenAPI schemas: `internal/openapi/schema_test.go`
 - OpenAPI generator: `internal/openapi/generator_test.go`
-- Manifest: `internal/codegen/manifest_test.go`
 - Build cache: `internal/buildcache/cache_test.go`
 - Each test uses fixtures from `testdata/`
 
 ### E2e Tests (Vitest, 101 tests)
 
-- `e2e/compile.test.ts` — Full pipeline: compilation, companions, manifest, OpenAPI, constraint validation, realworld fixture, branded types, diagnostics, exit codes, incremental, post-processing cache, @Returns decorator
+- `e2e/compile.test.ts` — Full pipeline: compilation, companions, OpenAPI, constraint validation, realworld fixture, branded types, diagnostics, exit codes, incremental, post-processing cache, @Returns decorator
 - Run the `tsgonest` binary as a subprocess
 - Verify output files, content, and error handling
 - Execute generated JS in Node.js to verify runtime correctness
@@ -361,4 +340,3 @@ pnpm --filter docs start   # Serve the static export locally
 15. **Companion file naming**: Files use `.tsgonest.js`/`.tsgonest.d.ts` suffix (NOT `.validate.js`/`.serialize.js` — those are old format)
 16. **Controller classes have no companions**: `@Controller()` classes are detected and skipped for companion generation
 17. **@Res() routes are never serialized**: `@Returns<T>()` is purely for OpenAPI; the response is handled manually by the developer
-18. **`ManifestEntry` is now `CompanionEntry`**: The runtime exports `CompanionEntry` (not the old `ManifestEntry`) from `packages/runtime/src/discovery.ts`

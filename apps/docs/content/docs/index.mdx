@@ -33,7 +33,7 @@ Run `tsgonest build` and you get:
 
 - Compiled JavaScript (via tsgo, 10x faster than `tsc`)
 - `*.tsgonest.js` companion files with `validate`, `assert`, and `serialize` functions
-- A manifest file for automatic runtime discovery
+- Controller JS with injected validation and serialization (zero runtime setup)
 - A complete OpenAPI 3.2 document from your NestJS controllers
 
 No decorators on every property. No `reflect-metadata`. No runtime overhead.
@@ -61,7 +61,7 @@ Every `tsgonest build` runs through this pipeline:
 3. Type-check and emit JavaScript
 4. Walk AST with type checker -> extract type metadata
 5. Generate companion files (*.tsgonest.js + *.tsgonest.d.ts)
-6. Write __tsgonest_manifest.json
+6. Inject validation/serialization into controller JS
 7. Generate openapi.json from NestJS controllers
 ```
 
@@ -79,9 +79,8 @@ dist/
     user.dto.CreateUserDto.tsgonest.d.ts    # companion type declarations
     user.dto.UserResponse.tsgonest.js       # companion for response type
     user.dto.UserResponse.tsgonest.d.ts
-    user.controller.js                      # tsgo output (no companion - controllers are skipped)
+    user.controller.js                      # tsgo output with injected validation/serialization
     user.module.js
-  __tsgonest_manifest.json                  # manifest for runtime discovery
   openapi.json                              # OpenAPI 3.2 document
 ```
 
@@ -129,7 +128,7 @@ tsgonest ships as three npm packages:
 | Package | Description |
 | --- | --- |
 | [`tsgonest`](https://www.npmjs.com/package/tsgonest) | The CLI binary — installs the correct platform binary automatically |
-| [`@tsgonest/runtime`](https://www.npmjs.com/package/@tsgonest/runtime) | NestJS `ValidationPipe`, `FastInterceptor`, and `CompanionDiscovery` |
+| [`@tsgonest/runtime`](https://www.npmjs.com/package/@tsgonest/runtime) | `defineConfig` helper and `TsgonestValidationError` |
 | [`@tsgonest/types`](https://www.npmjs.com/package/@tsgonest/types) | Zero-runtime branded phantom types for type-safe constraints |
 
 ## Two ways to define constraints

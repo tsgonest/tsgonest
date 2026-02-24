@@ -1,0 +1,83 @@
+{
+  "openapi": "3.2.0",
+  "info": { "title": "Deeply Nested API", "version": "1.0.0" },
+  "paths": {
+    "/orders": {
+      "get": {
+        "operationId": "listOrders",
+        "x-tsgonest-controller": "OrdersController",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": { "$ref": "#/components/schemas/Order" }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Coordinates": {
+        "type": "object",
+        "required": ["lat", "lng"],
+        "properties": {
+          "lat": { "type": "number" },
+          "lng": { "type": "number" }
+        }
+      },
+      "Address": {
+        "type": "object",
+        "required": ["street", "city", "coordinates"],
+        "properties": {
+          "street": { "type": "string" },
+          "city": { "type": "string" },
+          "coordinates": { "$ref": "#/components/schemas/Coordinates" }
+        }
+      },
+      "Shipping": {
+        "type": "object",
+        "required": ["address", "method"],
+        "properties": {
+          "address": { "$ref": "#/components/schemas/Address" },
+          "method": { "type": "string", "enum": ["standard", "express", "overnight"] }
+        }
+      },
+      "Order": {
+        "type": "object",
+        "description": "Order with deeply nested shipping address",
+        "required": ["id", "shipping", "tags"],
+        "properties": {
+          "id": { "type": "string" },
+          "shipping": { "$ref": "#/components/schemas/Shipping" },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": { "type": "string" }
+            }
+          },
+          "matrix": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["value"],
+                "properties": {
+                  "value": { "type": "number" }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

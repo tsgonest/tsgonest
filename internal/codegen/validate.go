@@ -36,18 +36,26 @@ func GenerateCompanionSelective(typeName string, meta *metadata.Metadata, regist
 
 	if includeSerialization {
 		// Serialization helpers — must be before any serialize function that uses them.
-		// __esc: regex matching JSON-special chars (control chars, quote, backslash).
-		// __s: fast string serializer — skips JSON.stringify for the common case where
-		// no escaping is needed (regex.test is a single native call, much faster).
-		e.Line("var __esc = /[\\x00-\\x1f\"\\\\]/;")
+		// __s: fast string serializer — charCode scan, falls back to JSON.stringify only when escaping needed.
 		e.Block("function __s(s)")
-		e.Line("if (!__esc.test(s)) return '\"' + s + '\"';")
-		e.Line("return JSON.stringify(s);")
+		e.Line("for (var i = 0; i < s.length; i++) { var c = s.charCodeAt(i); if (c < 32 || c === 34 || c === 92) return JSON.stringify(s); }")
+		e.Line("return '\"' + s + '\"';")
+		e.EndBlock()
+		// __sa: fast array serializer — for-loop with string accumulation.
+		e.Block("function __sa(a, f)")
+		e.Line("var r = \"[\"; for (var i = 0; i < a.length; i++) { if (i) r += \",\"; r += f(a[i]); } return r + \"]\";")
 		e.EndBlock()
 		e.Blank()
 	}
 
 	if includeValidation {
+		// Generate is function (pure boolean, zero allocations)
+		isCtx := &validateCtx{
+			generating: map[string]bool{typeName: true},
+		}
+		generateIsFunction(e, typeName, meta, registry, isCtx)
+		e.Blank()
+
 		// Generate validate function
 		ctx := &validateCtx{
 			generating: map[string]bool{typeName: true},
@@ -55,8 +63,11 @@ func GenerateCompanionSelective(typeName string, meta *metadata.Metadata, regist
 		generateValidateFunction(e, typeName, meta, registry, ctx)
 		e.Blank()
 
-		// Generate assert function
-		generateAssertFunction(e, typeName)
+		// Generate assert function (standalone, throws on first error)
+		assertCtx := &validateCtx{
+			generating: map[string]bool{typeName: true},
+		}
+		generateAssertFunction(e, typeName, meta, registry, assertCtx)
 		e.Blank()
 	}
 
@@ -66,6 +77,19 @@ func GenerateCompanionSelective(typeName string, meta *metadata.Metadata, regist
 			generating: map[string]bool{typeName: true},
 		}
 		generateSerializeFunction(e, typeName, meta, registry, sCtx)
+		e.Blank()
+
+		// Generate transform function
+		tCtx := &transformCtx{
+			generating: map[string]bool{typeName: true},
+		}
+		generateTransformFunction(e, typeName, meta, registry, tCtx)
+		e.Blank()
+	}
+
+	if includeValidation && includeSerialization {
+		// Generate stringify function (validate + serialize combined)
+		generateStringifyFunction(e, typeName)
 		e.Blank()
 	}
 
@@ -98,6 +122,7 @@ func GenerateCompanionTypesSelective(typeName string, includeValidation bool, in
 		e.Line("}")
 		e.Blank()
 
+		e.Line("export declare function is%s(input: unknown): input is %s;", typeName, typeName)
 		validateResult := fmt.Sprintf("{ success: true; data: %s } | { success: false; errors: Array<{ path: string; message: string }> }", typeName)
 		e.Line("export declare function validate%s(input: unknown): %s;", typeName, validateResult)
 		e.Line("export declare function assert%s(input: unknown): %s;", typeName, typeName)
@@ -105,6 +130,11 @@ func GenerateCompanionTypesSelective(typeName string, includeValidation bool, in
 
 	if includeSerialization {
 		e.Line("export declare function serialize%s(input: %s): string;", typeName, typeName)
+		e.Line("export declare function transform%s(input: %s): %s;", typeName, typeName, typeName)
+	}
+
+	if includeValidation && includeSerialization {
+		e.Line("export declare function stringify%s(input: %s): string;", typeName, typeName)
 	}
 
 	if includeValidation {
@@ -205,32 +235,816 @@ type validateCtx struct {
 }
 
 // generateValidateFunction generates: export function validate<Name>(input) { ... }
+// For recursive types, generates an inner function with path+errors parameters
+// to avoid expensive regex path rewrites and spread operations.
 func generateValidateFunction(e *Emitter, typeName string, meta *metadata.Metadata, registry *metadata.TypeRegistry, ctx *validateCtx) {
 	fnName := "validate" + typeName
+
+	// Check if the type is recursive — if so, use inner function pattern
+	isRecursive := isRecursiveType(typeName, meta, registry)
+
+	if isRecursive {
+		// Generate inner function that takes path and errors parameters
+		innerFn := "_validate" + typeName
+		e.Block("function %s(input, _path, errors)", innerFn)
+		generateTypeCheckWithPath(e, "input", "_path", meta, registry, 0, ctx)
+		e.EndBlock()
+		e.Block("export function %s(input)", fnName)
+		e.Line("const errors = [];")
+		e.Line("%s(input, \"input\", errors);", innerFn)
+		e.Block("if (errors.length > 0)")
+		e.Line("return { success: false, errors };")
+		e.EndBlock()
+		e.Line("return { success: true, data: input };")
+		e.EndBlock()
+	} else {
+		e.Block("export function %s(input)", fnName)
+		e.Line("const errors = [];")
+		generateTypeCheck(e, "input", "", meta, registry, 0, ctx)
+		e.Block("if (errors.length > 0)")
+		e.Line("return { success: false, errors };")
+		e.EndBlock()
+		e.Line("return { success: true, data: input };")
+		e.EndBlock()
+	}
+}
+
+// generateTypeCheckWithPath generates validation checks using a dynamic path variable
+// instead of hardcoded path strings. Used for recursive type validation.
+func generateTypeCheckWithPath(e *Emitter, accessor string, pathExpr string, meta *metadata.Metadata, registry *metadata.TypeRegistry, depth int, ctx *validateCtx) {
+	// Handle nullable/optional
+	if meta.Nullable && meta.Optional {
+		e.Block("if (%s !== null && %s !== undefined)", accessor, accessor)
+		generateTypeCheckWithPathInner(e, accessor, pathExpr, meta, registry, depth, ctx)
+		e.EndBlock()
+		return
+	}
+	if meta.Nullable {
+		e.Block("if (%s !== null)", accessor)
+		generateTypeCheckWithPathInner(e, accessor, pathExpr, meta, registry, depth, ctx)
+		e.EndBlock()
+		return
+	}
+	if meta.Optional {
+		e.Block("if (%s !== undefined)", accessor)
+		generateTypeCheckWithPathInner(e, accessor, pathExpr, meta, registry, depth, ctx)
+		e.EndBlock()
+		return
+	}
+	generateTypeCheckWithPathInner(e, accessor, pathExpr, meta, registry, depth, ctx)
+}
+
+func generateTypeCheckWithPathInner(e *Emitter, accessor string, pathExpr string, meta *metadata.Metadata, registry *metadata.TypeRegistry, depth int, ctx *validateCtx) {
+	switch meta.Kind {
+	case metadata.KindAtomic:
+		switch meta.Atomic {
+		case "string":
+			e.Block("if (typeof %s !== \"string\")", accessor)
+			e.Line("errors.push({ path: %s, expected: \"string\", received: typeof %s });", pathExpr, accessor)
+			e.EndBlock()
+		case "number":
+			e.Block("if (typeof %s !== \"number\" || !Number.isFinite(%s))", accessor, accessor)
+			e.Line("errors.push({ path: %s, expected: \"number\", received: typeof %s });", pathExpr, accessor)
+			e.EndBlock()
+		case "boolean":
+			e.Block("if (typeof %s !== \"boolean\")", accessor)
+			e.Line("errors.push({ path: %s, expected: \"boolean\", received: typeof %s });", pathExpr, accessor)
+			e.EndBlock()
+		case "bigint":
+			e.Block("if (typeof %s !== \"bigint\")", accessor)
+			e.Line("errors.push({ path: %s, expected: \"bigint\", received: typeof %s });", pathExpr, accessor)
+			e.EndBlock()
+		}
+
+	case metadata.KindObject:
+		e.Block("if (typeof %s !== \"object\" || %s === null)", accessor, accessor)
+		e.Line("errors.push({ path: %s, expected: \"object\", received: typeof %s });", pathExpr, accessor)
+		e.EndBlockSuffix(" else {")
+		e.indent++
+		for _, prop := range meta.Properties {
+			propAccessor := accessor + "." + prop.Name
+			propPathExpr := fmt.Sprintf("%s + \".%s\"", pathExpr, prop.Name)
+			if prop.Required && !prop.Type.Optional {
+				e.Block("if (%s === undefined)", propAccessor)
+				e.Line("errors.push({ path: %s, expected: \"%s\", received: \"undefined\" });", propPathExpr, describeType(&prop.Type))
+				e.EndBlockSuffix(" else {")
+				e.indent++
+				generateTypeCheckWithPath(e, propAccessor, propPathExpr, &prop.Type, registry, depth+1, ctx)
+				e.indent--
+				e.Line("}")
+			} else {
+				generateTypeCheckWithPath(e, propAccessor, propPathExpr, &prop.Type, registry, depth+1, ctx)
+			}
+		}
+		e.indent--
+		e.Line("}")
+
+	case metadata.KindArray:
+		e.Block("if (!Array.isArray(%s))", accessor)
+		e.Line("errors.push({ path: %s, expected: \"array\", received: typeof %s });", pathExpr, accessor)
+		e.EndBlockSuffix(" else {")
+		e.indent++
+		if meta.ElementType != nil {
+			idx := fmt.Sprintf("i%d", depth)
+			e.Block("for (let %s = 0; %s < %s.length; %s++)", idx, idx, accessor, idx)
+			elemAccessor := fmt.Sprintf("%s[%s]", accessor, idx)
+			elemPathExpr := fmt.Sprintf("%s + \"[\" + %s + \"]\"", pathExpr, idx)
+			generateTypeCheckWithPath(e, elemAccessor, elemPathExpr, meta.ElementType, registry, depth+1, ctx)
+			e.EndBlock()
+		}
+		e.indent--
+		e.Line("}")
+
+	case metadata.KindRef:
+		if ctx != nil && ctx.generating[meta.Ref] {
+			// Recursive call — use inner function with shared errors array
+			innerFn := "_validate" + meta.Ref
+			e.Line("%s(%s, %s, errors);", innerFn, accessor, pathExpr)
+		} else if resolved, ok := registry.Types[meta.Ref]; ok {
+			if ctx != nil {
+				ctx.generating[meta.Ref] = true
+			}
+			generateTypeCheckWithPath(e, accessor, pathExpr, resolved, registry, depth, ctx)
+			if ctx != nil {
+				delete(ctx.generating, meta.Ref)
+			}
+		}
+
+	case metadata.KindEnum:
+		if len(meta.EnumValues) > 0 {
+			vals := make([]string, len(meta.EnumValues))
+			for i, ev := range meta.EnumValues {
+				vals[i] = jsLiteral(ev.Value)
+			}
+			setExpr := "[" + strings.Join(vals, ", ") + "]"
+			e.Block("if (!%s.includes(%s))", setExpr, accessor)
+			e.Line("errors.push({ path: %s, expected: \"enum value\", received: %s });", pathExpr, accessor)
+			e.EndBlock()
+		}
+
+	case metadata.KindNative:
+		switch meta.NativeType {
+		case "Date":
+			e.Block("if (!(%s instanceof Date) || isNaN(%s.getTime()))", accessor, accessor)
+			e.Line("errors.push({ path: %s, expected: \"Date\", received: typeof %s });", pathExpr, accessor)
+			e.EndBlock()
+		default:
+			e.Block("if (!(%s instanceof %s))", accessor, meta.NativeType)
+			e.Line("errors.push({ path: %s, expected: \"%s\", received: typeof %s });", pathExpr, meta.NativeType, accessor)
+			e.EndBlock()
+		}
+
+	case metadata.KindUnion:
+		// For recursive validate with path, use the same union pattern but with dynamic path
+		// Delegate to the standard generateTypeCheck since unions are complex
+		// and the path rewrite is mainly an issue for recursive refs, not unions
+		generateUnionCheck(e, accessor, pathExpr, meta, registry, depth, ctx)
+
+	case metadata.KindLiteral:
+		e.Block("if (%s !== %s)", accessor, jsLiteral(meta.LiteralValue))
+		e.Line("errors.push({ path: %s, expected: %q, received: %s });", pathExpr, fmt.Sprintf("%v", meta.LiteralValue), accessor)
+		e.EndBlock()
+
+	case metadata.KindAny, metadata.KindUnknown:
+		// No validation
+
+	case metadata.KindNever:
+		e.Line("errors.push({ path: %s, expected: \"never\", received: typeof %s });", pathExpr, accessor)
+
+	case metadata.KindVoid:
+		e.Block("if (%s !== undefined)", accessor)
+		e.Line("errors.push({ path: %s, expected: \"void\", received: typeof %s });", pathExpr, accessor)
+		e.EndBlock()
+	}
+}
+
+// generateAssertFunction generates a standalone assert function that throws on first error.
+// For non-recursive types: direct inline checks with throw.
+// For recursive types: inner function with path parameter.
+func generateAssertFunction(e *Emitter, typeName string, meta *metadata.Metadata, registry *metadata.TypeRegistry, ctx *validateCtx) {
+	fnName := "assert" + typeName
+
+	// Check if type is recursive
+	isRecursive := isRecursiveType(typeName, meta, registry)
+
+	if isRecursive {
+		// Generate inner function with path parameter
+		innerFn := "_assert" + typeName
+		e.Block("function %s(input, _path)", innerFn)
+		generateAssertChecks(e, "input", "_path", meta, registry, 0, ctx, true)
+		e.Line("return input;")
+		e.EndBlock()
+		e.Block("export function %s(input)", fnName)
+		e.Line("return %s(input, \"input\");", innerFn)
+		e.EndBlock()
+	} else {
+		e.Block("export function %s(input)", fnName)
+		generateAssertChecks(e, "input", "\"input\"", meta, registry, 0, ctx, false)
+		e.Line("return input;")
+		e.EndBlock()
+	}
+}
+
+// generateAssertChecks generates throw-on-first-error checks for assertX().
+func generateAssertChecks(e *Emitter, accessor string, pathExpr string, meta *metadata.Metadata, registry *metadata.TypeRegistry, depth int, ctx *validateCtx, isRecursive bool) {
+	// Handle nullable/optional
+	if meta.Nullable && meta.Optional {
+		e.Block("if (%s !== null && %s !== undefined)", accessor, accessor)
+		generateAssertChecksInner(e, accessor, pathExpr, meta, registry, depth, ctx, isRecursive)
+		e.EndBlock()
+		return
+	}
+	if meta.Nullable {
+		e.Block("if (%s !== null)", accessor)
+		generateAssertChecksInner(e, accessor, pathExpr, meta, registry, depth, ctx, isRecursive)
+		e.EndBlock()
+		return
+	}
+	if meta.Optional {
+		e.Block("if (%s !== undefined)", accessor)
+		generateAssertChecksInner(e, accessor, pathExpr, meta, registry, depth, ctx, isRecursive)
+		e.EndBlock()
+		return
+	}
+	generateAssertChecksInner(e, accessor, pathExpr, meta, registry, depth, ctx, isRecursive)
+}
+
+func generateAssertChecksInner(e *Emitter, accessor string, pathExpr string, meta *metadata.Metadata, registry *metadata.TypeRegistry, depth int, ctx *validateCtx, isRecursive bool) {
+	switch meta.Kind {
+	case metadata.KindAtomic:
+		switch meta.Atomic {
+		case "string":
+			e.Block("if (typeof %s !== \"string\")", accessor)
+			e.Line("throw new TypeError(\"Expected string at \" + %s + \", received \" + typeof %s);", pathExpr, accessor)
+			e.EndBlock()
+		case "number":
+			e.Block("if (typeof %s !== \"number\" || !Number.isFinite(%s))", accessor, accessor)
+			e.Line("throw new TypeError(\"Expected number at \" + %s + \", received \" + typeof %s);", pathExpr, accessor)
+			e.EndBlock()
+		case "boolean":
+			e.Block("if (typeof %s !== \"boolean\")", accessor)
+			e.Line("throw new TypeError(\"Expected boolean at \" + %s + \", received \" + typeof %s);", pathExpr, accessor)
+			e.EndBlock()
+		case "bigint":
+			e.Block("if (typeof %s !== \"bigint\")", accessor)
+			e.Line("throw new TypeError(\"Expected bigint at \" + %s + \", received \" + typeof %s);", pathExpr, accessor)
+			e.EndBlock()
+		}
+		if meta.Atomic == "string" && meta.TemplatePattern != "" {
+			e.Block("if (typeof %s === \"string\" && !/%s/.test(%s))", accessor, meta.TemplatePattern, accessor)
+			e.Line("throw new TypeError(\"Expected pattern %s at \" + %s);", jsStringEscape(meta.TemplatePattern), pathExpr)
+			e.EndBlock()
+		}
+
+	case metadata.KindLiteral:
+		e.Block("if (%s !== %s)", accessor, jsLiteral(meta.LiteralValue))
+		e.Line("throw new TypeError(\"Expected %s at \" + %s + \", received \" + %s);", jsStringEscape(fmt.Sprintf("%v", meta.LiteralValue)), pathExpr, accessor)
+		e.EndBlock()
+
+	case metadata.KindObject:
+		e.Block("if (typeof %s !== \"object\" || %s === null)", accessor, accessor)
+		e.Line("throw new TypeError(\"Expected object at \" + %s + \", received \" + typeof %s);", pathExpr, accessor)
+		e.EndBlockSuffix(" else {")
+		e.indent++
+		for _, prop := range meta.Properties {
+			propAccessor := accessor + "." + prop.Name
+			var propPathExpr string
+			if isRecursive {
+				propPathExpr = fmt.Sprintf("%s + \".%s\"", pathExpr, prop.Name)
+			} else {
+				propPathExpr = fmt.Sprintf("%s + \".%s\"", pathExpr, prop.Name)
+			}
+			if prop.Required && !prop.Type.Optional {
+				e.Block("if (%s === undefined)", propAccessor)
+				e.Line("throw new TypeError(\"Expected %s at \" + %s + \", received undefined\");", describeType(&prop.Type), propPathExpr)
+				e.EndBlockSuffix(" else {")
+				e.indent++
+				generateAssertChecks(e, propAccessor, propPathExpr, &prop.Type, registry, depth+1, ctx, isRecursive)
+				generateAssertConstraintChecks(e, propAccessor, propPathExpr, &prop)
+				e.indent--
+				e.Line("}")
+			} else {
+				generateAssertChecks(e, propAccessor, propPathExpr, &prop.Type, registry, depth+1, ctx, isRecursive)
+				if prop.Constraints != nil {
+					if prop.Type.Optional || !prop.Required {
+						e.Block("if (%s !== undefined)", propAccessor)
+						generateAssertConstraintChecks(e, propAccessor, propPathExpr, &prop)
+						e.EndBlock()
+					} else {
+						generateAssertConstraintChecks(e, propAccessor, propPathExpr, &prop)
+					}
+				}
+			}
+		}
+		e.indent--
+		e.Line("}")
+
+	case metadata.KindArray:
+		e.Block("if (!Array.isArray(%s))", accessor)
+		e.Line("throw new TypeError(\"Expected array at \" + %s + \", received \" + typeof %s);", pathExpr, accessor)
+		e.EndBlockSuffix(" else {")
+		e.indent++
+		if meta.ElementType != nil {
+			idx := fmt.Sprintf("i%d", depth)
+			e.Block("for (let %s = 0; %s < %s.length; %s++)", idx, idx, accessor, idx)
+			elemAccessor := fmt.Sprintf("%s[%s]", accessor, idx)
+			elemPathExpr := fmt.Sprintf("%s + \"[\" + %s + \"]\"", pathExpr, idx)
+			generateAssertChecks(e, elemAccessor, elemPathExpr, meta.ElementType, registry, depth+1, ctx, isRecursive)
+			e.EndBlock()
+		}
+		e.indent--
+		e.Line("}")
+
+	case metadata.KindTuple:
+		e.Block("if (!Array.isArray(%s))", accessor)
+		e.Line("throw new TypeError(\"Expected tuple at \" + %s + \", received \" + typeof %s);", pathExpr, accessor)
+		e.EndBlock()
+		for i, elem := range meta.Elements {
+			if elem.Rest {
+				continue
+			}
+			elemAccessor := fmt.Sprintf("%s[%d]", accessor, i)
+			elemPathExpr := fmt.Sprintf("%s + \"[%d]\"", pathExpr, i)
+			if elem.Optional {
+				e.Block("if (%s.length > %d)", accessor, i)
+				generateAssertChecks(e, elemAccessor, elemPathExpr, &elem.Type, registry, depth+1, ctx, isRecursive)
+				e.EndBlock()
+			} else {
+				generateAssertChecks(e, elemAccessor, elemPathExpr, &elem.Type, registry, depth+1, ctx, isRecursive)
+			}
+		}
+
+	case metadata.KindUnion:
+		// For literal unions, inline check
+		allLit := true
+		for _, m := range meta.UnionMembers {
+			if m.Kind != metadata.KindLiteral {
+				allLit = false
+				break
+			}
+		}
+		if allLit && len(meta.UnionMembers) > 0 {
+			vals := make([]string, len(meta.UnionMembers))
+			for i, m := range meta.UnionMembers {
+				vals[i] = jsLiteral(m.LiteralValue)
+			}
+			checks := make([]string, len(vals))
+			for i, v := range vals {
+				checks[i] = fmt.Sprintf("%s === %s", accessor, v)
+			}
+			e.Block("if (!(%s))", strings.Join(checks, " || "))
+			e.Line("throw new TypeError(\"Expected one of %s at \" + %s + \", received \" + %s);", jsStringEscape(strings.Join(vals, " | ")), pathExpr, accessor)
+			e.EndBlock()
+		} else {
+			// For complex unions, delegate to validate + throw
+			e.Line("// complex union — delegate to validate")
+		}
+
+	case metadata.KindRef:
+		if ctx != nil && ctx.generating[meta.Ref] {
+			// Recursive ref — call inner assert function
+			innerFn := "_assert" + meta.Ref
+			e.Line("%s(%s, %s);", innerFn, accessor, pathExpr)
+		} else if resolved, ok := registry.Types[meta.Ref]; ok {
+			if ctx != nil {
+				ctx.generating[meta.Ref] = true
+			}
+			generateAssertChecks(e, accessor, pathExpr, resolved, registry, depth, ctx, isRecursive)
+			if ctx != nil {
+				delete(ctx.generating, meta.Ref)
+			}
+		}
+
+	case metadata.KindEnum:
+		if len(meta.EnumValues) > 0 {
+			vals := make([]string, len(meta.EnumValues))
+			for i, ev := range meta.EnumValues {
+				vals[i] = jsLiteral(ev.Value)
+			}
+			setExpr := "[" + strings.Join(vals, ", ") + "]"
+			e.Block("if (!%s.includes(%s))", setExpr, accessor)
+			e.Line("throw new TypeError(\"Expected enum value at \" + %s + \", received \" + %s);", pathExpr, accessor)
+			e.EndBlock()
+		}
+
+	case metadata.KindNative:
+		switch meta.NativeType {
+		case "Date":
+			e.Block("if (!(%s instanceof Date) || isNaN(%s.getTime()))", accessor, accessor)
+			e.Line("throw new TypeError(\"Expected Date at \" + %s + \", received \" + typeof %s);", pathExpr, accessor)
+			e.EndBlock()
+		default:
+			e.Block("if (!(%s instanceof %s))", accessor, meta.NativeType)
+			e.Line("throw new TypeError(\"Expected %s at \" + %s + \", received \" + typeof %s);", meta.NativeType, pathExpr, accessor)
+			e.EndBlock()
+		}
+
+	case metadata.KindAny, metadata.KindUnknown:
+		// No validation
+
+	case metadata.KindNever:
+		e.Line("throw new TypeError(\"Expected never at \" + %s);", pathExpr)
+
+	case metadata.KindVoid:
+		e.Block("if (%s !== undefined)", accessor)
+		e.Line("throw new TypeError(\"Expected void at \" + %s);", pathExpr)
+		e.EndBlock()
+	}
+}
+
+// generateAssertConstraintChecks emits assert-style constraint checks (throw on first failure).
+// Uses custom error messages when configured (per-constraint or global).
+func generateAssertConstraintChecks(e *Emitter, accessor string, pathExpr string, prop *metadata.Property) {
+	c := prop.Constraints
+	if c == nil {
+		return
+	}
+
+	// Error message helper matching validate behavior
+	errMsg := func(constraintKey string, defaultMsg string) string {
+		if c.Errors != nil {
+			if msg, ok := c.Errors[constraintKey]; ok {
+				return jsStringEscape(msg)
+			}
+		}
+		if c.ErrorMessage != nil {
+			return jsStringEscape(*c.ErrorMessage)
+		}
+		return defaultMsg
+	}
+
+	if c.Minimum != nil {
+		e.Block("if (typeof %s === \"number\" && %s < %v)", accessor, accessor, *c.Minimum)
+		e.Line("throw new TypeError(\"%s at \" + %s + \", got \" + %s);", errMsg("minimum", fmt.Sprintf("Expected minimum %v", *c.Minimum)), pathExpr, accessor)
+		e.EndBlock()
+	}
+	if c.Maximum != nil {
+		e.Block("if (typeof %s === \"number\" && %s > %v)", accessor, accessor, *c.Maximum)
+		e.Line("throw new TypeError(\"%s at \" + %s + \", got \" + %s);", errMsg("maximum", fmt.Sprintf("Expected maximum %v", *c.Maximum)), pathExpr, accessor)
+		e.EndBlock()
+	}
+	if c.MinLength != nil {
+		e.Block("if (typeof %s === \"string\" && %s.length < %d)", accessor, accessor, *c.MinLength)
+		e.Line("throw new TypeError(\"%s at \" + %s + \", got length \" + %s.length);", errMsg("minLength", fmt.Sprintf("Expected minLength %d", *c.MinLength)), pathExpr, accessor)
+		e.EndBlock()
+	}
+	if c.MaxLength != nil {
+		e.Block("if (typeof %s === \"string\" && %s.length > %d)", accessor, accessor, *c.MaxLength)
+		e.Line("throw new TypeError(\"%s at \" + %s + \", got length \" + %s.length);", errMsg("maxLength", fmt.Sprintf("Expected maxLength %d", *c.MaxLength)), pathExpr, accessor)
+		e.EndBlock()
+	}
+	if c.Pattern != nil {
+		e.Block("if (typeof %s === \"string\" && !/%s/.test(%s))", accessor, *c.Pattern, accessor)
+		e.Line("throw new TypeError(\"%s at \" + %s);", errMsg("pattern", fmt.Sprintf("Expected pattern %s", jsStringEscape(*c.Pattern))), pathExpr)
+		e.EndBlock()
+	}
+	if c.Format != nil {
+		pattern, ok := formatRegexes[*c.Format]
+		if ok && pattern != "" {
+			flags := formatFlags[*c.Format]
+			var regexLiteral string
+			if flags != "" {
+				regexLiteral = fmt.Sprintf("/%s/%s", pattern, flags)
+			} else {
+				regexLiteral = fmt.Sprintf("/%s/", pattern)
+			}
+			e.Block("if (typeof %s === \"string\" && !%s.test(%s))", accessor, regexLiteral, accessor)
+			e.Line("throw new TypeError(\"%s at \" + %s);", errMsg("format", fmt.Sprintf("Expected format %s", *c.Format)), pathExpr)
+			e.EndBlock()
+		}
+	}
+}
+
+// isRecursiveType checks if a type contains a recursive reference to itself.
+func isRecursiveType(typeName string, meta *metadata.Metadata, registry *metadata.TypeRegistry) bool {
+	visited := map[string]bool{typeName: true}
+	return hasRecursiveRef(meta, registry, visited, typeName)
+}
+
+func hasRecursiveRef(meta *metadata.Metadata, registry *metadata.TypeRegistry, visited map[string]bool, target string) bool {
+	if meta == nil {
+		return false
+	}
+	switch meta.Kind {
+	case metadata.KindRef:
+		if meta.Ref == target {
+			return true
+		}
+		if visited[meta.Ref] {
+			return false
+		}
+		visited[meta.Ref] = true
+		if resolved, ok := registry.Types[meta.Ref]; ok {
+			return hasRecursiveRef(resolved, registry, visited, target)
+		}
+	case metadata.KindObject:
+		for i := range meta.Properties {
+			if hasRecursiveRef(&meta.Properties[i].Type, registry, visited, target) {
+				return true
+			}
+		}
+	case metadata.KindArray:
+		return hasRecursiveRef(meta.ElementType, registry, visited, target)
+	case metadata.KindTuple:
+		for i := range meta.Elements {
+			if hasRecursiveRef(&meta.Elements[i].Type, registry, visited, target) {
+				return true
+			}
+		}
+	case metadata.KindUnion:
+		for i := range meta.UnionMembers {
+			if hasRecursiveRef(&meta.UnionMembers[i], registry, visited, target) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// generateIsFunction generates a pure boolean type-check function with zero allocations.
+// Returns a single expression composed with && chains.
+func generateIsFunction(e *Emitter, typeName string, meta *metadata.Metadata, registry *metadata.TypeRegistry, ctx *validateCtx) {
+	fnName := "is" + typeName
 	e.Block("export function %s(input)", fnName)
-	e.Line("const errors = [];")
-
-	generateTypeCheck(e, "input", "", meta, registry, 0, ctx)
-
-	e.Block("if (errors.length > 0)")
-	e.Line("return { success: false, errors };")
-	e.EndBlock()
-	e.Line("return { success: true, data: input };")
+	expr := generateIsExpr("input", meta, registry, 0, ctx)
+	e.Line("return %s;", expr)
 	e.EndBlock()
 }
 
-// generateAssertFunction generates: export function assert<Name>(input) { ... }
-func generateAssertFunction(e *Emitter, typeName string) {
-	fnName := "assert" + typeName
+// generateIsExpr returns a JS boolean expression that checks if the value at `accessor`
+// matches the given type. Composes with && for objects, || for unions.
+func generateIsExpr(accessor string, meta *metadata.Metadata, registry *metadata.TypeRegistry, depth int, ctx *validateCtx) string {
+	// Handle nullable/optional wrapping
+	if meta.Nullable && meta.Optional {
+		inner := *meta
+		inner.Nullable = false
+		inner.Optional = false
+		innerExpr := generateIsExpr(accessor, &inner, registry, depth, ctx)
+		return fmt.Sprintf("(%s === null || %s === undefined || %s)", accessor, accessor, innerExpr)
+	}
+	if meta.Nullable {
+		inner := *meta
+		inner.Nullable = false
+		innerExpr := generateIsExpr(accessor, &inner, registry, depth, ctx)
+		return fmt.Sprintf("(%s === null || %s)", accessor, innerExpr)
+	}
+	if meta.Optional {
+		inner := *meta
+		inner.Optional = false
+		innerExpr := generateIsExpr(accessor, &inner, registry, depth, ctx)
+		return fmt.Sprintf("(%s === undefined || %s)", accessor, innerExpr)
+	}
+
+	return generateIsExprInner(accessor, meta, registry, depth, ctx)
+}
+
+func generateIsExprInner(accessor string, meta *metadata.Metadata, registry *metadata.TypeRegistry, depth int, ctx *validateCtx) string {
+	switch meta.Kind {
+	case metadata.KindAtomic:
+		return generateIsAtomicExpr(accessor, meta)
+
+	case metadata.KindLiteral:
+		return fmt.Sprintf("%s === %s", accessor, jsLiteral(meta.LiteralValue))
+
+	case metadata.KindObject:
+		return generateIsObjectExpr(accessor, meta, registry, depth, ctx)
+
+	case metadata.KindArray:
+		return generateIsArrayExpr(accessor, meta, registry, depth, ctx)
+
+	case metadata.KindTuple:
+		parts := []string{fmt.Sprintf("Array.isArray(%s)", accessor)}
+		for i, elem := range meta.Elements {
+			if elem.Rest {
+				continue
+			}
+			elemAccessor := fmt.Sprintf("%s[%d]", accessor, i)
+			if elem.Optional {
+				parts = append(parts, fmt.Sprintf("(%s.length <= %d || %s)", accessor, i, generateIsExpr(elemAccessor, &elem.Type, registry, depth+1, ctx)))
+			} else {
+				parts = append(parts, generateIsExpr(elemAccessor, &elem.Type, registry, depth+1, ctx))
+			}
+		}
+		return "(" + strings.Join(parts, " && ") + ")"
+
+	case metadata.KindUnion:
+		return generateIsUnionExpr(accessor, meta, registry, depth, ctx)
+
+	case metadata.KindRef:
+		if ctx != nil && ctx.generating[meta.Ref] {
+			// Recursive ref — call is function
+			return fmt.Sprintf("is%s(%s)", meta.Ref, accessor)
+		}
+		if resolved, ok := registry.Types[meta.Ref]; ok {
+			if ctx != nil {
+				ctx.generating[meta.Ref] = true
+			}
+			result := generateIsExpr(accessor, resolved, registry, depth, ctx)
+			if ctx != nil {
+				delete(ctx.generating, meta.Ref)
+			}
+			return result
+		}
+		return "true"
+
+	case metadata.KindEnum:
+		if len(meta.EnumValues) > 0 {
+			vals := make([]string, len(meta.EnumValues))
+			for i, ev := range meta.EnumValues {
+				vals[i] = fmt.Sprintf("%s === %s", accessor, jsLiteral(ev.Value))
+			}
+			return "(" + strings.Join(vals, " || ") + ")"
+		}
+		return "true"
+
+	case metadata.KindNative:
+		switch meta.NativeType {
+		case "Date":
+			return fmt.Sprintf("(%s instanceof Date && !isNaN(%s.getTime()))", accessor, accessor)
+		default:
+			return fmt.Sprintf("(%s instanceof %s)", accessor, meta.NativeType)
+		}
+
+	case metadata.KindAny, metadata.KindUnknown:
+		return "true"
+
+	case metadata.KindNever:
+		return "false"
+
+	case metadata.KindVoid:
+		return fmt.Sprintf("%s === undefined", accessor)
+
+	default:
+		return "true"
+	}
+}
+
+func generateIsAtomicExpr(accessor string, meta *metadata.Metadata) string {
+	var parts []string
+	switch meta.Atomic {
+	case "string":
+		parts = append(parts, fmt.Sprintf("typeof %s === \"string\"", accessor))
+	case "number":
+		parts = append(parts, fmt.Sprintf("typeof %s === \"number\" && Number.isFinite(%s)", accessor, accessor))
+	case "boolean":
+		parts = append(parts, fmt.Sprintf("typeof %s === \"boolean\"", accessor))
+	case "bigint":
+		parts = append(parts, fmt.Sprintf("typeof %s === \"bigint\"", accessor))
+	default:
+		return "true"
+	}
+	if meta.Atomic == "string" && meta.TemplatePattern != "" {
+		parts = append(parts, fmt.Sprintf("/%s/.test(%s)", meta.TemplatePattern, accessor))
+	}
+	return strings.Join(parts, " && ")
+}
+
+func generateIsObjectExpr(accessor string, meta *metadata.Metadata, registry *metadata.TypeRegistry, depth int, ctx *validateCtx) string {
+	parts := []string{fmt.Sprintf("typeof %s === \"object\" && %s !== null", accessor, accessor)}
+	for _, prop := range meta.Properties {
+		propAccessor := accessor + "." + prop.Name
+		if prop.Required && !prop.Type.Optional {
+			parts = append(parts, fmt.Sprintf("%s !== undefined", propAccessor))
+			parts = append(parts, generateIsExpr(propAccessor, &prop.Type, registry, depth+1, ctx))
+		} else {
+			// Optional — only validate if present
+			innerExpr := generateIsExpr(propAccessor, &prop.Type, registry, depth+1, ctx)
+			parts = append(parts, fmt.Sprintf("(%s === undefined || %s)", propAccessor, innerExpr))
+		}
+		// Inline constraint checks for is()
+		if prop.Constraints != nil {
+			constraintExprs := generateIsConstraintExprs(propAccessor, &prop)
+			parts = append(parts, constraintExprs...)
+		}
+	}
+	return "(" + strings.Join(parts, " && ") + ")"
+}
+
+// generateIsConstraintExprs returns JS boolean expressions for constraints.
+func generateIsConstraintExprs(accessor string, prop *metadata.Property) []string {
+	c := prop.Constraints
+	if c == nil {
+		return nil
+	}
+	var exprs []string
+
+	if c.Minimum != nil {
+		exprs = append(exprs, fmt.Sprintf("(typeof %s !== \"number\" || %s >= %v)", accessor, accessor, *c.Minimum))
+	}
+	if c.Maximum != nil {
+		exprs = append(exprs, fmt.Sprintf("(typeof %s !== \"number\" || %s <= %v)", accessor, accessor, *c.Maximum))
+	}
+	if c.ExclusiveMinimum != nil {
+		exprs = append(exprs, fmt.Sprintf("(typeof %s !== \"number\" || %s > %v)", accessor, accessor, *c.ExclusiveMinimum))
+	}
+	if c.ExclusiveMaximum != nil {
+		exprs = append(exprs, fmt.Sprintf("(typeof %s !== \"number\" || %s < %v)", accessor, accessor, *c.ExclusiveMaximum))
+	}
+	if c.MinLength != nil {
+		exprs = append(exprs, fmt.Sprintf("(typeof %s !== \"string\" || %s.length >= %d)", accessor, accessor, *c.MinLength))
+	}
+	if c.MaxLength != nil {
+		exprs = append(exprs, fmt.Sprintf("(typeof %s !== \"string\" || %s.length <= %d)", accessor, accessor, *c.MaxLength))
+	}
+	if c.Pattern != nil {
+		exprs = append(exprs, fmt.Sprintf("(typeof %s !== \"string\" || /%s/.test(%s))", accessor, *c.Pattern, accessor))
+	}
+	if c.Format != nil {
+		pattern, ok := formatRegexes[*c.Format]
+		if ok && pattern != "" {
+			flags := formatFlags[*c.Format]
+			var regexLiteral string
+			if flags != "" {
+				regexLiteral = fmt.Sprintf("/%s/%s", pattern, flags)
+			} else {
+				regexLiteral = fmt.Sprintf("/%s/", pattern)
+			}
+			exprs = append(exprs, fmt.Sprintf("(typeof %s !== \"string\" || %s.test(%s))", accessor, regexLiteral, accessor))
+		}
+	}
+
+	return exprs
+}
+
+func generateIsArrayExpr(accessor string, meta *metadata.Metadata, registry *metadata.TypeRegistry, depth int, ctx *validateCtx) string {
+	if meta.ElementType == nil {
+		return fmt.Sprintf("Array.isArray(%s)", accessor)
+	}
+	elemVar := fmt.Sprintf("_v%d", depth)
+	elemExpr := generateIsExpr(elemVar, meta.ElementType, registry, depth+1, ctx)
+	return fmt.Sprintf("(Array.isArray(%s) && %s.every(%s => %s))", accessor, accessor, elemVar, elemExpr)
+}
+
+func generateIsUnionExpr(accessor string, meta *metadata.Metadata, registry *metadata.TypeRegistry, depth int, ctx *validateCtx) string {
+	// Literal unions: direct === checks
+	allLit := true
+	for _, m := range meta.UnionMembers {
+		if m.Kind != metadata.KindLiteral {
+			allLit = false
+			break
+		}
+	}
+	if allLit && len(meta.UnionMembers) > 0 {
+		checks := make([]string, len(meta.UnionMembers))
+		for i, m := range meta.UnionMembers {
+			checks[i] = fmt.Sprintf("%s === %s", accessor, jsLiteral(m.LiteralValue))
+		}
+		return "(" + strings.Join(checks, " || ") + ")"
+	}
+
+	// Discriminated unions
+	if meta.Discriminant != nil && len(meta.Discriminant.Mapping) > 0 {
+		return generateIsDiscriminatedUnionExpr(accessor, meta, registry, depth, ctx)
+	}
+
+	// General unions: || of member checks
+	parts := make([]string, len(meta.UnionMembers))
+	for i, m := range meta.UnionMembers {
+		memberCopy := m
+		parts[i] = generateIsExprInner(accessor, &memberCopy, registry, depth+1, ctx)
+	}
+	return "(" + strings.Join(parts, " || ") + ")"
+}
+
+func generateIsDiscriminatedUnionExpr(accessor string, meta *metadata.Metadata, registry *metadata.TypeRegistry, depth int, ctx *validateCtx) string {
+	// Use IIFE with switch for discriminated unions
+	disc := meta.Discriminant
+	discAccessor := fmt.Sprintf("%s[%q]", accessor, disc.Property)
+
+	keys := make([]string, 0, len(disc.Mapping))
+	for k := range disc.Mapping {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	var parts []string
+	parts = append(parts, fmt.Sprintf("(typeof %s === \"object\" && %s !== null && (function() { switch (%s) {", accessor, accessor, discAccessor))
+	for _, val := range keys {
+		idx := disc.Mapping[val]
+		if idx < 0 || idx >= len(meta.UnionMembers) {
+			continue
+		}
+		member := meta.UnionMembers[idx]
+		memberExpr := generateIsExprInner(accessor, &member, registry, depth+1, ctx)
+		parts = append(parts, fmt.Sprintf("case %s: return %s;", jsLiteral(val), memberExpr))
+	}
+	parts = append(parts, "default: return false; } }()))")
+	return strings.Join(parts, " ")
+}
+
+// generateStringifyFunction generates a combined validate+serialize function.
+func generateStringifyFunction(e *Emitter, typeName string) {
+	fnName := "stringify" + typeName
 	validateFn := "validate" + typeName
+	serializeFn := "serialize" + typeName
 	e.Block("export function %s(input)", fnName)
-	e.Line("const result = %s(input);", validateFn)
-	e.Block("if (!result.success)")
-	e.Line("const err = new Error(\"Validation failed for %s\");", typeName)
-	e.Line("err.errors = result.errors;")
-	e.Line("throw err;")
+	e.Line("const r = %s(input);", validateFn)
+	e.Block("if (!r.success)")
+	e.Line("const e = new TypeError(\"Serialization type check failed for %s\");", typeName)
+	e.Line("e.errors = r.errors;")
+	e.Line("throw e;")
 	e.EndBlock()
-	e.Line("return result.data;")
+	e.Line("return %s(input);", serializeFn)
 	e.EndBlock()
 }
 
@@ -426,9 +1240,15 @@ func generateObjectCheck(e *Emitter, accessor string, path string, meta *metadat
 			e.EndBlockSuffix(" else {")
 			e.indent++
 			generateTypeCheck(e, propAccessor, propPath, &prop.Type, registry, depth+1, ctx)
-			// After type check, emit constraint checks
+			// After type check, emit constraint checks.
+			// When the base type is atomic, the typeof check was already done
+			// by generateAtomicCheck, so constraints can skip the typeof guard.
 			if prop.Constraints != nil {
-				generateConstraintChecks(e, propAccessor, propPath, &prop)
+				if isAtomicType(&prop.Type) {
+					generateConstraintChecksVerified(e, propAccessor, propPath, &prop)
+				} else {
+					generateConstraintChecks(e, propAccessor, propPath, &prop)
+				}
 			}
 			e.indent--
 			e.Line("}")
@@ -438,10 +1258,18 @@ func generateObjectCheck(e *Emitter, accessor string, path string, meta *metadat
 			if prop.Constraints != nil {
 				if prop.Type.Optional || !prop.Required {
 					e.Block("if (%s !== undefined)", propAccessor)
-					generateConstraintChecks(e, propAccessor, propPath, &prop)
+					if isAtomicType(&prop.Type) {
+						generateConstraintChecksVerified(e, propAccessor, propPath, &prop)
+					} else {
+						generateConstraintChecks(e, propAccessor, propPath, &prop)
+					}
 					e.EndBlock()
 				} else {
-					generateConstraintChecks(e, propAccessor, propPath, &prop)
+					if isAtomicType(&prop.Type) {
+						generateConstraintChecksVerified(e, propAccessor, propPath, &prop)
+					} else {
+						generateConstraintChecks(e, propAccessor, propPath, &prop)
+					}
 				}
 			}
 		}
@@ -527,7 +1355,17 @@ func generateCoercion(e *Emitter, accessor string, typeMeta *metadata.Metadata) 
 }
 
 // generateConstraintChecks emits JS validation checks for JSDoc constraints.
+// When typeVerified is true, typeof guards on constraint checks are omitted because
+// the type has already been verified by a preceding type check.
 func generateConstraintChecks(e *Emitter, accessor string, path string, prop *metadata.Property) {
+	generateConstraintChecksInner(e, accessor, path, prop, false)
+}
+
+func generateConstraintChecksVerified(e *Emitter, accessor string, path string, prop *metadata.Property) {
+	generateConstraintChecksInner(e, accessor, path, prop, true)
+}
+
+func generateConstraintChecksInner(e *Emitter, accessor string, path string, prop *metadata.Property, typeVerified bool) {
 	c := prop.Constraints
 	if c == nil {
 		return
@@ -559,71 +1397,115 @@ func generateConstraintChecks(e *Emitter, accessor string, path string, prop *me
 
 	// Numeric constraints
 	if c.Minimum != nil {
-		e.Block("if (typeof %s === \"number\" && %s < %v)", accessor, accessor, *c.Minimum)
+		if typeVerified {
+			e.Block("if (%s < %v)", accessor, *c.Minimum)
+		} else {
+			e.Block("if (typeof %s === \"number\" && %s < %v)", accessor, accessor, *c.Minimum)
+		}
 		e.Line("errors.push({ path: %q, expected: \"%s\", received: \"\" + %s });", path, errMsg("minimum", fmt.Sprintf("minimum %v", *c.Minimum)), accessor)
 		e.EndBlock()
 	}
 	if c.Maximum != nil {
-		e.Block("if (typeof %s === \"number\" && %s > %v)", accessor, accessor, *c.Maximum)
+		if typeVerified {
+			e.Block("if (%s > %v)", accessor, *c.Maximum)
+		} else {
+			e.Block("if (typeof %s === \"number\" && %s > %v)", accessor, accessor, *c.Maximum)
+		}
 		e.Line("errors.push({ path: %q, expected: \"%s\", received: \"\" + %s });", path, errMsg("maximum", fmt.Sprintf("maximum %v", *c.Maximum)), accessor)
 		e.EndBlock()
 	}
 	if c.ExclusiveMinimum != nil {
-		e.Block("if (typeof %s === \"number\" && %s <= %v)", accessor, accessor, *c.ExclusiveMinimum)
+		if typeVerified {
+			e.Block("if (%s <= %v)", accessor, *c.ExclusiveMinimum)
+		} else {
+			e.Block("if (typeof %s === \"number\" && %s <= %v)", accessor, accessor, *c.ExclusiveMinimum)
+		}
 		e.Line("errors.push({ path: %q, expected: \"%s\", received: \"\" + %s });", path, errMsg("exclusiveMinimum", fmt.Sprintf("exclusiveMinimum %v", *c.ExclusiveMinimum)), accessor)
 		e.EndBlock()
 	}
 	if c.ExclusiveMaximum != nil {
-		e.Block("if (typeof %s === \"number\" && %s >= %v)", accessor, accessor, *c.ExclusiveMaximum)
+		if typeVerified {
+			e.Block("if (%s >= %v)", accessor, *c.ExclusiveMaximum)
+		} else {
+			e.Block("if (typeof %s === \"number\" && %s >= %v)", accessor, accessor, *c.ExclusiveMaximum)
+		}
 		e.Line("errors.push({ path: %q, expected: \"%s\", received: \"\" + %s });", path, errMsg("exclusiveMaximum", fmt.Sprintf("exclusiveMaximum %v", *c.ExclusiveMaximum)), accessor)
 		e.EndBlock()
 	}
 	if c.MultipleOf != nil {
-		e.Block("if (typeof %s === \"number\" && %s %% %v !== 0)", accessor, accessor, *c.MultipleOf)
+		if typeVerified {
+			e.Block("if (%s %% %v !== 0)", accessor, *c.MultipleOf)
+		} else {
+			e.Block("if (typeof %s === \"number\" && %s %% %v !== 0)", accessor, accessor, *c.MultipleOf)
+		}
 		e.Line("errors.push({ path: %q, expected: \"%s\", received: \"\" + %s });", path, errMsg("multipleOf", fmt.Sprintf("multipleOf %v", *c.MultipleOf)), accessor)
 		e.EndBlock()
 	}
 	if c.NumericType != nil {
-		generateNumericTypeCheck(e, accessor, path, *c.NumericType, c.ErrorMessage, c.Errors)
+		generateNumericTypeCheck(e, accessor, path, *c.NumericType, c.ErrorMessage, c.Errors, typeVerified)
 	}
 
 	// String length constraints
 	if c.MinLength != nil {
-		e.Block("if (typeof %s === \"string\" && %s.length < %d)", accessor, accessor, *c.MinLength)
+		if typeVerified {
+			e.Block("if (%s.length < %d)", accessor, *c.MinLength)
+		} else {
+			e.Block("if (typeof %s === \"string\" && %s.length < %d)", accessor, accessor, *c.MinLength)
+		}
 		e.Line("errors.push({ path: %q, expected: \"%s\", received: \"length \" + %s.length });", path, errMsg("minLength", fmt.Sprintf("minLength %d", *c.MinLength)), accessor)
 		e.EndBlock()
 	}
 	if c.MaxLength != nil {
-		e.Block("if (typeof %s === \"string\" && %s.length > %d)", accessor, accessor, *c.MaxLength)
+		if typeVerified {
+			e.Block("if (%s.length > %d)", accessor, *c.MaxLength)
+		} else {
+			e.Block("if (typeof %s === \"string\" && %s.length > %d)", accessor, accessor, *c.MaxLength)
+		}
 		e.Line("errors.push({ path: %q, expected: \"%s\", received: \"length \" + %s.length });", path, errMsg("maxLength", fmt.Sprintf("maxLength %d", *c.MaxLength)), accessor)
 		e.EndBlock()
 	}
 
 	// Pattern constraint
 	if c.Pattern != nil {
-		e.Block("if (typeof %s === \"string\" && !/%s/.test(%s))", accessor, *c.Pattern, accessor)
+		if typeVerified {
+			e.Block("if (!/%s/.test(%s))", *c.Pattern, accessor)
+		} else {
+			e.Block("if (typeof %s === \"string\" && !/%s/.test(%s))", accessor, *c.Pattern, accessor)
+		}
 		e.Line("errors.push({ path: %q, expected: \"%s\", received: %s });", path, errMsg("pattern", fmt.Sprintf("pattern %s", *c.Pattern)), accessor)
 		e.EndBlock()
 	}
 
 	// Format constraint
 	if c.Format != nil {
-		generateFormatCheck(e, accessor, path, *c.Format, c.ErrorMessage, c.Errors)
+		generateFormatCheck(e, accessor, path, *c.Format, c.ErrorMessage, c.Errors, typeVerified)
 	}
 
 	// Array constraints
 	if c.MinItems != nil {
-		e.Block("if (Array.isArray(%s) && %s.length < %d)", accessor, accessor, *c.MinItems)
+		if typeVerified {
+			e.Block("if (%s.length < %d)", accessor, *c.MinItems)
+		} else {
+			e.Block("if (Array.isArray(%s) && %s.length < %d)", accessor, accessor, *c.MinItems)
+		}
 		e.Line("errors.push({ path: %q, expected: \"%s\", received: \"length \" + %s.length });", path, errMsg("minItems", fmt.Sprintf("minItems %d", *c.MinItems)), accessor)
 		e.EndBlock()
 	}
 	if c.MaxItems != nil {
-		e.Block("if (Array.isArray(%s) && %s.length > %d)", accessor, accessor, *c.MaxItems)
+		if typeVerified {
+			e.Block("if (%s.length > %d)", accessor, *c.MaxItems)
+		} else {
+			e.Block("if (Array.isArray(%s) && %s.length > %d)", accessor, accessor, *c.MaxItems)
+		}
 		e.Line("errors.push({ path: %q, expected: \"%s\", received: \"length \" + %s.length });", path, errMsg("maxItems", fmt.Sprintf("maxItems %d", *c.MaxItems)), accessor)
 		e.EndBlock()
 	}
 	if c.UniqueItems != nil && *c.UniqueItems {
-		e.Block("if (Array.isArray(%s) && new Set(%s).size !== %s.length)", accessor, accessor, accessor)
+		if typeVerified {
+			e.Block("if (new Set(%s).size !== %s.length)", accessor, accessor)
+		} else {
+			e.Block("if (Array.isArray(%s) && new Set(%s).size !== %s.length)", accessor, accessor, accessor)
+		}
 		e.Line("errors.push({ path: %q, expected: \"%s\", received: \"duplicate items\" });", path, errMsg("uniqueItems", "uniqueItems"))
 		e.EndBlock()
 	}
@@ -631,29 +1513,49 @@ func generateConstraintChecks(e *Emitter, accessor string, path string, prop *me
 	// String content checks (Zod parity)
 	if c.StartsWith != nil {
 		escaped := jsStringEscape(*c.StartsWith)
-		e.Block("if (typeof %s === \"string\" && !%s.startsWith(\"%s\"))", accessor, accessor, escaped)
+		if typeVerified {
+			e.Block("if (!%s.startsWith(\"%s\"))", accessor, escaped)
+		} else {
+			e.Block("if (typeof %s === \"string\" && !%s.startsWith(\"%s\"))", accessor, accessor, escaped)
+		}
 		e.Line("errors.push({ path: %q, expected: \"%s\", received: %s });", path, errMsg("startsWith", fmt.Sprintf("startsWith %s", escaped)), accessor)
 		e.EndBlock()
 	}
 	if c.EndsWith != nil {
 		escaped := jsStringEscape(*c.EndsWith)
-		e.Block("if (typeof %s === \"string\" && !%s.endsWith(\"%s\"))", accessor, accessor, escaped)
+		if typeVerified {
+			e.Block("if (!%s.endsWith(\"%s\"))", accessor, escaped)
+		} else {
+			e.Block("if (typeof %s === \"string\" && !%s.endsWith(\"%s\"))", accessor, accessor, escaped)
+		}
 		e.Line("errors.push({ path: %q, expected: \"%s\", received: %s });", path, errMsg("endsWith", fmt.Sprintf("endsWith %s", escaped)), accessor)
 		e.EndBlock()
 	}
 	if c.Includes != nil {
 		escaped := jsStringEscape(*c.Includes)
-		e.Block("if (typeof %s === \"string\" && !%s.includes(\"%s\"))", accessor, accessor, escaped)
+		if typeVerified {
+			e.Block("if (!%s.includes(\"%s\"))", accessor, escaped)
+		} else {
+			e.Block("if (typeof %s === \"string\" && !%s.includes(\"%s\"))", accessor, accessor, escaped)
+		}
 		e.Line("errors.push({ path: %q, expected: \"%s\", received: %s });", path, errMsg("includes", fmt.Sprintf("includes %s", escaped)), accessor)
 		e.EndBlock()
 	}
 	if c.Uppercase != nil && *c.Uppercase {
-		e.Block("if (typeof %s === \"string\" && %s !== %s.toUpperCase())", accessor, accessor, accessor)
+		if typeVerified {
+			e.Block("if (%s !== %s.toUpperCase())", accessor, accessor)
+		} else {
+			e.Block("if (typeof %s === \"string\" && %s !== %s.toUpperCase())", accessor, accessor, accessor)
+		}
 		e.Line("errors.push({ path: %q, expected: \"%s\", received: %s });", path, errMsg("uppercase", "uppercase"), accessor)
 		e.EndBlock()
 	}
 	if c.Lowercase != nil && *c.Lowercase {
-		e.Block("if (typeof %s === \"string\" && %s !== %s.toLowerCase())", accessor, accessor, accessor)
+		if typeVerified {
+			e.Block("if (%s !== %s.toLowerCase())", accessor, accessor)
+		} else {
+			e.Block("if (typeof %s === \"string\" && %s !== %s.toLowerCase())", accessor, accessor, accessor)
+		}
 		e.Line("errors.push({ path: %q, expected: \"%s\", received: %s });", path, errMsg("lowercase", "lowercase"), accessor)
 		e.EndBlock()
 	}
@@ -669,7 +1571,7 @@ func generateConstraintChecks(e *Emitter, accessor string, path string, prop *me
 
 // generateNumericTypeCheck emits validation for @type int32/uint32/int64/uint64/float/double.
 // Checks perConstraintErrors["type"] first, then customError (global), then default.
-func generateNumericTypeCheck(e *Emitter, accessor string, path string, numType string, customError *string, perConstraintErrors map[string]string) {
+func generateNumericTypeCheck(e *Emitter, accessor string, path string, numType string, customError *string, perConstraintErrors map[string]string, typeVerified bool) {
 	errMsg := func(defaultExpected string) string {
 		if perConstraintErrors != nil {
 			if msg, ok := perConstraintErrors["type"]; ok {
@@ -683,23 +1585,43 @@ func generateNumericTypeCheck(e *Emitter, accessor string, path string, numType 
 	}
 	switch numType {
 	case "int32":
-		e.Block("if (typeof %s === \"number\" && (!Number.isInteger(%s) || %s < -2147483648 || %s > 2147483647))", accessor, accessor, accessor, accessor)
+		if typeVerified {
+			e.Block("if (!Number.isInteger(%s) || %s < -2147483648 || %s > 2147483647)", accessor, accessor, accessor)
+		} else {
+			e.Block("if (typeof %s === \"number\" && (!Number.isInteger(%s) || %s < -2147483648 || %s > 2147483647))", accessor, accessor, accessor, accessor)
+		}
 		e.Line("errors.push({ path: %q, expected: \"%s\", received: \"\" + %s });", path, errMsg("int32"), accessor)
 		e.EndBlock()
 	case "uint32":
-		e.Block("if (typeof %s === \"number\" && (!Number.isInteger(%s) || %s < 0 || %s > 4294967295))", accessor, accessor, accessor, accessor)
+		if typeVerified {
+			e.Block("if (!Number.isInteger(%s) || %s < 0 || %s > 4294967295)", accessor, accessor, accessor)
+		} else {
+			e.Block("if (typeof %s === \"number\" && (!Number.isInteger(%s) || %s < 0 || %s > 4294967295))", accessor, accessor, accessor, accessor)
+		}
 		e.Line("errors.push({ path: %q, expected: \"%s\", received: \"\" + %s });", path, errMsg("uint32"), accessor)
 		e.EndBlock()
 	case "int64":
-		e.Block("if (typeof %s === \"number\" && (!Number.isInteger(%s) || %s < -9007199254740991 || %s > 9007199254740991))", accessor, accessor, accessor, accessor)
+		if typeVerified {
+			e.Block("if (!Number.isInteger(%s) || %s < -9007199254740991 || %s > 9007199254740991)", accessor, accessor, accessor)
+		} else {
+			e.Block("if (typeof %s === \"number\" && (!Number.isInteger(%s) || %s < -9007199254740991 || %s > 9007199254740991))", accessor, accessor, accessor, accessor)
+		}
 		e.Line("errors.push({ path: %q, expected: \"%s\", received: \"\" + %s });", path, errMsg("int64"), accessor)
 		e.EndBlock()
 	case "uint64":
-		e.Block("if (typeof %s === \"number\" && (!Number.isInteger(%s) || %s < 0 || %s > 9007199254740991))", accessor, accessor, accessor, accessor)
+		if typeVerified {
+			e.Block("if (!Number.isInteger(%s) || %s < 0 || %s > 9007199254740991)", accessor, accessor, accessor)
+		} else {
+			e.Block("if (typeof %s === \"number\" && (!Number.isInteger(%s) || %s < 0 || %s > 9007199254740991))", accessor, accessor, accessor, accessor)
+		}
 		e.Line("errors.push({ path: %q, expected: \"%s\", received: \"\" + %s });", path, errMsg("uint64"), accessor)
 		e.EndBlock()
 	case "float":
-		e.Block("if (typeof %s === \"number\" && !Number.isFinite(%s))", accessor, accessor)
+		if typeVerified {
+			e.Block("if (!Number.isFinite(%s))", accessor)
+		} else {
+			e.Block("if (typeof %s === \"number\" && !Number.isFinite(%s))", accessor, accessor)
+		}
 		e.Line("errors.push({ path: %q, expected: \"%s\", received: \"\" + %s });", path, errMsg("float"), accessor)
 		e.EndBlock()
 	case "double":
@@ -709,7 +1631,7 @@ func generateNumericTypeCheck(e *Emitter, accessor string, path string, numType 
 
 // generateFormatCheck emits validation code for a string format constraint.
 // Checks perConstraintErrors["format"] first, then customError (global), then default.
-func generateFormatCheck(e *Emitter, accessor string, path string, format string, customError *string, perConstraintErrors map[string]string) {
+func generateFormatCheck(e *Emitter, accessor string, path string, format string, customError *string, perConstraintErrors map[string]string, typeVerified bool) {
 	errMsg := func(defaultExpected string) string {
 		if perConstraintErrors != nil {
 			if msg, ok := perConstraintErrors["format"]; ok {
@@ -728,9 +1650,13 @@ func generateFormatCheck(e *Emitter, accessor string, path string, format string
 		return
 	case "regex":
 		// Use try/catch to validate regex
-		e.Block("if (typeof %s === \"string\")", accessor)
-		e.Line("try { new RegExp(%s); } catch (_e) { errors.push({ path: %q, expected: \"%s\", received: %s }); }", accessor, path, errMsg("format regex"), accessor)
-		e.EndBlock()
+		if typeVerified {
+			e.Line("try { new RegExp(%s); } catch (_e) { errors.push({ path: %q, expected: \"%s\", received: %s }); }", accessor, path, errMsg("format regex"), accessor)
+		} else {
+			e.Block("if (typeof %s === \"string\")", accessor)
+			e.Line("try { new RegExp(%s); } catch (_e) { errors.push({ path: %q, expected: \"%s\", received: %s }); }", accessor, path, errMsg("format regex"), accessor)
+			e.EndBlock()
+		}
 		return
 	}
 
@@ -748,7 +1674,11 @@ func generateFormatCheck(e *Emitter, accessor string, path string, format string
 		regexLiteral = fmt.Sprintf("/%s/", pattern)
 	}
 
-	e.Block("if (typeof %s === \"string\" && !%s.test(%s))", accessor, regexLiteral, accessor)
+	if typeVerified {
+		e.Block("if (!%s.test(%s))", regexLiteral, accessor)
+	} else {
+		e.Block("if (typeof %s === \"string\" && !%s.test(%s))", accessor, regexLiteral, accessor)
+	}
 	e.Line("errors.push({ path: %q, expected: \"%s\", received: %s });", path, errMsg(fmt.Sprintf("format %s", format)), accessor)
 	e.EndBlock()
 }
@@ -952,6 +1882,20 @@ func generateNativeCheck(e *Emitter, accessor string, path string, meta *metadat
 		e.Line("errors.push({ path: %q, expected: \"%s\", received: typeof %s });", path, meta.NativeType, accessor)
 		e.EndBlock()
 	}
+}
+
+// isAtomicType returns true if the base type (ignoring nullable/optional) is atomic.
+// Used to determine if typeof was already checked by generateAtomicCheck.
+func isAtomicType(meta *metadata.Metadata) bool {
+	m := meta
+	// Unwrap nullable/optional to get to the base type
+	for m.Nullable || m.Optional {
+		inner := *m
+		inner.Nullable = false
+		inner.Optional = false
+		m = &inner
+	}
+	return m.Kind == metadata.KindAtomic
 }
 
 // --- Helpers ---

@@ -1,0 +1,89 @@
+{
+  "openapi": "3.2.0",
+  "info": { "title": "Versioned API", "version": "1.0.0" },
+  "paths": {
+    "/v1/orders": {
+      "get": {
+        "operationId": "listOrders",
+        "x-tsgonest-controller": "OrdersController",
+        "x-tsgonest-method": "listOrders",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": { "$ref": "#/components/schemas/OrderV1" }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/orders": {
+      "get": {
+        "operationId": "listOrdersV2",
+        "x-tsgonest-controller": "OrdersController",
+        "x-tsgonest-method": "listOrders",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": { "$ref": "#/components/schemas/OrderV2" }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "operationId": "healthCheck",
+        "x-tsgonest-controller": "HealthController",
+        "x-tsgonest-method": "check",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": { "type": "string" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "OrderV1": {
+        "type": "object",
+        "required": ["id", "total"],
+        "properties": {
+          "id": { "type": "string" },
+          "total": { "type": "number" }
+        }
+      },
+      "OrderV2": {
+        "type": "object",
+        "required": ["id", "total", "currency"],
+        "properties": {
+          "id": { "type": "string" },
+          "total": { "type": "number" },
+          "currency": { "type": "string" }
+        }
+      }
+    }
+  }
+}

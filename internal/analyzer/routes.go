@@ -99,6 +99,9 @@ type RouteParameter struct {
 	// Name is the parameter name (e.g., "id" from @Param("id")).
 	// For @Body() without argument, Name is empty.
 	Name string
+	// LocalName is the local variable name from the method signature (e.g., "body", "id").
+	// Used by the rewriter to inject validation at the correct parameter.
+	LocalName string
 	// Type is the resolved type metadata.
 	Type metadata.Metadata
 	// Required indicates whether the parameter is required.
@@ -452,6 +455,7 @@ func (a *ControllerAnalyzer) analyzeParameter(paramNode *ast.Node, className str
 	// Look for parameter decorators
 	category := ""
 	paramName := ""
+	isFormData := false
 	var unresolvedDecorators []string // track custom decorators without @in
 
 	for _, dec := range paramNode.Decorators() {
@@ -466,6 +470,10 @@ func (a *ControllerAnalyzer) analyzeParameter(paramNode *ast.Node, className str
 			if len(info.Args) > 0 {
 				paramName = info.Args[0]
 			}
+		case "FormDataBody":
+			category = "body"
+			isFormData = true
+			// FormDataBody uses a multer factory arg, not a field name — no paramName to extract
 		case "Query":
 			category = "query"
 			if len(info.Args) > 0 {
@@ -529,12 +537,26 @@ func (a *ControllerAnalyzer) analyzeParameter(paramNode *ast.Node, className str
 	// Determine if required (not optional, not nullable)
 	required := paramDecl.QuestionToken == nil && !paramType.Optional && !paramType.Nullable
 
-	return &RouteParameter{
-		Category: category,
-		Name:     paramName,
-		Type:     paramType,
-		Required: required,
+	// Extract local variable name from the parameter declaration
+	localName := ""
+	if paramDecl.Name() != nil {
+		localName = paramDecl.Name().Text()
 	}
+
+	rp := &RouteParameter{
+		Category:  category,
+		Name:      paramName,
+		LocalName: localName,
+		Type:      paramType,
+		Required:  required,
+	}
+
+	// @FormDataBody always uses multipart/form-data content type
+	if isFormData {
+		rp.ContentType = "multipart/form-data"
+	}
+
+	return rp
 }
 
 // autoEnableCoercion sets Coerce=true on number/boolean atomic properties in query/path

@@ -1,0 +1,236 @@
+{
+  "openapi": "3.2.0",
+  "info": { "title": "File Upload API", "version": "1.0.0" },
+  "paths": {
+    "/upload/avatar": {
+      "post": {
+        "operationId": "uploadAvatar",
+        "x-tsgonest-controller": "UploadsController",
+        "x-tsgonest-method": "uploadAvatar",
+        "summary": "Upload a user avatar",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": ["file"],
+                "properties": {
+                  "file": { "type": "string", "format": "binary" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/UploadResult" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/upload/gallery": {
+      "post": {
+        "operationId": "uploadGallery",
+        "x-tsgonest-controller": "UploadsController",
+        "x-tsgonest-method": "uploadGallery",
+        "summary": "Upload multiple gallery photos",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": ["photos", "albumName"],
+                "properties": {
+                  "photos": {
+                    "type": "array",
+                    "items": { "type": "string", "format": "binary" },
+                    "description": "Array of photo files"
+                  },
+                  "albumName": { "type": "string" },
+                  "description": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/UploadResult" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/upload/document": {
+      "post": {
+        "operationId": "uploadDocument",
+        "x-tsgonest-controller": "UploadsController",
+        "x-tsgonest-method": "uploadDocument",
+        "summary": "Upload a document with cover image",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": ["document", "title"],
+                "properties": {
+                  "document": { "type": "string", "format": "binary" },
+                  "coverImage": { "type": "string", "format": "binary" },
+                  "title": { "type": "string" },
+                  "tags": {
+                    "type": "array",
+                    "items": { "type": "string" }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/UploadResult" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/reports/{id}/pdf": {
+      "get": {
+        "operationId": "downloadReport",
+        "x-tsgonest-controller": "ReportsController",
+        "x-tsgonest-method": "downloadReport",
+        "summary": "Download report as PDF",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "PDF file",
+            "content": {
+              "application/pdf": {
+                "schema": { "type": "string", "format": "binary" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/reports/{id}/csv": {
+      "get": {
+        "operationId": "exportReport",
+        "x-tsgonest-controller": "ReportsController",
+        "x-tsgonest-method": "exportReport",
+        "summary": "Export report as CSV",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "CSV text",
+            "content": {
+              "text/csv": {
+                "schema": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/events/stream": {
+      "get": {
+        "operationId": "streamEvents",
+        "x-tsgonest-controller": "EventsController",
+        "x-tsgonest-method": "streamEvents",
+        "summary": "Stream typed events",
+        "responses": {
+          "200": {
+            "description": "Typed SSE stream",
+            "content": {
+              "text/event-stream": {
+                "schema": { "type": "string" },
+                "itemSchema": {
+                  "type": "object",
+                  "required": ["data"],
+                  "properties": {
+                    "data": {
+                      "type": "string",
+                      "contentMediaType": "application/json",
+                      "contentSchema": { "$ref": "#/components/schemas/StreamEvent" }
+                    },
+                    "event": { "type": "string" },
+                    "id": { "type": "string" },
+                    "retry": { "type": "integer" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/events/raw": {
+      "get": {
+        "operationId": "streamRaw",
+        "x-tsgonest-controller": "EventsController",
+        "x-tsgonest-method": "streamRaw",
+        "summary": "Stream raw untyped events",
+        "responses": {
+          "200": {
+            "description": "Untyped SSE stream",
+            "content": {
+              "text/event-stream": {
+                "schema": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "UploadResult": {
+        "type": "object",
+        "required": ["id", "url"],
+        "properties": {
+          "id": { "type": "string" },
+          "url": { "type": "string" }
+        }
+      },
+      "StreamEvent": {
+        "type": "object",
+        "required": ["type", "payload"],
+        "properties": {
+          "type": { "type": "string" },
+          "payload": { "type": "object", "additionalProperties": true }
+        }
+      }
+    }
+  }
+}

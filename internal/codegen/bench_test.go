@@ -138,5 +138,69 @@ func BenchmarkGenerateCompanionFiles(b *testing.B) {
 	}
 }
 
+// Benchmark is() function codegen for a simple object
+func BenchmarkGenerateIs_Simple(b *testing.B) {
+	registry := metadata.NewTypeRegistry()
+	meta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Name: "SimpleDto",
+		Properties: []metadata.Property{
+			{Name: "name", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+			{Name: "age", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "number"}, Required: true},
+			{Name: "email", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: false},
+		},
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		e := NewEmitter()
+		ctx := &validateCtx{generating: map[string]bool{"SimpleDto": true}}
+		generateIsFunction(e, "SimpleDto", meta, registry, ctx)
+		_ = e.String()
+	}
+}
+
+// Benchmark is() function codegen for a complex nested object
+func BenchmarkGenerateIs_Complex(b *testing.B) {
+	registry := metadata.NewTypeRegistry()
+	addressMeta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Name: "Address",
+		Properties: []metadata.Property{
+			{Name: "street", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+			{Name: "city", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+			{Name: "state", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+			{Name: "zip", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+		},
+	}
+	registry.Register("Address", addressMeta)
+
+	meta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Name: "UserDto",
+		Properties: []metadata.Property{
+			{Name: "id", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "number"}, Required: true},
+			{Name: "name", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+			{Name: "email", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true,
+				Constraints: &metadata.Constraints{Format: strPtr("email")}},
+			{Name: "address", Type: metadata.Metadata{Kind: metadata.KindRef, Ref: "Address"}, Required: true},
+			{Name: "tags", Type: metadata.Metadata{Kind: metadata.KindArray, ElementType: &metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}}, Required: false},
+			{Name: "role", Type: metadata.Metadata{Kind: metadata.KindUnion, UnionMembers: []metadata.Metadata{
+				{Kind: metadata.KindLiteral, LiteralValue: "admin"},
+				{Kind: metadata.KindLiteral, LiteralValue: "user"},
+				{Kind: metadata.KindLiteral, LiteralValue: "guest"},
+			}}, Required: true},
+		},
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		e := NewEmitter()
+		ctx := &validateCtx{generating: map[string]bool{"UserDto": true}}
+		generateIsFunction(e, "UserDto", meta, registry, ctx)
+		_ = e.String()
+	}
+}
+
 // Helper
 func strPtr(s string) *string { return &s }

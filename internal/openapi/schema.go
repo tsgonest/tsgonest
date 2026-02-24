@@ -3,6 +3,7 @@ package openapi
 
 import (
 	"encoding/json"
+	"regexp"
 
 	"github.com/tsgonest/tsgonest/internal/metadata"
 )
@@ -466,30 +467,13 @@ func applyConstraints(schema *Schema, c *metadata.Constraints) {
 	// startsWith/endsWith/includes → pattern (best approximation).
 	// Note: these override any existing pattern. If @pattern is also set, it takes precedence above.
 	if c.StartsWith != nil && c.Pattern == nil {
-		p := "^" + regexEscapeForPattern(*c.StartsWith)
+		p := "^" + regexp.QuoteMeta(*c.StartsWith)
 		schema.Pattern = p
 	}
 	if c.EndsWith != nil && c.Pattern == nil && c.StartsWith == nil {
-		p := regexEscapeForPattern(*c.EndsWith) + "$"
+		p := regexp.QuoteMeta(*c.EndsWith) + "$"
 		schema.Pattern = p
 	}
-}
-
-// regexEscapeForPattern escapes regex special characters in a string for use
-// in an OpenAPI pattern property.
-func regexEscapeForPattern(s string) string {
-	special := `\.+*?^${}()|[]`
-	var result []byte
-	for _, ch := range []byte(s) {
-		for _, sp := range []byte(special) {
-			if ch == sp {
-				result = append(result, '\\')
-				break
-			}
-		}
-		result = append(result, ch)
-	}
-	return string(result)
 }
 
 // wrapNullable wraps a schema to also allow null.

@@ -2,25 +2,36 @@
   "name": "@tsgonest/types",
   "version": "0.0.1",
   "description": "Zero-runtime branded types for tsgonest validation constraints — type-safe alternative to JSDoc tags",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "main": "dist/index.cjs",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.mts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.mjs",
-      "require": "./dist/index.js"
+      "import": {
+        "types": "./dist/index.d.mts",
+        "default": "./dist/index.mjs"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
     },
     "./tags": {
-      "types": "./dist/tags.d.ts",
-      "import": "./dist/tags.mjs",
-      "require": "./dist/tags.js"
+      "import": {
+        "types": "./dist/tags.d.mts",
+        "default": "./dist/tags.mjs"
+      },
+      "require": {
+        "types": "./dist/tags.d.cts",
+        "default": "./dist/tags.cjs"
+      }
     }
   },
   "files": [
     "dist"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsdown",
     "test": "tsc --noEmit"
   },
   "keywords": [
@@ -38,6 +49,7 @@
     "url": "https://github.com/tsgonest/tsgonest"
   },
   "devDependencies": {
+    "tsdown": "^0.20.3",
     "typescript": "^5.7.0"
   }
 }

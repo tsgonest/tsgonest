@@ -16,7 +16,7 @@ This page compares tsgonest with the standard NestJS development setup: `@nestjs
 | **OpenAPI** | `@nestjs/swagger` + decorators | Static analysis, zero decorators |
 | **Type safety** | Decorators can diverge from types | Types are the single source of truth |
 | **Runtime dependencies** | 5+ packages | 1 lightweight runtime package |
-| **Build output** | JavaScript only | JS + companions + manifest + OpenAPI |
+| **Build output** | JavaScript only | JS + companions + OpenAPI |
 
 ---
 
@@ -29,7 +29,7 @@ tsgonest uses Microsoft's `typescript-go` (tsgo) — a native Go port of the Typ
 | Tool | Time | What it does |
 | --- | --- | --- |
 | `tsc` | 559ms | Compile only |
-| `tsgonest build` | 128ms | Compile + companions + manifest + OpenAPI |
+| `tsgonest build` | 128ms | Compile + companions + OpenAPI |
 
 | Project size | `nest build` (tsc) | `tsgonest build` (tsgo) |
 | --- | --- | --- |
@@ -37,7 +37,7 @@ tsgonest uses Microsoft's `typescript-go` (tsgo) — a native Go port of the Typ
 | Medium (~200 files) | ~8s | ~1s |
 | Large (120 controllers, 838 routes) | ~60s+ | ~19s (cold), ~1.1s (cached) |
 
-tsgonest also caches the post-processing step (companion generation, manifest, OpenAPI). If your source files haven't changed, only the tsgo emit runs.
+tsgonest also caches the post-processing step (companion generation, OpenAPI). If your source files haven't changed, only the tsgo emit runs.
 
 ---
 
@@ -97,11 +97,7 @@ export interface CreateUserDto {
 }
 ```
 
-```ts title="src/main.ts"
-import { TsgonestValidationPipe } from '@tsgonest/runtime';
-
-app.useGlobalPipes(new TsgonestValidationPipe({ distDir: 'dist' }));
-```
+Validation is injected at compile time — no runtime setup needed.
 
 Advantages:
 - **Types are the source of truth** — no duplication
@@ -310,9 +306,7 @@ export interface UserResponse {
 }
 ```
 
-```ts
-app.useGlobalInterceptors(new TsgonestFastInterceptor({ distDir: 'dist' }));
-```
+Serialization is injected at compile time — return values are automatically wrapped with `transformTypeName()`.
 
 The generated serializer uses string concatenation with known property names — **~1.4x faster** than `JSON.stringify` for simple DTOs (benchmarked: 13.2M ops/s vs 9.8M ops/s). For complex nested objects the performance is comparable to `JSON.stringify`. Only declared properties are included in the output (no `@Exclude` needed — if it's not in the type, it's not serialized).
 
@@ -382,7 +376,7 @@ export default defineConfig({
 
 ### Step 3: Convert DTOs gradually
 
-You can convert DTOs one at a time. tsgonest's `TsgonestValidationPipe` passes through types that don't have companions, so your existing `class-validator` decorators continue working alongside tsgonest-generated validators.
+You can convert DTOs one at a time. tsgonest's compile-time injection only activates for types that have companion files, so your existing `class-validator` decorators continue working alongside tsgonest-generated validators.
 
 ```ts
 // Before: class-validator
@@ -398,16 +392,9 @@ export interface CreateUserDto {
 }
 ```
 
-### Step 4: Replace global pipes/interceptors
+### Step 4: Remove old pipes and dependencies
 
-```diff title="src/main.ts"
-- import { ValidationPipe } from '@nestjs/common';
-+ import { TsgonestValidationPipe, TsgonestFastInterceptor } from '@tsgonest/runtime';
-
-- app.useGlobalPipes(new ValidationPipe({ transform: true }));
-+ app.useGlobalPipes(new TsgonestValidationPipe({ distDir: 'dist' }));
-+ app.useGlobalInterceptors(new TsgonestFastInterceptor({ distDir: 'dist' }));
-```
+Remove `ValidationPipe` from your `main.ts` — tsgonest injects validation at compile time, so no runtime pipe is needed.
 
 ### Step 5: Remove old dependencies
 

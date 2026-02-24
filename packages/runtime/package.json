@@ -1,38 +1,28 @@
 {
   "name": "@tsgonest/runtime",
   "version": "0.0.1",
-  "description": "Runtime utilities for tsgonest — validation pipe, serialization interceptor, and companion file discovery",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "description": "Runtime utilities for tsgonest — config helpers and error types",
+  "main": "dist/index.cjs",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.mts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.mjs",
-      "require": "./dist/index.js"
+      "import": {
+        "types": "./dist/index.d.mts",
+        "default": "./dist/index.mjs"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
     }
   },
   "files": [
     "dist"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsdown",
     "test": "vitest --run"
-  },
-  "peerDependencies": {
-    "@nestjs/common": ">=9.0.0",
-    "@nestjs/core": ">=9.0.0",
-    "rxjs": ">=7.0.0"
-  },
-  "peerDependenciesMeta": {
-    "@nestjs/common": {
-      "optional": true
-    },
-    "@nestjs/core": {
-      "optional": true
-    },
-    "rxjs": {
-      "optional": true
-    }
   },
   "keywords": [
     "nestjs",
@@ -42,13 +32,26 @@
     "openapi",
     "tsgonest"
   ],
+  "dependencies": {
+    "reflect-metadata": "^0.2.2"
+  },
+  "peerDependencies": {
+    "@nestjs/common": "^10.0.0 || ^11.0.0",
+    "@nestjs/core": "^10.0.0 || ^11.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@nestjs/common": {
+      "optional": true
+    },
+    "@nestjs/core": {
+      "optional": true
+    }
+  },
   "devDependencies": {
-    "@nestjs/common": "^10.0.0",
-    "@nestjs/core": "^10.0.0",
     "@types/node": "^25.3.0",
-    "reflect-metadata": "^0.2.0",
-    "rxjs": "^7.8.0",
-    "typescript": "^5.7.0"
+    "tsdown": "^0.20.3",
+    "typescript": "^5.7.0",
+    "vitest": "^4.0.0"
   },
   "license": "MIT",
   "repository": {

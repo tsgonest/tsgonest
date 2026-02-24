@@ -1,9 +1,9 @@
 ---
 title: Serialization & Runtime
-description: Fast JSON serializers, the manifest system, and @tsgonest/runtime NestJS integration.
+description: Fast JSON serializers and compile-time NestJS integration.
 ---
 
-tsgonest generates fast, schema-aware JSON serializers alongside validators, and provides `@tsgonest/runtime` — a lightweight NestJS integration layer that wires everything together automatically.
+tsgonest generates fast, schema-aware JSON serializers alongside validators. Serialization is injected at compile time — the controller rewriter wraps return statements with `transformTypeName()` calls, so no runtime interceptors or pipes are needed.
 
 ## Generated serializers
 
@@ -89,47 +89,73 @@ export function serializeUpdateUserDto(input) {
 
 ---
 
-## The manifest
+## Compile-time NestJS integration
 
-After generating companions, tsgonest writes `__tsgonest_manifest.json` in your output directory. This file maps type names to their companion files and controller methods to their return types:
+tsgonest injects validation and serialization directly into your controller JavaScript at build time. No runtime pipes, interceptors, or manifest files are needed.
 
-```json title="dist/__tsgonest_manifest.json"
-{
-  "version": 1,
-  "companions": {
-    "CreateUserDto": {
-      "file": "./user.dto.CreateUserDto.tsgonest.js",
-      "validate": "validateCreateUserDto",
-      "assert": "assertCreateUserDto",
-      "serialize": "serializeCreateUserDto"
-    },
-    "UserResponse": {
-      "file": "./user.dto.UserResponse.tsgonest.js",
-      "validate": "validateUserResponse",
-      "assert": "assertUserResponse",
-      "serialize": "serializeUserResponse"
-    }
-  },
-  "routes": {
-    "UserController.create": {
-      "returnType": "UserResponse",
-      "isArray": false
-    },
-    "UserController.findAll": {
-      "returnType": "UserResponse",
-      "isArray": true
-    }
+### How it works
+
+During `tsgonest build`, the controller rewriter:
+
+1. **Validation**: Wraps `@Body()` parameters with `assertTypeName()` calls from the generated companion files
+2. **Serialization**: Wraps return statements with `transformTypeName()` calls that use the generated serializers
+
+```ts title="src/user/user.controller.ts (source)"
+@Controller('users')
+export class UserController {
+  @Post()
+  create(@Body() dto: CreateUserDto): UserResponse {
+    return this.userService.create(dto);
+  }
+
+  @Get()
+  findAll(): UserResponse[] {
+    return this.userService.findAll();
   }
 }
 ```
 
-The `companions` map links type names to their companion files and exported function names. The `routes` map links controller methods to their return types — this is what powers zero-config serialization.
+```js title="dist/user/user.controller.js (compiled output)"
+// tsgonest injects imports from companion files
+import { assertCreateUserDto } from './user.dto.CreateUserDto.tsgonest.js';
+import { serializeUserResponse } from './user.dto.UserResponse.tsgonest.js';
+
+class UserController {
+  create(dto) {
+    dto = assertCreateUserDto(dto); // injected validation
+    return serializeUserResponse(this.userService.create(dto)); // injected serialization
+  }
+
+  findAll() {
+    return this.userService.findAll().map(serializeUserResponse); // array serialization
+  }
+}
+```
+
+### Zero runtime setup
+
+Your `main.ts` stays clean — no pipes, no interceptors:
+
+```ts title="src/main.ts"
+import { NestFactory } from '@nestjs/core';
+import { AppModule } from './app.module';
+
+async function bootstrap() {
+  const app = await NestFactory.create(AppModule);
+  await app.listen(3000);
+}
+bootstrap();
+```
+
+### Array responses
+
+Array responses are handled automatically. When the controller method returns an array type (e.g., `UserResponse[]`), the rewriter wraps the return with `.map(serializeTypeName)` instead of a single `serializeTypeName()` call.
 
 ---
 
 ## @tsgonest/runtime
 
-The `@tsgonest/runtime` package provides NestJS pipes and interceptors that automatically use the generated companions. Install it as part of the `tsgonest` package:
+The `@tsgonest/runtime` package provides configuration helpers and error types. Install it as part of the `tsgonest` package:
 
 ```package-install
 tsgonest
@@ -139,337 +165,26 @@ tsgonest
 
 ```ts
 import {
-  // Validation
-  TsgonestValidationPipe,
-  ValidationPipeOptions,
-
-  // Serialization (recommended)
-  TsgonestFastInterceptor,
-  FastInterceptorOptions,
-
-  // Serialization (legacy, uses Reflect.getMetadata)
-  TsgonestSerializationInterceptor,
-  SerializationInterceptorOptions,
-
-  // Discovery
-  CompanionDiscovery,
-  TsgonestManifest,
-  CompanionEntry,
-  RouteMapping,
+  // Config helper
+  defineConfig,
+  TsgonestConfig,
 
   // Errors
   TsgonestValidationError,
   ValidationErrorDetail,
 
-  // Config helper
-  defineConfig,
-  TsgonestConfig,
+  // FormData (multipart/form-data)
+  FormDataBody,
+  FormDataInterceptor,
+  TSGONEST_FORM_DATA_FACTORY,
 } from '@tsgonest/runtime';
 ```
-
----
-
-## TsgonestValidationPipe
-
-A NestJS `PipeTransform` that validates incoming request bodies, query parameters, and route parameters using the generated `assert` functions.
-
-### Basic usage
-
-```ts title="src/main.ts"
-import { NestFactory } from '@nestjs/core';
-import { TsgonestValidationPipe } from '@tsgonest/runtime';
-import { AppModule } from './app.module';
-
-async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
-
-  app.useGlobalPipes(
-    new TsgonestValidationPipe({ distDir: 'dist' }),
-  );
-
-  await app.listen(3000);
-}
-bootstrap();
-```
-
-### Options
-
-| Option | Type | Default | Description |
-| --- | --- | --- | --- |
-| `distDir` | `string` | `"dist"` | Path to the directory containing `__tsgonest_manifest.json` |
-| `discovery` | `CompanionDiscovery` | | Pre-loaded discovery instance (overrides `distDir`) |
-| `throwOnError` | `boolean` | `true` | Throw an HTTP exception on validation failure |
-| `errorHttpStatusCode` | `number` | `400` | HTTP status code for validation errors |
-
-### How it works
-
-1. NestJS calls `transform(value, metadata)` for each request parameter
-2. The pipe extracts the metatype name from NestJS `ArgumentMetadata`
-3. Built-in types (`String`, `Number`, `Boolean`, `Array`, `Object`) are skipped
-4. The pipe looks up an `assert` function from the companion manifest
-5. If validation fails, it throws a structured HTTP exception:
-
-```json
-{
-  "statusCode": 400,
-  "message": "Validation failed",
-  "errors": [
-    {
-      "property": "input.email",
-      "constraints": {
-        "tsgonest": "expected string (email), received string"
-      }
-    }
-  ]
-}
-```
-
-### With pre-loaded discovery
-
-For better performance (single manifest load), share a `CompanionDiscovery` instance:
-
-```ts title="src/main.ts"
-import { CompanionDiscovery, TsgonestValidationPipe, TsgonestFastInterceptor } from '@tsgonest/runtime';
-
-const discovery = new CompanionDiscovery();
-discovery.loadManifest('dist');
-
-app.useGlobalPipes(
-  new TsgonestValidationPipe({ discovery }),
-);
-app.useGlobalInterceptors(
-  new TsgonestFastInterceptor({ discovery }),
-);
-```
-
----
-
-## TsgonestFastInterceptor
-
-A high-performance NestJS interceptor that replaces `JSON.stringify` with the generated serializers on outgoing responses. This is the **recommended** serialization interceptor.
-
-### Basic usage
-
-```ts title="src/main.ts"
-import { NestFactory } from '@nestjs/core';
-import { TsgonestFastInterceptor } from '@tsgonest/runtime';
-import { AppModule } from './app.module';
-
-async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
-
-  app.useGlobalInterceptors(
-    new TsgonestFastInterceptor({ distDir: 'dist' }),
-  );
-
-  await app.listen(3000);
-}
-bootstrap();
-```
-
-### Options
-
-| Option | Type | Default | Description |
-| --- | --- | --- | --- |
-| `distDir` | `string` | `"dist"` | Path to the directory containing the manifest |
-| `discovery` | `CompanionDiscovery` | | Pre-loaded discovery instance |
-| `typeOverrides` | `Record<string, string>` | `{}` | Manual type overrides by `"Controller.method"` |
-| `rawResponse` | `boolean` | `true` | Write JSON directly to the response, bypassing NestJS serialization |
-
-### How it works
-
-1. On each request, the interceptor reads `context.getClass().name` and `context.getHandler().name`
-2. It looks up the serializer via the route map in the manifest (populated by tsgonest's static analysis of your controllers)
-3. If a serializer is found, it replaces the response data with the pre-serialized JSON string
-4. In `rawResponse` mode (default), it writes directly to the Express/Fastify response with `Content-Type: application/json`, completely bypassing NestJS's built-in JSON serialization
-
-### Zero-config
-
-Unlike the legacy `TsgonestSerializationInterceptor`, the fast interceptor requires **no `Reflect.getMetadata`**, no `emitDecoratorMetadata`, and no type annotations on your controller methods. It uses the **route map** in the manifest, which is populated at build time.
-
-### Type overrides
-
-For edge cases where the static analysis doesn't capture the return type (e.g., dynamically-typed responses), use explicit overrides:
-
-```ts
-app.useGlobalInterceptors(
-  new TsgonestFastInterceptor({
-    distDir: 'dist',
-    typeOverrides: {
-      'UserController.getProfile': 'UserResponse',
-      'OrderController.getHistory': 'OrderResponse',
-    },
-  }),
-);
-```
-
-### Array responses
-
-Array responses are handled automatically. When the route map indicates `isArray: true`, or when the response data is an array, each element is serialized individually and joined:
-
-```ts
-@Controller('users')
-export class UserController {
-  @Get()
-  findAll(): UserResponse[] {
-    // The interceptor serializes each UserResponse element
-    return this.userService.findAll();
-  }
-}
-```
-
-### Express and Fastify
-
-The fast interceptor works with both Express and Fastify adapters. In raw response mode, it detects the adapter automatically:
-
-- **Express**: Uses `response.setHeader()` + `response.end()`
-- **Fastify**: Uses `response.type()` + `response.send()`
-
----
-
-## TsgonestSerializationInterceptor (legacy)
-
-The legacy interceptor uses `Reflect.getMetadata('design:returntype', ...)` to determine the return type. It requires `emitDecoratorMetadata: true` in your tsconfig.
-
-:::warning
-Prefer `TsgonestFastInterceptor` for new projects. It uses the route map instead of Reflect metadata, is faster, and requires zero configuration.
-:::
-
-```ts
-import { TsgonestSerializationInterceptor } from '@tsgonest/runtime';
-
-app.useGlobalInterceptors(
-  new TsgonestSerializationInterceptor({ distDir: 'dist' }),
-);
-```
-
----
-
-## CompanionDiscovery
-
-The `CompanionDiscovery` class loads the manifest and resolves companion functions. You can use it directly if you need programmatic access:
-
-```ts
-import { CompanionDiscovery } from '@tsgonest/runtime';
-
-const discovery = new CompanionDiscovery();
-discovery.loadManifest('dist');
-
-// Get a validator
-const validator = discovery.getValidator('CreateUserDto');
-if (validator) {
-  const result = validator({ name: 'John', email: 'john@example.com', age: 30 });
-}
-
-// Get a serializer
-const serializer = discovery.getSerializer('UserResponse');
-if (serializer) {
-  const json = serializer({ id: '1', name: 'John', email: 'john@example.com', age: 30, createdAt: '2026-01-01' });
-}
-
-// Check what types are available
-const types = discovery.getCompanionTypes();
-// ['CreateUserDto', 'UserResponse', ...]
-
-// Look up route mappings
-const mapping = discovery.getRouteMapping('UserController', 'findAll');
-// { returnType: 'UserResponse', isArray: true }
-
-// Get serializer for a route (used by FastInterceptor)
-const routeSerializer = discovery.getSerializerForRoute('UserController', 'create');
-// { serializer: fn, isArray: false }
-```
-
-### Methods
-
-| Method | Returns | Description |
-| --- | --- | --- |
-| `loadManifest(distDir)` | `boolean` | Load the manifest from a directory |
-| `loadManifestFromJSON(json, baseDir)` | `boolean` | Load from a JSON string (for testing) |
-| `getValidator(typeName)` | `Function \| null` | Get the assert function for a type |
-| `getSerializer(typeName)` | `Function \| null` | Get the serialize function for a type |
-| `hasValidator(typeName)` | `boolean` | Check if a validator exists |
-| `hasSerializer(typeName)` | `boolean` | Check if a serializer exists |
-| `getCompanionTypes()` | `string[]` | List all registered type names |
-| `getRouteMapping(controller, method)` | `RouteMapping \| null` | Look up a route's return type |
-| `getSerializerForRoute(controller, method)` | `object \| null` | Get serializer + isArray for a route |
-
----
-
-## Full NestJS integration example
-
-Here's a complete example wiring everything together:
-
-```ts title="src/main.ts"
-import { NestFactory } from '@nestjs/core';
-import {
-  CompanionDiscovery,
-  TsgonestValidationPipe,
-  TsgonestFastInterceptor,
-} from '@tsgonest/runtime';
-import { AppModule } from './app.module';
-
-async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
-
-  // Share a single discovery instance for efficiency
-  const discovery = new CompanionDiscovery();
-  discovery.loadManifest('dist');
-
-  // Validate all incoming request bodies
-  app.useGlobalPipes(
-    new TsgonestValidationPipe({
-      discovery,
-      errorHttpStatusCode: 422, // Use 422 instead of 400
-    }),
-  );
-
-  // Fast-serialize all outgoing responses
-  app.useGlobalInterceptors(
-    new TsgonestFastInterceptor({
-      discovery,
-      rawResponse: true, // bypass JSON.stringify entirely
-    }),
-  );
-
-  await app.listen(3000);
-}
-bootstrap();
-```
-
-```ts title="src/user/user.controller.ts"
-import { Controller, Get, Post, Body, Param } from '@nestjs/common';
-import { CreateUserDto, UserResponse } from './user.dto';
-
-@Controller('users')
-export class UserController {
-  @Post()
-  create(@Body() dto: CreateUserDto): UserResponse {
-    // dto is already validated by TsgonestValidationPipe
-    // response is serialized by TsgonestFastInterceptor
-    return this.userService.create(dto);
-  }
-
-  @Get()
-  findAll(): UserResponse[] {
-    // Array responses are handled automatically
-    return this.userService.findAll();
-  }
-
-  @Get(':id')
-  findOne(@Param('id') id: string): UserResponse {
-    return this.userService.findOne(id);
-  }
-}
-```
-
-No decorators beyond NestJS's built-in ones. No `class-transformer`. No `class-validator`. Types are the source of truth.
 
 ---
 
 ## TsgonestValidationError
 
-When validation fails, the pipe throws a `TsgonestValidationError` (or wraps it in an `HttpException`):
+When validation fails, the injected `assertTypeName()` call throws a `TsgonestValidationError`:
 
 ```ts
 import { TsgonestValidationError } from '@tsgonest/runtime';
@@ -485,4 +200,21 @@ interface ValidationErrorDetail {
 // "Validation failed: 2 error(s)
 //   - input.name: expected string, received number
 //   - input.age: expected number, received string"
+```
+
+NestJS catches the thrown error and returns a 400 Bad Request response with structured error details:
+
+```json
+{
+  "statusCode": 400,
+  "message": "Validation failed",
+  "errors": [
+    {
+      "property": "input.email",
+      "constraints": {
+        "tsgonest": "expected string (email), received string"
+      }
+    }
+  ]
+}
 ```

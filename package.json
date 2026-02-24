@@ -19,5 +19,8 @@
   "engines": {
     "node": ">=18",
     "pnpm": ">=9"
+  },
+  "devDependencies": {
+    "tsdown": "^0.20.3"
   }
 }

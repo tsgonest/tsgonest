@@ -17,7 +17,7 @@ description: Architecture and DX comparison between tsgonest and the Nestia/Typi
 | **OpenAPI** | `@nestia/swagger` + runtime analysis | Static analysis at build time |
 | **Runtime cost** | Transformed at compile time, runs at runtime | Generated at build time, loaded on demand |
 | **Setup** | ts-patch + tsconfig plugin config | Single CLI binary |
-| **NestJS integration** | `@nestia/core` decorators | `@tsgonest/runtime` pipe + interceptor |
+| **NestJS integration** | `@nestia/core` decorators | Zero-config (compile-time injection) |
 | **Branded types** | `typia.tags.Format<"email">` etc. | `@tsgonest/types` Email, Min, Max, etc. |
 | **Watch mode** | External (nodemon, ts-node-dev) | Built-in `tsgonest dev` |
 
@@ -325,11 +325,22 @@ That's it. No patches. No plugins. No tsconfig modifications. tsgonest uses its 
 | Watch mode | External tooling | External tooling | Built-in `tsgonest dev` |
 | Build speed | tsc speed | tsc speed | ~4x faster full pipeline (tsgo) |
 | NestJS decorators | Replaced by Nestia | Custom decorators | Standard NestJS decorators |
+| Multipart/form-data | N/A | `@TypedFormData.Body()` | `@FormDataBody()` + `FormDataInterceptor` |
 | Compiler requirement | ts-patch | ts-patch | None (standalone binary) |
 
 ---
 
 ## Migration from Nestia + Typia
+
+The fastest way to migrate is with the automated codemod:
+
+```bash
+npx tsgonest migrate --apply
+```
+
+This handles all the steps below automatically — including `@TypedFormData.Body()` conversion, import rewrites, dependency cleanup, and tsconfig fixes. See the generated `tsgonest-migrate-report.md` for a summary of all changes.
+
+For manual migration, follow these steps:
 
 ### Step 1: Install tsgonest
 
@@ -366,7 +377,25 @@ npm uninstall @nestia/core @nestia/sdk typia ts-patch
   }
 ```
 
-### Step 4: Update branded types (optional)
+### Step 4: Replace TypedFormData (if used)
+
+```diff
+- import { TypedFormData } from '@nestia/core';
++ import { FormDataBody, FormDataInterceptor } from '@tsgonest/runtime';
++ import { UseInterceptors } from '@nestjs/common';
+
+  @Controller('uploads')
+  export class UploadController {
+    @Post()
++   @UseInterceptors(FormDataInterceptor)
+-   upload(@TypedFormData.Body(() => imageMulter()) body: UploadDto) {
++   upload(@FormDataBody(() => imageMulter()) body: UploadDto) {
+      return this.uploadService.process(body);
+    }
+  }
+```
+
+### Step 5: Update branded types (optional)
 
 Your existing typia branded types are auto-detected. But for better DX, you can migrate:
 
@@ -384,7 +413,7 @@ Your existing typia branded types are auto-detected. But for better DX, you can 
   }
 ```
 
-### Step 5: Remove explicit typia calls
+### Step 6: Remove explicit typia calls
 
 ```diff
 - import typia from 'typia';

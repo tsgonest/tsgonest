@@ -115,33 +115,41 @@ Both approaches produce identical runtime validators. You can even mix them in t
 
 ## NestJS integration
 
-tsgonest ships a `TsgonestValidationPipe` that automatically wires up the generated `assert` functions for your DTOs. Apply it globally or per-controller:
-
-```ts title="main.ts"
-import { NestFactory } from '@nestjs/core';
-import { TsgonestValidationPipe } from '@tsgonest/nestjs';
-import { AppModule } from './app.module';
-
-async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
-  app.useGlobalPipes(new TsgonestValidationPipe());
-  await app.listen(3000);
-}
-bootstrap();
-```
-
-The pipe intercepts incoming requests and validates `@Body()`, `@Query()`, and `@Param()` arguments against the generated companions. On failure, it returns a `400 Bad Request` with structured error details.
+tsgonest automatically injects validation into your controllers at compile time. When you build with `tsgonest build`, the controller rewriter adds `assertTypeName()` calls for `@Body()` parameters — no pipes or runtime setup needed.
 
 ```ts title="user.controller.ts"
 @Controller('users')
 export class UserController {
   @Post()
   create(@Body() dto: CreateUserDto) {
-    // dto is already validated and typed
+    // dto is automatically validated at compile time via injected assertCreateUserDto()
     return this.userService.create(dto);
   }
 }
 ```
+
+On validation failure, a `TsgonestValidationError` is thrown with structured error details (400 Bad Request).
+
+### Multipart / form-data
+
+For file upload endpoints using multipart/form-data, use `@FormDataBody()` with `FormDataInterceptor` from `@tsgonest/runtime`:
+
+```ts title="upload.controller.ts"
+import { Controller, Post, UseInterceptors } from '@nestjs/common';
+import { FormDataBody, FormDataInterceptor } from '@tsgonest/runtime';
+
+@Controller('uploads')
+export class UploadController {
+  @Post()
+  @UseInterceptors(FormDataInterceptor)
+  upload(@FormDataBody(() => imageMulter()) body: UploadDto) {
+    // body.image is the parsed file, body.name is a text field
+    return this.uploadService.process(body);
+  }
+}
+```
+
+`@FormDataBody()` accepts a multer factory function. The `FormDataInterceptor` runs multer to parse the multipart request and merges files into the request body. This is a drop-in replacement for Nestia's `@TypedFormData.Body()` — `tsgonest migrate` converts it automatically.
 
 ## Next steps
 

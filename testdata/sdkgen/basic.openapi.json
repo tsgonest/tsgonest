@@ -1,0 +1,176 @@
+{
+  "openapi": "3.2.0",
+  "info": { "title": "Test API", "version": "1.0.0" },
+  "paths": {
+    "/orders": {
+      "get": {
+        "operationId": "listOrders",
+        "summary": "List all orders",
+        "description": "Returns a paginated list of orders",
+        "x-tsgonest-controller": "OrdersController",
+        "x-tsgonest-method": "listOrders",
+        "tags": ["Orders"],
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "integer" }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "integer" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": { "$ref": "#/components/schemas/Order" }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "createOrder",
+        "x-tsgonest-controller": "OrdersController",
+        "x-tsgonest-method": "createOrder",
+        "tags": ["Orders"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateOrderDto" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Order" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orders/{id}": {
+      "get": {
+        "operationId": "getOrder",
+        "x-tsgonest-controller": "OrdersController",
+        "x-tsgonest-method": "getOrder",
+        "tags": ["Orders"],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Order" }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteOrder",
+        "x-tsgonest-controller": "OrdersController",
+        "x-tsgonest-method": "deleteOrder",
+        "tags": ["Orders"],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No Content"
+          }
+        }
+      }
+    },
+    "/products": {
+      "get": {
+        "operationId": "listProducts",
+        "x-tsgonest-controller": "ProductsController",
+        "x-tsgonest-method": "listProducts",
+        "tags": ["Products"],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": { "$ref": "#/components/schemas/Product" }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Order": {
+        "type": "object",
+        "description": "Represents a customer order",
+        "required": ["id", "status", "total"],
+        "properties": {
+          "id": { "type": "string", "description": "Unique order identifier" },
+          "status": { "type": "string", "enum": ["pending", "shipped", "delivered"], "description": "Current order status" },
+          "total": { "type": "number", "description": "Order total amount" },
+          "note": { "type": "string", "description": "Optional order note" }
+        }
+      },
+      "CreateOrderDto": {
+        "type": "object",
+        "required": ["items"],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/OrderItem" }
+          },
+          "note": { "type": "string" }
+        }
+      },
+      "OrderItem": {
+        "type": "object",
+        "required": ["productId", "quantity"],
+        "properties": {
+          "productId": { "type": "string" },
+          "quantity": { "type": "integer" }
+        }
+      },
+      "Product": {
+        "type": "object",
+        "required": ["id", "name", "price"],
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "price": { "type": "number" }
+        }
+      }
+    }
+  }
+}

@@ -74,6 +74,29 @@ func generateSerializeExpr(accessor string, meta *metadata.Metadata, registry *m
 		return generateSerializeNative(accessor, meta)
 
 	case metadata.KindEnum:
+		if len(meta.EnumValues) > 0 {
+			allStrings := true
+			allNumbers := true
+			for _, ev := range meta.EnumValues {
+				switch ev.Value.(type) {
+				case string:
+					allNumbers = false
+				case float64:
+					allStrings = false
+				default:
+					allStrings = false
+					allNumbers = false
+				}
+			}
+			if allStrings {
+				return fmt.Sprintf("__s(%s)", accessor)
+			}
+			if allNumbers {
+				return fmt.Sprintf("\"\" + %s", accessor)
+			}
+			// Mixed enum
+			return fmt.Sprintf("(typeof %s === \"string\" ? __s(%s) : \"\" + %s)", accessor, accessor, accessor)
+		}
 		return fmt.Sprintf("JSON.stringify(%s)", accessor)
 
 	default:
@@ -81,11 +104,21 @@ func generateSerializeExpr(accessor string, meta *metadata.Metadata, registry *m
 	}
 }
 
+// generateSerializeAtomic generates serialization for atomic types.
+// When inTemplate is true, the result will be used inside a template literal ${...},
+// so numbers don't need explicit coercion.
 func generateSerializeAtomic(accessor string, atomic string) string {
+	return generateSerializeAtomicCtx(accessor, atomic, false)
+}
+
+func generateSerializeAtomicCtx(accessor string, atomic string, inTemplate bool) string {
 	switch atomic {
 	case "string":
 		return fmt.Sprintf("__s(%s)", accessor)
 	case "number", "bigint":
+		if inTemplate {
+			return accessor // template literals handle coercion natively via ${input.age}
+		}
 		return fmt.Sprintf("\"\" + %s", accessor)
 	case "boolean":
 		return fmt.Sprintf("(%s ? \"true\" : \"false\")", accessor)
@@ -134,52 +167,105 @@ func generateSerializeObject(accessor string, meta *metadata.Metadata, registry 
 	return generateSerializeObjectWithOptional(accessor, meta, registry, depth, ctx)
 }
 
-// generateSerializeObjectAllRequired generates fast inline string concatenation
-// for objects where all properties are required (no conditional key inclusion needed).
+// generateSerializeObjectAllRequired generates a template literal for objects
+// where all properties are required (no conditional key inclusion needed).
+// V8 pre-computes static segment sizes and fills dynamic parts in one pass.
 func generateSerializeObjectAllRequired(accessor string, meta *metadata.Metadata, registry *metadata.TypeRegistry, depth int, ctx *serializeCtx) string {
-	var parts []string
-	parts = append(parts, `"{"`)
+	var buf strings.Builder
+	buf.WriteString("`{")
 
 	for i, prop := range meta.Properties {
 		propAccessor := accessor + "." + prop.Name
 
-		sep := ""
 		if i > 0 {
-			sep = ","
+			buf.WriteByte(',')
 		}
-		// Build the key as a JS string literal: ',"name":'
-		keyJS := fmt.Sprintf(`"%s\"%s\":"`, sep, prop.Name)
-		valExpr := generateSerializeExpr(propAccessor, &prop.Type, registry, depth+1, ctx)
-		parts = append(parts, keyJS+" + "+valExpr)
+		// Static key portion
+		buf.WriteString(fmt.Sprintf(`\"%s\":`, prop.Name))
+		// Dynamic value as ${...} interpolation
+		valExpr := generateSerializeExprTemplate(propAccessor, &prop.Type, registry, depth+1, ctx)
+		buf.WriteString("${")
+		buf.WriteString(valExpr)
+		buf.WriteString("}")
 	}
 
-	parts = append(parts, `"}"`)
-	return strings.Join(parts, " + ")
+	buf.WriteString("}`")
+	return buf.String()
 }
 
-// generateSerializeObjectWithOptional generates serialization using string
-// accumulation with a separator flag. This avoids array allocation + .join().
+// generateSerializeExprTemplate returns a JS expression for use inside a template literal ${...}.
+// For atomic number types, this avoids unnecessary "" + coercion since template literals
+// handle it natively.
+func generateSerializeExprTemplate(accessor string, meta *metadata.Metadata, registry *metadata.TypeRegistry, depth int, ctx *serializeCtx) string {
+	// Handle nullable/optional wrapping
+	if meta.Nullable || meta.Optional {
+		inner := *meta
+		inner.Nullable = false
+		inner.Optional = false
+		nullCheck := accessor + " == null"
+		return fmt.Sprintf("(%s ? \"null\" : %s)", nullCheck, generateSerializeExprTemplate(accessor, &inner, registry, depth, ctx))
+	}
+
+	// For atomic types, use template-aware version
+	if meta.Kind == metadata.KindAtomic {
+		return generateSerializeAtomicCtx(accessor, meta.Atomic, true)
+	}
+
+	// For all other types, delegate to normal expr generation
+	return generateSerializeExpr(accessor, meta, registry, depth, ctx)
+}
+
+// generateSerializeObjectWithOptional generates serialization for objects with
+// optional properties. Required properties are emitted first as a template literal,
+// then each optional property is appended via ternary expressions. No IIFE needed.
 func generateSerializeObjectWithOptional(accessor string, meta *metadata.Metadata, registry *metadata.TypeRegistry, depth int, ctx *serializeCtx) string {
-	resVar := fmt.Sprintf("_r%d", depth)
-	sepVar := fmt.Sprintf("_c%d", depth)
-
-	var lines []string
-	lines = append(lines, fmt.Sprintf("(function() { var %s = \"{\", %s = \"\";", resVar, sepVar))
-
+	// Partition into required and optional, preserving relative order within each group
+	var required []metadata.Property
+	var optional []metadata.Property
 	for _, prop := range meta.Properties {
-		propAccessor := accessor + "." + prop.Name
-		valExpr := generateSerializeExpr(propAccessor, &prop.Type, registry, depth+1, ctx)
-		appendExpr := fmt.Sprintf(`%s += %s + "\"%s\":" + %s; %s = ",";`, resVar, sepVar, prop.Name, valExpr, sepVar)
-
 		if prop.Type.Optional || !prop.Required {
-			lines = append(lines, fmt.Sprintf("if (%s !== undefined) { %s }", propAccessor, appendExpr))
+			optional = append(optional, prop)
 		} else {
-			lines = append(lines, appendExpr)
+			required = append(required, prop)
 		}
 	}
 
-	lines = append(lines, fmt.Sprintf("return %s + \"}\"; })()", resVar))
-	return strings.Join(lines, " ")
+	// Build template literal for required portion: `{"id":${...},"name":${...}`
+	var buf strings.Builder
+	buf.WriteString("`{")
+	for i, prop := range required {
+		propAccessor := accessor + "." + prop.Name
+		if i > 0 {
+			buf.WriteByte(',')
+		}
+		buf.WriteString(fmt.Sprintf(`\"%s\":`, prop.Name))
+		valExpr := generateSerializeExprTemplate(propAccessor, &prop.Type, registry, depth+1, ctx)
+		buf.WriteString("${")
+		buf.WriteString(valExpr)
+		buf.WriteString("}")
+	}
+	buf.WriteString("`")
+
+	// Append optional properties as ternary concatenation
+	for _, prop := range optional {
+		propAccessor := accessor + "." + prop.Name
+		valExpr := generateSerializeExpr(propAccessor, &prop.Type, registry, depth+1, ctx)
+
+		// Build the key string literal as a JS string: ",\"name\":"
+		// Using fmt to construct a proper JS string literal
+		keyLiteral := fmt.Sprintf(`",\"%s\":"`, prop.Name)
+		buf.WriteString(fmt.Sprintf(` + (%s !== undefined ? %s + %s : "")`, propAccessor, keyLiteral, valExpr))
+	}
+
+	// If all props are optional, we might have a leading comma — handle this edge case
+	if len(required) == 0 && len(optional) > 0 {
+		// Wrap: result starts with `{` and may have leading comma after it
+		// Use a trailing fixup: replace leading `{,` with `{`
+		return fmt.Sprintf(`(function() { var _r = %s + "}"; return _r[1] === "," ? "{" + _r.slice(2) : _r; }())`, buf.String())
+	}
+
+	buf.WriteString(` + "}"`)
+	return buf.String()
 }
 
 func generateSerializeArray(accessor string, meta *metadata.Metadata, registry *metadata.TypeRegistry, depth int, ctx *serializeCtx) string {
@@ -187,18 +273,12 @@ func generateSerializeArray(accessor string, meta *metadata.Metadata, registry *
 		return fmt.Sprintf("JSON.stringify(%s)", accessor)
 	}
 
-	// Use for-loop with string accumulation instead of .map().join(",")
-	// This avoids creating a temporary array and is measurably faster.
-	arrVar := fmt.Sprintf("_a%d", depth)
-	idxVar := fmt.Sprintf("_i%d", depth)
-	resVar := fmt.Sprintf("_r%d", depth)
-	elemAccessor := fmt.Sprintf("%s[%s]", arrVar, idxVar)
-	elemExpr := generateSerializeExpr(elemAccessor, meta.ElementType, registry, depth+1, ctx)
+	// Use __sa helper with arrow function for element serialization.
+	// __sa is emitted as a companion-level helper alongside __s.
+	elemVar := fmt.Sprintf("_v%d", depth)
+	elemExpr := generateSerializeExpr(elemVar, meta.ElementType, registry, depth+1, ctx)
 
-	return fmt.Sprintf(
-		`(function(%s) { var %s = "["; for (var %s = 0; %s < %s.length; %s++) { if (%s) %s += ","; %s += %s; } return %s + "]"; }(%s))`,
-		arrVar, resVar, idxVar, idxVar, arrVar, idxVar, idxVar, resVar, resVar, elemExpr, resVar, accessor,
-	)
+	return fmt.Sprintf(`__sa(%s, %s => %s)`, accessor, elemVar, elemExpr)
 }
 
 func generateSerializeTuple(accessor string, meta *metadata.Metadata, registry *metadata.TypeRegistry, depth int, ctx *serializeCtx) string {
@@ -206,19 +286,23 @@ func generateSerializeTuple(accessor string, meta *metadata.Metadata, registry *
 		return "\"[]\""
 	}
 
-	var parts []string
-	parts = append(parts, "\"[\"")
+	// Use template literal for tuple serialization
+	var buf strings.Builder
+	buf.WriteString("`[")
 
 	for i, elem := range meta.Elements {
 		if i > 0 {
-			parts = append(parts, "\",\"")
+			buf.WriteByte(',')
 		}
 		elemAccessor := fmt.Sprintf("%s[%d]", accessor, i)
-		parts = append(parts, generateSerializeExpr(elemAccessor, &elem.Type, registry, depth+1, ctx))
+		valExpr := generateSerializeExprTemplate(elemAccessor, &elem.Type, registry, depth+1, ctx)
+		buf.WriteString("${")
+		buf.WriteString(valExpr)
+		buf.WriteString("}")
 	}
 
-	parts = append(parts, "\"]\"")
-	return strings.Join(parts, " + ")
+	buf.WriteString("]`")
+	return buf.String()
 }
 
 func generateSerializeNative(accessor string, meta *metadata.Metadata) string {

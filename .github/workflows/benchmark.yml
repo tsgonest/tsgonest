@@ -1,0 +1,82 @@
+name: Benchmark
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Setup Just
+        uses: extractions/setup-just@v2
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "pnpm"
+          cache-dependency-path: "benchmarks/pnpm-lock.yaml"
+
+      - name: Init submodule
+        run: just init
+
+      - name: Install benchmark deps
+        run: cd benchmarks && pnpm install --frozen-lockfile
+
+      # ── PR benchmarks ──
+      - name: Build PR binary
+        run: just build
+
+      - name: Build PR companions
+        run: cd benchmarks && pnpm run build
+
+      - name: Run PR benchmarks
+        run: cd benchmarks && npx tsx --tsconfig bench/tsconfig.json bench/bench-all.ts --json > /tmp/pr-bench.json
+
+      # ── Base benchmarks ──
+      - name: Checkout base
+        run: git checkout ${{ github.event.pull_request.base.sha }}
+
+      - name: Rebuild for base
+        run: |
+          just init
+          just build
+          cd benchmarks && pnpm run build
+
+      - name: Run base benchmarks
+        run: cd benchmarks && npx tsx --tsconfig bench/tsconfig.json bench/bench-all.ts --json > /tmp/base-bench.json
+
+      # ── Comparison ──
+      - name: Checkout PR (for comparison script)
+        uses: actions/checkout@v4
+        with:
+          clean: false
+
+      - name: Generate comparison
+        run: node .github/scripts/compare-benchmarks.js /tmp/base-bench.json /tmp/pr-bench.json > /tmp/bench-comment.md
+
+      - name: Post benchmark comment
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: benchmark
+          path: /tmp/bench-comment.md

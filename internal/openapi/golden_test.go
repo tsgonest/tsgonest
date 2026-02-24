@@ -590,6 +590,51 @@ func TestGolden_MultiController_Structure(t *testing.T) {
 	}
 }
 
+func TestGolden_SimpleController_TsgonestExtensions(t *testing.T) {
+	doc := buildSimpleControllerDoc()
+
+	jsonBytes, err := doc.ToJSON()
+	if err != nil {
+		t.Fatalf("ToJSON failed: %v", err)
+	}
+
+	var raw map[string]any
+	if err := json.Unmarshal(jsonBytes, &raw); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+
+	paths := raw["paths"].(map[string]any)
+
+	// GET /users should have x-tsgonest-controller and x-tsgonest-method
+	usersPath := paths["/users"].(map[string]any)
+	getOp := usersPath["get"].(map[string]any)
+	if getOp["x-tsgonest-controller"] != "UserController" {
+		t.Errorf("expected x-tsgonest-controller=UserController, got %v", getOp["x-tsgonest-controller"])
+	}
+	if getOp["x-tsgonest-method"] != "findAll" {
+		t.Errorf("expected x-tsgonest-method=findAll, got %v", getOp["x-tsgonest-method"])
+	}
+
+	// POST /users
+	postOp := usersPath["post"].(map[string]any)
+	if postOp["x-tsgonest-controller"] != "UserController" {
+		t.Errorf("expected x-tsgonest-controller=UserController, got %v", postOp["x-tsgonest-controller"])
+	}
+	if postOp["x-tsgonest-method"] != "create" {
+		t.Errorf("expected x-tsgonest-method=create, got %v", postOp["x-tsgonest-method"])
+	}
+
+	// DELETE /users/{id}
+	usersIdPath := paths["/users/{id}"].(map[string]any)
+	deleteOp := usersIdPath["delete"].(map[string]any)
+	if deleteOp["x-tsgonest-controller"] != "UserController" {
+		t.Errorf("expected x-tsgonest-controller=UserController, got %v", deleteOp["x-tsgonest-controller"])
+	}
+	if deleteOp["x-tsgonest-method"] != "remove" {
+		t.Errorf("expected x-tsgonest-method=remove, got %v", deleteOp["x-tsgonest-method"])
+	}
+}
+
 func TestGolden_MultiController_JSONRoundTrip(t *testing.T) {
 	doc := buildSimpleControllerDoc()
 

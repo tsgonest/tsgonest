@@ -36,13 +36,20 @@ type CreateProgramResult struct {
 // ParseTSConfig parses a tsconfig.json file using tsgo's native JSONC parser.
 // Handles comments, trailing commas, and extends chains automatically.
 // Returns the parsed config for inspection/modification before creating a program.
-func ParseTSConfig(fs vfs.FS, cwd string, tsconfigPath string, host shimcompiler.CompilerHost) (*tsoptions.ParsedCommandLine, []Diagnostic, error) {
+//
+// If cliOverrides is non-nil, those compiler options take precedence over tsconfig
+// values (same as tsc CLI flags overriding tsconfig.json).
+func ParseTSConfig(fs vfs.FS, cwd string, tsconfigPath string, host shimcompiler.CompilerHost, cliOverrides *core.CompilerOptions) (*tsoptions.ParsedCommandLine, []Diagnostic, error) {
 	resolvedConfigPath := tspath.ResolvePath(cwd, tsconfigPath)
 	if !fs.FileExists(resolvedConfigPath) {
 		return nil, nil, fmt.Errorf("could not find tsconfig at %v", resolvedConfigPath)
 	}
 
-	configParseResult, diagnostics := tsoptions.GetParsedCommandLineOfConfigFile(tsconfigPath, &core.CompilerOptions{}, nil, host, nil)
+	if cliOverrides == nil {
+		cliOverrides = &core.CompilerOptions{}
+	}
+
+	configParseResult, diagnostics := tsoptions.GetParsedCommandLineOfConfigFile(tsconfigPath, cliOverrides, nil, host, nil)
 
 	if len(diagnostics) > 0 {
 		return nil, convertDiagnostics(diagnostics), nil
@@ -87,7 +94,7 @@ func CreateProgramFromConfig(singleThreaded bool, parsedConfig *tsoptions.Parsed
 // CreateProgram creates a TypeScript program from a tsconfig.json file.
 // Convenience wrapper that parses config and creates program in one step.
 func CreateProgram(singleThreaded bool, fs vfs.FS, cwd string, tsconfigPath string, host shimcompiler.CompilerHost) (*CreateProgramResult, []Diagnostic, error) {
-	parsedConfig, diags, err := ParseTSConfig(fs, cwd, tsconfigPath, host)
+	parsedConfig, diags, err := ParseTSConfig(fs, cwd, tsconfigPath, host, nil)
 	if err != nil || len(diags) > 0 {
 		return nil, diags, err
 	}
@@ -112,8 +119,14 @@ type EmitResult struct {
 
 // EmitProgram writes the compiled JavaScript output to disk using tsgo's emitter.
 // Returns the raw EmitResult so callers can check EmitSkipped.
-func EmitProgram(program *shimcompiler.Program) *EmitResult {
-	result := program.Emit(context.Background(), shimcompiler.EmitOptions{})
+// If writeFile is non-nil, it is used as a custom callback for writing files
+// instead of the default host.WriteFile — this enables inline rewriting during emit.
+func EmitProgram(program *shimcompiler.Program, writeFile ...shimcompiler.WriteFile) *EmitResult {
+	opts := shimcompiler.EmitOptions{}
+	if len(writeFile) > 0 && writeFile[0] != nil {
+		opts.WriteFile = writeFile[0]
+	}
+	result := program.Emit(context.Background(), opts)
 	return &EmitResult{
 		EmittedFiles: result.EmittedFiles,
 		Diagnostics:  result.Diagnostics,
@@ -126,15 +139,13 @@ func EmitProgram(program *shimcompiler.Program) *EmitResult {
 //
 //	config → syntactic → program → bind → options → global → semantic → declaration
 //
-// When noCheck=true, the semantic callback is a no-op (skips type checking).
+// When noCheck=true, only syntactic diagnostics are collected — this avoids
+// creating checkers for all files, which would hang on large projects.
 func GatherDiagnostics(program *shimcompiler.Program, noCheck bool) []*ast.Diagnostic {
 	ctx := context.Background()
 
-	semanticFn := func(ctx context.Context, file *ast.SourceFile) []*ast.Diagnostic {
-		if noCheck {
-			return nil
-		}
-		return shimcompiler.Program_GetSemanticDiagnostics(program, ctx, file)
+	if noCheck {
+		return shimcompiler.Program_GetSyntacticDiagnostics(program, ctx, nil)
 	}
 
 	return shimcompiler.GetDiagnosticsOfAnyProgram(
@@ -149,7 +160,9 @@ func GatherDiagnostics(program *shimcompiler.Program, noCheck bool) []*ast.Diagn
 			// but it's primarily for timing — the bind step already ran.
 			return nil
 		},
-		semanticFn,
+		func(ctx context.Context, file *ast.SourceFile) []*ast.Diagnostic {
+			return shimcompiler.Program_GetSemanticDiagnostics(program, ctx, file)
+		},
 	)
 }
 
@@ -180,8 +193,14 @@ func CreateIncrementalProgram(
 
 // EmitIncrementalProgram emits only changed files through the incremental program.
 // Also writes the updated .tsbuildinfo file to disk.
-func EmitIncrementalProgram(incrProgram *shimincremental.Program) *EmitResult {
-	result := incrProgram.Emit(context.Background(), shimcompiler.EmitOptions{})
+// If writeFile is non-nil, it is used as a custom callback for writing files
+// instead of the default host.WriteFile — this enables inline rewriting during emit.
+func EmitIncrementalProgram(incrProgram *shimincremental.Program, writeFile ...shimcompiler.WriteFile) *EmitResult {
+	opts := shimcompiler.EmitOptions{}
+	if len(writeFile) > 0 && writeFile[0] != nil {
+		opts.WriteFile = writeFile[0]
+	}
+	result := incrProgram.Emit(context.Background(), opts)
 	return &EmitResult{
 		EmittedFiles: result.EmittedFiles,
 		Diagnostics:  result.Diagnostics,
@@ -192,14 +211,14 @@ func EmitIncrementalProgram(incrProgram *shimincremental.Program) *EmitResult {
 // GatherIncrementalDiagnostics collects diagnostics from an incremental program.
 // The incremental program's GetSemanticDiagnostics only checks affected (changed) files,
 // returning cached results for unchanged files.
+//
+// When noCheck=true, only syntactic diagnostics are collected — this avoids
+// creating checkers for all files, which would hang on large projects.
 func GatherIncrementalDiagnostics(incrProgram *shimincremental.Program, noCheck bool) []*ast.Diagnostic {
 	ctx := context.Background()
 
-	semanticFn := func(ctx context.Context, file *ast.SourceFile) []*ast.Diagnostic {
-		if noCheck {
-			return nil
-		}
-		return incrProgram.GetSemanticDiagnostics(ctx, file)
+	if noCheck {
+		return incrProgram.GetSyntacticDiagnostics(ctx, nil)
 	}
 
 	return shimcompiler.GetDiagnosticsOfAnyProgram(
@@ -210,7 +229,9 @@ func GatherIncrementalDiagnostics(incrProgram *shimincremental.Program, noCheck 
 		func(ctx context.Context, file *ast.SourceFile) []*ast.Diagnostic {
 			return incrProgram.GetBindDiagnostics(ctx, file)
 		},
-		semanticFn,
+		func(ctx context.Context, file *ast.SourceFile) []*ast.Diagnostic {
+			return incrProgram.GetSemanticDiagnostics(ctx, file)
+		},
 	)
 }
 

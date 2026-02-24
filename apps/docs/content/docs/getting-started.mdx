@@ -142,7 +142,7 @@ export class UserController {
 npx tsgonest build
 ```
 
-This compiles your TypeScript, generates companion files, writes the manifest, and produces the OpenAPI document — all in one command.
+This compiles your TypeScript, generates companion files, injects validation and serialization into your controllers, and produces the OpenAPI document — all in one command.
 
 You should see output like:
 
@@ -153,43 +153,12 @@ tsgonest v0.3.0 build
 
   emit:        142ms
   companions:  38ms  (4 files)
-  manifest:    1ms
   openapi:     12ms
 
-  total: 193ms
+  total: 192ms
 ```
 
-### 5. Integrate with NestJS
-
-Wire tsgonest's validation pipe and serialization interceptor into your NestJS app:
-
-```ts title="src/main.ts"
-import { NestFactory } from '@nestjs/core';
-import {
-  TsgonestValidationPipe,
-  TsgonestFastInterceptor,
-} from '@tsgonest/runtime';
-import { AppModule } from './app.module';
-
-async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
-
-  // Use generated validators for request validation
-  app.useGlobalPipes(
-    new TsgonestValidationPipe({ distDir: 'dist' }),
-  );
-
-  // Use generated serializers for fast JSON responses
-  app.useGlobalInterceptors(
-    new TsgonestFastInterceptor({ distDir: 'dist' }),
-  );
-
-  await app.listen(3000);
-}
-bootstrap();
-```
-
-That's it. Incoming request bodies are validated against the generated companions, and outgoing responses are serialized using the fast JSON serializers — all discovered automatically via the manifest.
+That's it — zero runtime setup needed. tsgonest injects `assertTypeName()` calls for `@Body()` parameters and wraps return statements with `transformTypeName()` at compile time. No pipes, interceptors, or manifest needed.
 
 ## Development mode
 
@@ -240,8 +209,8 @@ You should see:
 
 - Your compiled JavaScript files
 - `*.tsgonest.js` and `*.tsgonest.d.ts` companion files alongside each DTO
-- `__tsgonest_manifest.json` at the root of the output directory
 - `openapi.json` with your complete API documentation
+- Controller JS files with injected validation and serialization calls
 
 ## What's next
 
@@ -249,5 +218,5 @@ You should see:
   <Card title="CLI Reference" description="All build and dev flags" href="/docs/cli" />
   <Card title="Configuration" description="Type-safe tsgonest.config.ts reference" href="/docs/config" />
   <Card title="Validation" description="All constraints, formats, and transforms" href="/docs/validation" />
-  <Card title="Serialization & Runtime" description="ValidationPipe, FastInterceptor, and manifest" href="/docs/serialization-runtime" />
+  <Card title="Serialization & Runtime" description="Compile-time serialization injection" href="/docs/serialization-runtime" />
 </Cards>

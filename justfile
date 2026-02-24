@@ -55,6 +55,12 @@ fmt:
 shim:
   go run tools/gen_shims/main.go
 
+bench: build
+  cd benchmarks && pnpm run build && pnpm run bench:all
+
+bench-json: build
+  cd benchmarks && pnpm run build && pnpm run bench:json
+
 clean:
   rm -f tsgonest tsgonest.exe
   rm -rf dist/

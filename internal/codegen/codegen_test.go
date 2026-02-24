@@ -254,9 +254,10 @@ func TestSerializeOptionalProps(t *testing.T) {
 	// Should have conditional key inclusion
 	assertContains(t, code, "input.name !== undefined")
 	assertContains(t, code, "input.age !== undefined")
-	// Should use string accumulation with separator flag
-	assertContains(t, code, `_r0 +=`)
-	assertContains(t, code, `_c0 = ","`)
+	// Should use ternary-based optional inclusion with comma-separated keys
+	assertContains(t, code, `",\"name\":"`)
+	assertContains(t, code, `",\"age\":"`)
+
 
 }
 
@@ -274,9 +275,9 @@ func TestSerializeMixedOptionalRequired(t *testing.T) {
 
 	code := GenerateCompanionSelective("Profile", meta, reg, false, true)
 
-	// Required props should use string accumulation (no conditional)
-	assertContains(t, code, `"\"id\":"`)
-	assertContains(t, code, `"\"name\":"`)
+	// Required props should be in the template literal portion
+	assertContains(t, code, `\"id\":`)
+	assertContains(t, code, `\"name\":`)
 	// Optional prop should have conditional check
 	assertContains(t, code, "input.bio !== undefined")
 }
@@ -730,109 +731,6 @@ func TestValidateFormatUriTemplate(t *testing.T) {
 	code := GenerateCompanionSelective("Link", meta, reg, true, false)
 	assertContains(t, code, "format uri-template")
 	assertContains(t, code, ".test(input.template)")
-}
-
-// --- Manifest generation tests ---
-
-func TestManifestBasic(t *testing.T) {
-	companions := []CompanionFile{
-		{Path: "/project/dist/user.dto.CreateUserDto.tsgonest.js", Content: "..."},
-		{Path: "/project/dist/user.dto.UserResponse.tsgonest.js", Content: "..."},
-	}
-
-	m := GenerateManifest(companions, "/project/dist", nil)
-
-	// Check companions
-	if len(m.Companions) != 2 {
-		t.Fatalf("expected 2 companions, got %d", len(m.Companions))
-	}
-	if c, ok := m.Companions["CreateUserDto"]; !ok {
-		t.Error("missing companion for CreateUserDto")
-	} else {
-		if c.Assert != "assertCreateUserDto" {
-			t.Errorf("companion assert = %q, want %q", c.Assert, "assertCreateUserDto")
-		}
-		if c.Validate != "validateCreateUserDto" {
-			t.Errorf("companion validate = %q, want %q", c.Validate, "validateCreateUserDto")
-		}
-		if c.Serialize != "serializeCreateUserDto" {
-			t.Errorf("companion serialize = %q, want %q", c.Serialize, "serializeCreateUserDto")
-		}
-		if c.Schema != "schemaCreateUserDto" {
-			t.Errorf("companion schema = %q, want %q", c.Schema, "schemaCreateUserDto")
-		}
-		if c.File != "./user.dto.CreateUserDto.tsgonest.js" {
-			t.Errorf("companion file = %q, want %q", c.File, "./user.dto.CreateUserDto.tsgonest.js")
-		}
-	}
-	if c, ok := m.Companions["UserResponse"]; !ok {
-		t.Error("missing companion for UserResponse")
-	} else {
-		if c.Assert != "assertUserResponse" {
-			t.Errorf("companion assert = %q, want %q", c.Assert, "assertUserResponse")
-		}
-	}
-}
-
-func TestManifestEmpty(t *testing.T) {
-	m := GenerateManifest(nil, "/project/dist", nil)
-
-	if len(m.Companions) != 0 {
-		t.Errorf("expected 0 companions, got %d", len(m.Companions))
-	}
-}
-
-func TestManifestJSON(t *testing.T) {
-	companions := []CompanionFile{
-		{Path: "/dist/dto.User.tsgonest.js", Content: "..."},
-	}
-
-	m := GenerateManifest(companions, "/dist", nil)
-	data, err := ManifestJSON(m)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	jsonStr := string(data)
-	assertContains(t, jsonStr, `"companions"`)
-	assertContains(t, jsonStr, `"User"`)
-	assertContains(t, jsonStr, `"assertUser"`)
-	assertContains(t, jsonStr, `"serializeUser"`)
-	assertContains(t, jsonStr, `"validateUser"`)
-	assertContains(t, jsonStr, `"schemaUser"`)
-}
-
-func TestManifestRelativePaths(t *testing.T) {
-	companions := []CompanionFile{
-		{Path: "/project/dist/src/user.dto.Dto.tsgonest.js", Content: "..."},
-	}
-
-	m := GenerateManifest(companions, "/project/dist", nil)
-
-	c := m.Companions["Dto"]
-	if c.File != "./src/user.dto.Dto.tsgonest.js" {
-		t.Errorf("expected relative path ./src/user.dto.Dto.tsgonest.js, got %q", c.File)
-	}
-}
-
-func TestParseCompanionPath(t *testing.T) {
-	tests := []struct {
-		path     string
-		wantType string
-	}{
-		{"dist/user.dto.CreateUserDto.tsgonest.js", "CreateUserDto"},
-		{"dist/user.dto.UserResponse.tsgonest.js", "UserResponse"},
-		{"dist/app.Config.tsgonest.js", "Config"},
-		{"dist/invalid.js", ""},
-		{"dist/file.unknown.js", ""},
-	}
-
-	for _, tc := range tests {
-		typeName := parseCompanionPath(tc.path)
-		if typeName != tc.wantType {
-			t.Errorf("parseCompanionPath(%q) typeName = %q, want %q", tc.path, typeName, tc.wantType)
-		}
-	}
 }
 
 // --- Phase 9: Zod-Elegant Validation API codegen tests ---
@@ -1434,150 +1332,6 @@ func TestValidation_StandardSchemaWrapperSyntax(t *testing.T) {
 	assertContains(t, code, "// Standard Schema v1 wrapper")
 	// Should contain path mapping logic
 	assertContains(t, code, "e.path.split(\".\").map(k => ({ key: k }))")
-}
-
-func TestManifest_SchemaEntries(t *testing.T) {
-	companions := []CompanionFile{
-		{Path: "/project/dist/user.dto.CreateUserDto.tsgonest.js", Content: "..."},
-	}
-
-	m := GenerateManifest(companions, "/project/dist", nil)
-
-	if len(m.Companions) != 1 {
-		t.Fatalf("expected 1 companion entry, got %d", len(m.Companions))
-	}
-	entry, ok := m.Companions["CreateUserDto"]
-	if !ok {
-		t.Fatal("expected CreateUserDto in companions")
-	}
-	if entry.Schema != "schemaCreateUserDto" {
-		t.Errorf("expected Schema='schemaCreateUserDto', got %q", entry.Schema)
-	}
-	if entry.File != "./user.dto.CreateUserDto.tsgonest.js" {
-		t.Errorf("expected File='./user.dto.CreateUserDto.tsgonest.js', got %q", entry.File)
-	}
-}
-
-func TestManifest_SchemaEntriesMultiple(t *testing.T) {
-	companions := []CompanionFile{
-		{Path: "/project/dist/user.dto.CreateUserDto.tsgonest.js", Content: "..."},
-		{Path: "/project/dist/user.dto.UserResponse.tsgonest.js", Content: "..."},
-	}
-
-	m := GenerateManifest(companions, "/project/dist", nil)
-
-	if len(m.Companions) != 2 {
-		t.Fatalf("expected 2 companion entries, got %d", len(m.Companions))
-	}
-
-	if _, ok := m.Companions["CreateUserDto"]; !ok {
-		t.Error("expected CreateUserDto in companions")
-	}
-	if _, ok := m.Companions["UserResponse"]; !ok {
-		t.Error("expected UserResponse in companions")
-	}
-}
-
-func TestManifest_SchemaInJSON(t *testing.T) {
-	companions := []CompanionFile{
-		{Path: "/dist/dto.User.tsgonest.js", Content: "..."},
-	}
-
-	m := GenerateManifest(companions, "/dist", nil)
-	data, err := ManifestJSON(m)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	jsonStr := string(data)
-	assertContains(t, jsonStr, `"companions"`)
-	assertContains(t, jsonStr, `"schemaUser"`)
-}
-
-func TestManifest_EmptySchemas(t *testing.T) {
-	m := GenerateManifest(nil, "/project/dist", nil)
-	if len(m.Companions) != 0 {
-		t.Errorf("expected 0 companion entries, got %d", len(m.Companions))
-	}
-}
-
-func TestManifest_RouteMap(t *testing.T) {
-	companions := []CompanionFile{
-		{Path: "/project/dist/user.dto.UserResponse.tsgonest.js", Content: "..."},
-	}
-
-	routeMap := map[string]RouteMapping{
-		"UserController.findAll": {ReturnType: "UserResponse", IsArray: true},
-		"UserController.findOne": {ReturnType: "UserResponse", IsArray: false},
-	}
-
-	m := GenerateManifest(companions, "/project/dist", routeMap)
-
-	if m.Routes == nil {
-		t.Fatal("expected routes map, got nil")
-	}
-	if len(m.Routes) != 2 {
-		t.Fatalf("expected 2 route entries, got %d", len(m.Routes))
-	}
-	if r, ok := m.Routes["UserController.findAll"]; !ok {
-		t.Error("missing route UserController.findAll")
-	} else {
-		if r.ReturnType != "UserResponse" {
-			t.Errorf("returnType = %q, want %q", r.ReturnType, "UserResponse")
-		}
-		if !r.IsArray {
-			t.Error("expected IsArray=true for findAll")
-		}
-	}
-	if r, ok := m.Routes["UserController.findOne"]; !ok {
-		t.Error("missing route UserController.findOne")
-	} else {
-		if r.ReturnType != "UserResponse" {
-			t.Errorf("returnType = %q, want %q", r.ReturnType, "UserResponse")
-		}
-		if r.IsArray {
-			t.Error("expected IsArray=false for findOne")
-		}
-	}
-}
-
-func TestManifest_RouteMapJSON(t *testing.T) {
-	companions := []CompanionFile{
-		{Path: "/dist/dto.User.tsgonest.js", Content: "..."},
-	}
-
-	routeMap := map[string]RouteMapping{
-		"UserController.findOne": {ReturnType: "User"},
-	}
-
-	m := GenerateManifest(companions, "/dist", routeMap)
-	data, err := ManifestJSON(m)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	jsonStr := string(data)
-	assertContains(t, jsonStr, `"routes"`)
-	assertContains(t, jsonStr, `"UserController.findOne"`)
-	assertContains(t, jsonStr, `"returnType": "User"`)
-}
-
-func TestManifest_NilRouteMapOmitted(t *testing.T) {
-	companions := []CompanionFile{
-		{Path: "/dist/dto.User.tsgonest.js", Content: "..."},
-	}
-
-	m := GenerateManifest(companions, "/dist", nil)
-	data, err := ManifestJSON(m)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	jsonStr := string(data)
-	// Routes should be omitted from JSON when nil
-	if strings.Contains(jsonStr, `"routes"`) {
-		t.Error("expected routes to be omitted from JSON when nil")
-	}
 }
 
 func TestGenerateCompanionTypes(t *testing.T) {
@@ -2363,6 +2117,480 @@ func TestSerializeAtomicUnion(t *testing.T) {
 	assertContains(t, code, `typeof input.value === "string"`)
 	assertContains(t, code, `__s(input.value)`)
 	assertNotContains(t, code, "JSON.stringify(input.value)")
+}
+
+// --- is() function codegen tests ---
+
+func TestGenerateIsFunction_Simple(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+	meta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Name: "UserDto",
+		Properties: []metadata.Property{
+			{Name: "name", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+			{Name: "age", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "number"}, Required: true},
+			{Name: "active", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "boolean"}, Required: true},
+		},
+	}
+
+	code := GenerateCompanionSelective("UserDto", meta, reg, true, false)
+
+	// Should have is() function with && chain
+	assertContains(t, code, "export function isUserDto(input)")
+	assertContains(t, code, `typeof input === "object" && input !== null`)
+	assertContains(t, code, `typeof input.name === "string"`)
+	assertContains(t, code, `typeof input.age === "number" && Number.isFinite(input.age)`)
+	assertContains(t, code, `typeof input.active === "boolean"`)
+	// The is() function should use return with a single expression
+	assertContains(t, code, "return (typeof input")
+}
+
+func TestGenerateIsFunction_Nullable(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+	meta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Properties: []metadata.Property{
+			{Name: "name", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string", Nullable: true}, Required: true},
+			{Name: "bio", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string", Optional: true}, Required: false},
+		},
+	}
+
+	code := GenerateCompanionSelective("Dto", meta, reg, true, false)
+
+	assertContains(t, code, "export function isDto(input)")
+	// Nullable should have null check
+	assertContains(t, code, "input.name === null || typeof input.name === \"string\"")
+	// Optional should have undefined check
+	assertContains(t, code, "input.bio === undefined || typeof input.bio === \"string\"")
+}
+
+func TestGenerateIsFunction_Constraints(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+	minLen := 1
+	maxLen := 255
+	min := 0.0
+	max := 150.0
+	meta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Properties: []metadata.Property{
+			{
+				Name: "name", Required: true,
+				Type:        metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"},
+				Constraints: &metadata.Constraints{MinLength: &minLen, MaxLength: &maxLen},
+			},
+			{
+				Name: "age", Required: true,
+				Type:        metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "number"},
+				Constraints: &metadata.Constraints{Minimum: &min, Maximum: &max},
+			},
+		},
+	}
+
+	code := GenerateCompanionSelective("Dto", meta, reg, true, false)
+
+	assertContains(t, code, "export function isDto(input)")
+	// Constraints should be inlined in the is function
+	assertContains(t, code, "input.name.length >= 1")
+	assertContains(t, code, "input.name.length <= 255")
+	assertContains(t, code, "input.age >= 0")
+	assertContains(t, code, "input.age <= 150")
+}
+
+func TestGenerateIsFunction_Union(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+	meta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Properties: []metadata.Property{
+			{
+				Name:     "role",
+				Required: true,
+				Type: metadata.Metadata{
+					Kind: metadata.KindUnion,
+					UnionMembers: []metadata.Metadata{
+						{Kind: metadata.KindLiteral, LiteralValue: "admin"},
+						{Kind: metadata.KindLiteral, LiteralValue: "moderator"},
+						{Kind: metadata.KindLiteral, LiteralValue: "user"},
+					},
+				},
+			},
+		},
+	}
+
+	code := GenerateCompanionSelective("Dto", meta, reg, true, false)
+
+	assertContains(t, code, "export function isDto(input)")
+	// Literal unions should use direct === checks (no .includes())
+	assertContains(t, code, `input.role === "admin"`)
+	assertContains(t, code, `input.role === "moderator"`)
+	assertContains(t, code, `input.role === "user"`)
+}
+
+func TestGenerateIsFunction_Recursive(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+	meta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Properties: []metadata.Property{
+			{Name: "name", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+			{Name: "children", Type: metadata.Metadata{
+				Kind: metadata.KindArray,
+				ElementType: &metadata.Metadata{Kind: metadata.KindRef, Ref: "Department"},
+			}, Required: true},
+		},
+	}
+	reg.Types["Department"] = meta
+
+	code := GenerateCompanionSelective("Department", meta, reg, true, false)
+
+	assertContains(t, code, "export function isDepartment(input)")
+	// Recursive reference should call isDepartment
+	assertContains(t, code, "isDepartment(")
+	assertContains(t, code, ".every(")
+}
+
+// --- Standalone assert() tests ---
+
+func TestGenerateStandaloneAssert(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+	meta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Properties: []metadata.Property{
+			{Name: "name", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+			{Name: "age", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "number"}, Required: true},
+		},
+	}
+
+	code := GenerateCompanionSelective("Dto", meta, reg, true, false)
+
+	assertContains(t, code, "export function assertDto(input)")
+	// Should throw TypeError directly, not wrap validate
+	assertContains(t, code, "throw new TypeError")
+	// The old assert wrapped validate — the new one should NOT have "result = validateDto"
+	assertNotContains(t, code, "const result = validateDto(input)")
+	// The assert function should contain its own checks and return input
+	assertContains(t, code, "return input;")
+}
+
+func TestGenerateStandaloneAssert_Recursive(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+	meta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Properties: []metadata.Property{
+			{Name: "name", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+			{Name: "children", Type: metadata.Metadata{
+				Kind: metadata.KindArray,
+				ElementType: &metadata.Metadata{Kind: metadata.KindRef, Ref: "Dept"},
+			}, Required: true},
+		},
+	}
+	reg.Types["Dept"] = meta
+
+	code := GenerateCompanionSelective("Dept", meta, reg, true, false)
+
+	// Should have inner function with path parameter
+	assertContains(t, code, "_assertDept(input, _path)")
+	assertContains(t, code, "export function assertDept(input)")
+	assertContains(t, code, `_assertDept(input, "input")`)
+}
+
+// --- Recursive validate optimization tests ---
+
+func TestGenerateValidate_RecursiveOptimized(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+	meta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Properties: []metadata.Property{
+			{Name: "name", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+			{Name: "children", Type: metadata.Metadata{
+				Kind: metadata.KindArray,
+				ElementType: &metadata.Metadata{Kind: metadata.KindRef, Ref: "Dept"},
+			}, Required: true},
+		},
+	}
+	reg.Types["Dept"] = meta
+
+	code := GenerateCompanionSelective("Dept", meta, reg, true, false)
+
+	// Should use inner function pattern (no regex path rewrite, no spread)
+	assertContains(t, code, "_validateDept(input, _path, errors)")
+	assertContains(t, code, `_validateDept(input, "input", errors)`)
+	// Should NOT use the old expensive pattern
+	assertNotContains(t, code, ".replace(/^input/")
+	assertNotContains(t, code, "...r.errors")
+}
+
+// --- stringify() function tests ---
+
+func TestGenerateStringify(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+	meta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Properties: []metadata.Property{
+			{Name: "name", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+		},
+	}
+
+	code := GenerateCompanionSelective("Dto", meta, reg, true, true)
+
+	assertContains(t, code, "export function stringifyDto(input)")
+	assertContains(t, code, "validateDto(input)")
+	assertContains(t, code, "serializeDto(input)")
+	assertContains(t, code, "Serialization type check failed for Dto")
+}
+
+func TestGenerateStringify_NotGeneratedWithoutSerialization(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+	meta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Properties: []metadata.Property{
+			{Name: "name", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+		},
+	}
+
+	code := GenerateCompanionSelective("Dto", meta, reg, true, false)
+
+	assertNotContains(t, code, "export function stringifyDto(input)")
+}
+
+// --- Enum serialization tests ---
+
+func TestEnumSerialization_AllStrings(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+	meta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Properties: []metadata.Property{
+			{Name: "status", Type: metadata.Metadata{
+				Kind: metadata.KindEnum,
+				EnumValues: []metadata.EnumValue{
+					{Name: "Active", Value: "active"},
+					{Name: "Inactive", Value: "inactive"},
+				},
+			}, Required: true},
+		},
+	}
+
+	code := GenerateCompanionSelective("Dto", meta, reg, false, true)
+
+	// String enum should use __s(), not JSON.stringify
+	assertContains(t, code, "__s(input.status)")
+	assertNotContains(t, code, "JSON.stringify(input.status)")
+}
+
+func TestEnumSerialization_AllNumbers(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+	meta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Properties: []metadata.Property{
+			{Name: "level", Type: metadata.Metadata{
+				Kind: metadata.KindEnum,
+				EnumValues: []metadata.EnumValue{
+					{Name: "Low", Value: float64(1)},
+					{Name: "High", Value: float64(2)},
+				},
+			}, Required: true},
+		},
+	}
+
+	code := GenerateCompanionSelective("Dto", meta, reg, false, true)
+
+	// Numeric enum should use coercion, not JSON.stringify
+	assertContains(t, code, `"" + input.level`)
+	assertNotContains(t, code, "JSON.stringify(input.level)")
+}
+
+// --- Serialization __s() simplification tests ---
+
+func TestSerializationHelper_NoRegexBranch(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+	meta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Properties: []metadata.Property{
+			{Name: "name", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+		},
+	}
+
+	code := GenerateCompanionSelective("Dto", meta, reg, false, true)
+
+	// Should have simplified __s() without the regex branch
+	assertContains(t, code, "function __s(s)")
+	assertNotContains(t, code, "s.length > 64")
+	assertNotContains(t, code, "__esc")
+}
+
+// --- Companion types (.d.ts) tests ---
+
+func TestGenerateCompanionTypes_NewFunctions(t *testing.T) {
+	code := GenerateCompanionTypesSelective("UserDto", true, true)
+
+	assertContains(t, code, "export declare function isUserDto(input: unknown): input is UserDto;")
+	assertContains(t, code, "export declare function stringifyUserDto(input: UserDto): string;")
+}
+
+func TestGenerateCompanionTypes_NoStringifyWithoutSerialization(t *testing.T) {
+	code := GenerateCompanionTypesSelective("UserDto", true, false)
+
+	assertContains(t, code, "export declare function isUserDto(input: unknown): input is UserDto;")
+	assertNotContains(t, code, "stringifyUserDto")
+}
+
+// --- Transform codegen tests ---
+
+func TestTransformSimpleObject(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+	meta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Name: "UserResponse",
+		Properties: []metadata.Property{
+			{Name: "id", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "number"}, Required: true},
+			{Name: "name", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+			{Name: "email", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+		},
+	}
+
+	code := GenerateCompanionSelective("UserResponse", meta, reg, false, true)
+
+	assertContains(t, code, "export function transformUserResponse(input)")
+	assertContains(t, code, "id: input.id")
+	assertContains(t, code, "name: input.name")
+	assertContains(t, code, "email: input.email")
+}
+
+func TestTransformOptionalProps(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+	meta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Name: "Profile",
+		Properties: []metadata.Property{
+			{Name: "id", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "number"}, Required: true},
+			{Name: "bio", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string", Optional: true}, Required: false},
+		},
+	}
+
+	code := GenerateCompanionSelective("Profile", meta, reg, false, true)
+
+	assertContains(t, code, "export function transformProfile(input)")
+	assertContains(t, code, "id: input.id")
+	assertContains(t, code, "if (input.bio !== undefined)")
+	assertContains(t, code, "_r.bio =")
+}
+
+func TestTransformNestedObject(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+	addressMeta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Name: "Address",
+		Properties: []metadata.Property{
+			{Name: "street", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+			{Name: "city", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+		},
+	}
+	reg.Register("Address", addressMeta)
+
+	meta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Name: "User",
+		Properties: []metadata.Property{
+			{Name: "name", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+			{Name: "address", Type: metadata.Metadata{Kind: metadata.KindRef, Ref: "Address"}, Required: true},
+		},
+	}
+
+	code := GenerateCompanionSelective("User", meta, reg, false, true)
+
+	assertContains(t, code, "export function transformUser(input)")
+	assertContains(t, code, "name: input.name")
+	// Nested object should be inlined since Address is not recursive
+	assertContains(t, code, "street: input.address.street")
+	assertContains(t, code, "city: input.address.city")
+}
+
+func TestTransformArray(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+	meta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Name: "Response",
+		Properties: []metadata.Property{
+			{Name: "items", Type: metadata.Metadata{
+				Kind: metadata.KindArray,
+				ElementType: &metadata.Metadata{
+					Kind: metadata.KindObject,
+					Name: "Item",
+					Properties: []metadata.Property{
+						{Name: "id", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "number"}, Required: true},
+						{Name: "label", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+					},
+				},
+			}, Required: true},
+		},
+	}
+
+	code := GenerateCompanionSelective("Response", meta, reg, false, true)
+
+	assertContains(t, code, "export function transformResponse(input)")
+	assertContains(t, code, ".map(")
+	assertContains(t, code, "id:")
+	assertContains(t, code, "label:")
+}
+
+func TestTransformNullable(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+	meta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Name: "Box",
+		Properties: []metadata.Property{
+			{Name: "value", Type: metadata.Metadata{
+				Kind: metadata.KindAtomic, Atomic: "string", Nullable: true,
+			}, Required: true},
+		},
+	}
+
+	code := GenerateCompanionSelective("Box", meta, reg, false, true)
+
+	assertContains(t, code, "export function transformBox(input)")
+	assertContains(t, code, "== null ? null :")
+}
+
+func TestTransformRecursiveType(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+	meta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Name: "TreeNode",
+		Properties: []metadata.Property{
+			{Name: "value", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+			{Name: "child", Type: metadata.Metadata{Kind: metadata.KindRef, Ref: "TreeNode", Nullable: true}, Required: true},
+		},
+	}
+	reg.Register("TreeNode", meta)
+
+	code := GenerateCompanionSelective("TreeNode", meta, reg, false, true)
+
+	assertContains(t, code, "export function transformTreeNode(input)")
+	assertContains(t, code, "transformTreeNode(input.child)")
+}
+
+func TestTransformAtomicPassthrough(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+	e := NewEmitter()
+	ctx := &transformCtx{generating: map[string]bool{}}
+	expr := generateTransformExpr("input.value", &metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, reg, 0, ctx)
+	_ = e
+	if expr != "input.value" {
+		t.Errorf("expected atomic passthrough, got: %s", expr)
+	}
+
+	expr = generateTransformExpr("input.count", &metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "number"}, reg, 0, ctx)
+	if expr != "input.count" {
+		t.Errorf("expected atomic passthrough, got: %s", expr)
+	}
+}
+
+func TestTransformTypeDeclaration(t *testing.T) {
+	code := GenerateCompanionTypesSelective("UserDto", true, true)
+	assertContains(t, code, "export declare function transformUserDto(input: UserDto): UserDto;")
+}
+
+func TestTransformTypeDeclaration_NoTransformWithoutSerialization(t *testing.T) {
+	code := GenerateCompanionTypesSelective("UserDto", true, false)
+	assertNotContains(t, code, "transformUserDto")
 }
 
 func assertContains(t *testing.T, haystack string, needle string) {

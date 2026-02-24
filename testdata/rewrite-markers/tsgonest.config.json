@@ -1,0 +1,6 @@
+{
+  "transforms": {
+    "validation": true,
+    "serialization": true
+  }
+}

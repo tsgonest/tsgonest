@@ -11,7 +11,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/tsgonest/tsgonest/internal/config"
 	"github.com/tsgonest/tsgonest/internal/runner"
 	"github.com/tsgonest/tsgonest/internal/watcher"
 )
@@ -73,27 +72,12 @@ func runDev(args []string) int {
 	}
 
 	// Load config for entryFile, sourceRoot, manualRestart settings
-	var cfg *config.Config
-	if configPath != "" {
-		resolvedConfigPath := configPath
-		if !filepath.IsAbs(resolvedConfigPath) {
-			resolvedConfigPath = filepath.Join(cwd, resolvedConfigPath)
-		}
-		cfg, err = config.Load(resolvedConfigPath)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			return 1
-		}
-	} else {
-		// Auto-discover config file: tsgonest.config.ts > tsgonest.config.json
-		if p := config.Discover(cwd); p != "" {
-			cfg, err = config.Load(p)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "error: %v\n", err)
-				return 1
-			}
-		}
+	cfgResult, cfgErr := loadOrDiscoverConfig(configPath, cwd)
+	if cfgErr != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", cfgErr)
+		return 1
 	}
+	cfg := cfgResult.Config
 
 	// Resolve entryFile: CLI flag > config > auto-detect
 	if entryPoint == "" && cfg != nil && cfg.EntryFile != "" {

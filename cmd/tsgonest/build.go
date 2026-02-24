@@ -2,17 +2,22 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/microsoft/typescript-go/shim/ast"
 	shimchecker "github.com/microsoft/typescript-go/shim/checker"
 	shimcompiler "github.com/microsoft/typescript-go/shim/compiler"
+	"github.com/microsoft/typescript-go/shim/core"
+	shimincremental "github.com/microsoft/typescript-go/shim/execute/incremental"
+	shimtsoptions "github.com/microsoft/typescript-go/shim/tsoptions"
 	"github.com/tsgonest/tsgonest/internal/analyzer"
 	"github.com/tsgonest/tsgonest/internal/buildcache"
 	"github.com/tsgonest/tsgonest/internal/codegen"
@@ -21,10 +26,89 @@ import (
 	"github.com/tsgonest/tsgonest/internal/metadata"
 	"github.com/tsgonest/tsgonest/internal/openapi"
 	"github.com/tsgonest/tsgonest/internal/pathalias"
+	"github.com/tsgonest/tsgonest/internal/rewrite"
+	"github.com/tsgonest/tsgonest/internal/sdkgen"
 )
 
+// buildFlags holds the parsed flags from the build command line.
+// Tsgonest-specific flags are separated from tsgo compiler flags.
+type buildFlags struct {
+	ConfigPath   string
+	TsconfigPath string
+	DumpMetadata bool
+	Clean        bool
+	Assets       string
+	NoCheck      bool
+	TsgoArgs     []string // flags to forward to tsgo's ParseCommandLine
+}
+
+// parseBuildArgs separates tsgonest-specific flags from tsgo compiler flags.
+// Tsgonest flags (--config, --project, --clean, etc.) are consumed and stored
+// in the returned buildFlags. Everything else is collected in TsgoArgs for
+// forwarding to tsgo's ParseCommandLine.
+func parseBuildArgs(args []string) buildFlags {
+	f := buildFlags{
+		TsconfigPath: "tsconfig.json",
+	}
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch arg {
+		case "--config":
+			if i+1 < len(args) {
+				i++
+				f.ConfigPath = args[i]
+			}
+		case "--project", "-p":
+			if i+1 < len(args) {
+				i++
+				f.TsconfigPath = args[i]
+			}
+		case "--dump-metadata":
+			f.DumpMetadata = true
+		case "--clean":
+			f.Clean = true
+		case "--assets":
+			if i+1 < len(args) {
+				i++
+				f.Assets = args[i]
+			}
+		case "--no-check":
+			f.NoCheck = true
+		default:
+			// Not a tsgonest flag — pass through to tsgo
+			f.TsgoArgs = append(f.TsgoArgs, arg)
+		}
+	}
+
+	return f
+}
+
+// parseTsgoFlags parses tsgo compiler flags via tsgo's own ParseCommandLine.
+// Returns the parsed CompilerOptions overrides, or errors if any flag is invalid.
+func parseTsgoFlags(tsgoArgs []string) (*core.CompilerOptions, []string) {
+	if len(tsgoArgs) == 0 {
+		return nil, nil
+	}
+
+	cliFS := compiler.CreateDefaultFS()
+	cliHost := compiler.CreateDefaultHost("", cliFS)
+	parsedCLI := shimtsoptions.ParseCommandLine(tsgoArgs, cliHost)
+	if parsedCLI != nil && len(parsedCLI.Errors) > 0 {
+		var errs []string
+		for _, d := range parsedCLI.Errors {
+			errs = append(errs, d.String())
+		}
+		return nil, errs
+	}
+	if parsedCLI != nil {
+		return parsedCLI.CompilerOptions(), nil
+	}
+	return nil, nil
+}
+
 // runBuild executes the full build pipeline:
-// diagnostics -> compile -> path alias resolution -> companions -> manifest -> OpenAPI -> assets.
+// diagnostics -> compile -> path alias resolution -> companions -> OpenAPI -> assets.
 //
 // Exit codes (matching tsgo):
 //
@@ -32,35 +116,32 @@ import (
 //	1 = diagnostics present, outputs generated
 //	2 = diagnostics present, outputs skipped (e.g. noEmitOnError)
 func runBuild(args []string) int {
-	buildFlags := flag.NewFlagSet("build", flag.ExitOnError)
+	flags := parseBuildArgs(args)
 
-	var (
-		configPath   string
-		tsconfigPath string
-		dumpMetadata bool
-		clean        bool
-		assets       string
-		noCheck      bool
-	)
+	configPath := flags.ConfigPath
+	tsconfigPath := flags.TsconfigPath
+	dumpMetadata := flags.DumpMetadata
+	clean := flags.Clean
+	assets := flags.Assets
+	noCheck := flags.NoCheck
 
-	buildFlags.StringVar(&configPath, "config", "", "Path to tsgonest config file (tsgonest.config.ts or .json)")
-	buildFlags.StringVar(&tsconfigPath, "project", "tsconfig.json", "Path to tsconfig.json (or use -p)")
-	buildFlags.StringVar(&tsconfigPath, "p", "tsconfig.json", "Path to tsconfig.json (shorthand for --project)")
-	buildFlags.BoolVar(&dumpMetadata, "dump-metadata", false, "Dump type metadata as JSON to stdout (debug)")
-	buildFlags.BoolVar(&clean, "clean", false, "Clean output directory before building")
-	buildFlags.StringVar(&assets, "assets", "", "Glob pattern for static assets to copy to output")
-	buildFlags.BoolVar(&noCheck, "no-check", false, "Skip type checking (syntax errors are still reported)")
-
-	buildFlags.Usage = func() {
-		fmt.Println("Usage: tsgonest build [flags]")
-		fmt.Println()
-		fmt.Println("Flags:")
-		buildFlags.PrintDefaults()
+	// Parse tsgo flags via tsgo's own command-line parser.
+	// This handles --strict, --noEmit, --target, --module, etc.
+	// Any flag not recognized by tsgonest above is treated as a tsgo compiler flag.
+	var cliOverrides *core.CompilerOptions
+	if len(flags.TsgoArgs) > 0 {
+		overrides, errs := parseTsgoFlags(flags.TsgoArgs)
+		if len(errs) > 0 {
+			for _, e := range errs {
+				fmt.Fprintf(os.Stderr, "error: %s\n", e)
+			}
+			return 1
+		}
+		cliOverrides = overrides
 	}
 
-	buildFlags.Parse(args)
-
 	buildStart := time.Now()
+	timing := &TimingReport{}
 
 	// Resolve working directory
 	cwd, err := os.Getwd()
@@ -69,35 +150,17 @@ func runBuild(args []string) int {
 		return 1
 	}
 
-	// Load config if specified.
-	// resolvedConfigPath is hoisted to function scope — needed later for cache hashing.
-	var cfg *config.Config
-	var resolvedConfigPath string
-	configDir := cwd // default: resolve relative paths from CWD
-	if configPath != "" {
-		resolvedConfigPath = configPath
-		if !filepath.IsAbs(resolvedConfigPath) {
-			resolvedConfigPath = filepath.Join(cwd, resolvedConfigPath)
-		}
-		cfg, err = config.Load(resolvedConfigPath)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			return 1
-		}
-		configDir = filepath.Dir(resolvedConfigPath)
-		fmt.Fprintf(os.Stderr, "loaded config from %s\n", configPath)
-	} else {
-		// Auto-discover config file: tsgonest.config.ts > tsgonest.config.json
-		if p := config.Discover(cwd); p != "" {
-			cfg, err = config.Load(p)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "error: %v\n", err)
-				return 1
-			}
-			resolvedConfigPath = p
-			configDir = filepath.Dir(p)
-			fmt.Fprintf(os.Stderr, "loaded config from %s\n", filepath.Base(p))
-		}
+	// Load config if specified, or auto-discover in CWD.
+	cfgResult, err := loadOrDiscoverConfig(configPath, cwd)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+	cfg := cfgResult.Config
+	resolvedConfigPath := cfgResult.Path
+	configDir := cfgResult.Dir
+	if resolvedConfigPath != "" {
+		fmt.Fprintf(os.Stderr, "loaded config from %s\n", filepath.Base(resolvedConfigPath))
 	}
 
 	// Step 1: Parse tsconfig using tsgo's native JSONC parser (handles comments, trailing commas, extends).
@@ -107,7 +170,7 @@ func runBuild(args []string) int {
 
 	fmt.Fprintf(os.Stderr, "compiling with tsconfig: %s\n", tsconfigPath)
 
-	parsedConfig, diags, err := compiler.ParseTSConfig(tsFS, cwd, tsconfigPath, host)
+	parsedConfig, diags, err := compiler.ParseTSConfig(tsFS, cwd, tsconfigPath, host, cliOverrides)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		return 1
@@ -151,7 +214,7 @@ func runBuild(args []string) int {
 		// Also delete the post-processing cache — ensures full rebuild
 		buildcache.Delete(postCachePath)
 	}
-	tsconfigDur := time.Since(tsconfigStart)
+	timing.TSConfig = time.Since(tsconfigStart)
 
 	// Step 2: Create program with the (possibly modified) config.
 	programStart := time.Now()
@@ -164,14 +227,14 @@ func runBuild(args []string) int {
 		fmt.Fprint(os.Stderr, compiler.FormatDiagnostics(programDiags))
 		return 1
 	}
-	programDur := time.Since(programStart)
+	timing.Program = time.Since(programStart)
 
 	// Handle --dump-metadata: skip emit, just analyze types
 	if dumpMetadata {
 		return runDumpMetadata(program)
 	}
 
-	// Step 3: Gather diagnostics + emit.
+	// Step 3: Gather diagnostics (forces type checking).
 	// If tsconfig has "incremental: true" or "composite: true", use the incremental
 	// pipeline — only checks/emits changed files, persists state to .tsbuildinfo.
 	pretty := compiler.IsPrettyOutput()
@@ -180,32 +243,181 @@ func runBuild(args []string) int {
 	isIncremental := opts.IsIncremental()
 
 	var allDiagnostics []*ast.Diagnostic
-	var emitResult *compiler.EmitResult
-	var diagDur, emitDur time.Duration
+	var incrProgram *shimincremental.Program
 
 	if isIncremental {
 		// Incremental mode: wrap program with incremental state.
 		// ReadBuildInfoProgram reads prior state from .tsbuildinfo (if it exists).
-		incrProgram := compiler.CreateIncrementalProgram(program, nil, host, parsedConfig)
+		incrProgram = compiler.CreateIncrementalProgram(program, nil, host, parsedConfig)
 		fmt.Fprintln(os.Stderr, "incremental build enabled")
 
 		diagStart := time.Now()
 		allDiagnostics = compiler.GatherIncrementalDiagnostics(incrProgram, noCheck)
-		diagDur = time.Since(diagStart)
-
-		// Emit through incremental program — only changed files + writes .tsbuildinfo
-		emitStart := time.Now()
-		emitResult = compiler.EmitIncrementalProgram(incrProgram)
-		emitDur = time.Since(emitStart)
+		timing.Diagnostics = time.Since(diagStart)
 	} else {
 		diagStart := time.Now()
 		allDiagnostics = compiler.GatherDiagnostics(program, noCheck)
-		diagDur = time.Since(diagStart)
+		timing.Diagnostics = time.Since(diagStart)
+	}
 
-		// Emit JavaScript (non-incremental)
+	// Check for errors before proceeding to analysis
+	hasPreEmitErrors := compiler.CountErrors(allDiagnostics) > 0
+
+	// ── Pre-emit analysis ────────────────────────────────────────────────
+	// Move checker, companion generation, controller analysis, and marker
+	// extraction BEFORE emit so the WriteFile callback has all data it needs.
+	// This works because the checker is available after GatherDiagnostics.
+
+	needCompanions := cfg != nil && (cfg.Transforms.Validation || cfg.Transforms.Serialization)
+	needControllers := cfg != nil && len(cfg.Controllers.Include) > 0
+
+	// Track files with syntax errors — skip companion generation for them
+	syntaxErrorFiles := compiler.FilesWithSyntaxErrors(
+		compiler.GetSyntacticDiagnostics(program),
+	)
+
+	// Build path alias resolver (used in WriteFile callback instead of post-emit)
+	var pathResolver *pathalias.PathResolver
+	if opts.Paths != nil && opts.Paths.Size() > 0 {
+		pathsMap := make(map[string][]string)
+		for k, v := range opts.Paths.Entries() {
+			pathsMap[k] = v
+		}
+		pathResolver = pathalias.NewPathResolver(pathalias.Config{
+			PathsBaseDir: opts.GetPathsBasePath(cwd),
+			OutDir:       opts.OutDir,
+			RootDir:      opts.RootDir,
+			Paths:        pathsMap,
+		})
+	}
+
+	var sharedChecker *shimchecker.Checker
+	var sharedWalker *analyzer.TypeWalker
+	var checkerRelease func()
+	var allCompanions []codegen.CompanionFile
+	var controllers []analyzer.ControllerInfo
+	var controllerRegistry *metadata.TypeRegistry
+	var controllerWarnings []analyzer.Warning
+	var rewriteCtx *rewrite.RewriteContext
+
+	// Only do pre-emit analysis if no errors (type checker data may be unreliable)
+	if !hasPreEmitErrors && (needCompanions || needControllers) {
+		checkerStart := time.Now()
+		sharedChecker, checkerRelease = shimcompiler.Program_GetTypeChecker(program, context.Background())
+		if sharedChecker == nil {
+			fmt.Fprintln(os.Stderr, "error: could not get type checker")
+			return 1
+		}
+		defer checkerRelease()
+		sharedWalker = analyzer.NewTypeWalker(sharedChecker)
+		timing.Checker = time.Since(checkerStart)
+
+		// Build source→output map (needed before emit for companion path computation)
+		// We compute output paths from tsconfig rootDir/outDir, no emitted file list needed.
+		sourceToOutput := buildSourceToOutputMapFromConfig(program, opts.RootDir, opts.OutDir)
+
+		// Generate companion file content in memory (don't write to disk yet)
+		companionStart := time.Now()
+		if needCompanions {
+			companions, typesByFile, compErr := generateCompanionsInMemory(program, cfg, sourceToOutput, sharedChecker, sharedWalker, syntaxErrorFiles)
+			if compErr != nil {
+				fmt.Fprintf(os.Stderr, "error generating companions: %v\n", compErr)
+				return 1
+			}
+			allCompanions = companions
+
+			// Build companion map for rewriting
+			companionMap := rewrite.BuildCompanionMap(sourceToOutput, typesByFile)
+
+			// Extract marker calls from source files
+			markerCalls := make(map[string][]rewrite.MarkerCall)
+			for _, sf := range program.GetSourceFiles() {
+				if sf.IsDeclarationFile {
+					continue
+				}
+				calls := rewrite.ExtractMarkerCalls(sf, sharedChecker)
+				if len(calls) > 0 {
+					markerCalls[sf.FileName()] = calls
+				}
+			}
+
+			// Build RewriteContext
+			rewriteCtx = &rewrite.RewriteContext{
+				CompanionMap:  companionMap,
+				MarkerCalls:   markerCalls,
+				PathResolver:  pathResolver,
+				ModuleFormat:  rewrite.DetectModuleFormat(moduleFormatFromOpts(opts)),
+				SourceToOutput: sourceToOutput,
+				OutputToSource: rewrite.BuildOutputToSourceMap(sourceToOutput),
+			}
+
+			// Note: "generated N companion file(s)" message deferred to after cache check
+		}
+		timing.Companions = time.Since(companionStart)
+
+		// Analyze controllers
+		controllerStart := time.Now()
+		if needControllers {
+			ca := analyzer.NewControllerAnalyzerWithWalker(program, sharedChecker, sharedWalker)
+			controllers = ca.AnalyzeProgram(cfg.Controllers.Include, cfg.Controllers.Exclude)
+			controllerRegistry = ca.Registry()
+			controllerWarnings = ca.Warnings()
+
+			// Add controller data to rewrite context
+			if rewriteCtx != nil {
+				rewriteCtx.Controllers = controllers
+				rewriteCtx.ControllerSourceFiles = rewrite.BuildControllerSourceFiles(controllers)
+			} else {
+				// Controllers without companions — still need rewrite context for controller injection
+				companionMap := make(map[string]string)
+				rewriteCtx = &rewrite.RewriteContext{
+					CompanionMap:          companionMap,
+					MarkerCalls:           make(map[string][]rewrite.MarkerCall),
+					Controllers:           controllers,
+					ControllerSourceFiles: rewrite.BuildControllerSourceFiles(controllers),
+					PathResolver:          pathResolver,
+					ModuleFormat:          rewrite.DetectModuleFormat(moduleFormatFromOpts(opts)),
+					SourceToOutput:        sourceToOutput,
+					OutputToSource:        rewrite.BuildOutputToSourceMap(sourceToOutput),
+				}
+			}
+		}
+		timing.Controllers = time.Since(controllerStart)
+	}
+
+	// If we only have path aliases but no companions/controllers, still set up
+	// a minimal rewrite context for alias resolution in the WriteFile callback.
+	if rewriteCtx == nil && pathResolver != nil && pathResolver.HasAliases() {
+		rewriteCtx = &rewrite.RewriteContext{
+			CompanionMap:          make(map[string]string),
+			MarkerCalls:           make(map[string][]rewrite.MarkerCall),
+			PathResolver:          pathResolver,
+			ModuleFormat:          "esm",
+			SourceToOutput:        make(map[string]string),
+			OutputToSource:        make(map[string]string),
+			ControllerSourceFiles: make(map[string]bool),
+		}
+	}
+
+	// ── Step 4: Emit with WriteFile callback ─────────────────────────────
+	// The WriteFile callback applies path alias resolution, marker rewriting,
+	// and controller body validation injection during emit — zero extra I/O.
+	var emitResult *compiler.EmitResult
+
+	// Build the WriteFile callback
+	var writeFile shimcompiler.WriteFile
+	if rewriteCtx != nil {
+		writeFile = rewriteCtx.MakeWriteFile()
+	}
+
+	if isIncremental {
 		emitStart := time.Now()
-		emitResult = compiler.EmitProgram(program)
-		emitDur = time.Since(emitStart)
+		emitResult = compiler.EmitIncrementalProgram(incrProgram, writeFile)
+		timing.Emit = time.Since(emitStart)
+	} else {
+		emitStart := time.Now()
+		emitResult = compiler.EmitProgram(program, writeFile)
+		timing.Emit = time.Since(emitStart)
 	}
 
 	// Append emit diagnostics (declaration transform errors, write errors)
@@ -225,13 +437,13 @@ func runBuild(args []string) int {
 	// Determine exit status (matching tsgo):
 	// - EmitSkipped + errors → exit 2
 	// - Errors present → exit 1
-	// - No errors → continue to NestJS analysis
+	// - No errors → continue to post-emit steps
 	hasErrors := compiler.CountErrors(allDiagnostics) > 0
 	if emitResult.EmitSkipped && hasErrors {
 		// noEmitOnError triggered — no files written
 		fmt.Fprintln(os.Stderr, "no files emitted (noEmitOnError)")
-		totalDur := time.Since(buildStart)
-		printTiming(tsconfigDur, programDur, diagDur, emitDur, 0, 0, 0, 0, 0, 0, totalDur)
+		timing.Total = time.Since(buildStart)
+		timing.Print()
 		return 2
 	}
 
@@ -243,47 +455,32 @@ func runBuild(args []string) int {
 	}
 
 	// ── Early exit on diagnostic errors ──────────────────────────────────
-	// If TypeScript has errors, skip all post-processing (companions, controllers,
-	// manifest, OpenAPI). The type checker data may be incomplete/unreliable, and
-	// tsgonest warnings are noise when the user needs to fix TS errors first.
-	// Path aliases are still resolved since emitted JS needs correct imports.
+	// Path aliases were already resolved in the WriteFile callback.
 	if hasErrors {
-		// Resolve path aliases so the emitted JS is usable despite errors
-		aliasStart := time.Now()
-		if opts.Paths != nil && opts.Paths.Size() > 0 {
-			pathsMap := make(map[string][]string)
-			for k, v := range opts.Paths.Entries() {
-				pathsMap[k] = v
-			}
-			pathsBaseDir := opts.GetPathsBasePath(cwd)
-
-			resolver := pathalias.NewPathResolver(pathalias.Config{
-				PathsBaseDir: pathsBaseDir,
-				OutDir:       opts.OutDir,
-				RootDir:      opts.RootDir,
-				Paths:        pathsMap,
-			})
-			count, aliasErr := resolver.ResolveAllEmittedFiles(emittedFiles)
-			if aliasErr != nil {
-				fmt.Fprintf(os.Stderr, "warning: path alias resolution: %v\n", aliasErr)
-			} else if count > 0 {
-				fmt.Fprintf(os.Stderr, "resolved path aliases in %d file(s)\n", count)
-			}
-		}
-		aliasDur := time.Since(aliasStart)
-
-		totalDur := time.Since(buildStart)
-		printTiming(tsconfigDur, programDur, diagDur, emitDur, aliasDur, 0, 0, 0, 0, 0, totalDur)
+		timing.Total = time.Since(buildStart)
+		timing.Print()
 		return 1
 	}
 
+	// ── Write companion files to disk (Option B: batch after emit) ──────
+	companionWriteStart := time.Now()
+	for _, comp := range allCompanions {
+		dir := filepath.Dir(comp.Path)
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			fmt.Fprintf(os.Stderr, "error creating dir %s: %v\n", dir, err)
+			return 1
+		}
+		if err := os.WriteFile(comp.Path, []byte(comp.Content), 0644); err != nil {
+			fmt.Fprintf(os.Stderr, "error writing %s: %v\n", comp.Path, err)
+			return 1
+		}
+	}
+	if dur := time.Since(companionWriteStart); dur > time.Millisecond {
+		// Only report if it takes noticeable time
+		timing.Companions += dur
+	}
+
 	// ── Post-processing cache check ──────────────────────────────────────
-	// When incremental mode reports no emitted files (nothing changed in TS),
-	// AND the tsgonest config + critical output files are unchanged, we can
-	// skip all expensive post-processing (aliases, checker, companions,
-	// controller analysis, manifest, OpenAPI).
-	//
-	// If ANY condition fails → full rebuild. No partial invalidation.
 	var configHash string
 	if resolvedConfigPath != "" {
 		configHash = buildcache.HashFile(resolvedConfigPath)
@@ -293,141 +490,28 @@ func runBuild(args []string) int {
 	if noFilesEmitted && !clean {
 		existingCache := buildcache.Load(postCachePath)
 		if existingCache != nil && existingCache.IsValid(configHash) {
-			// All checks passed — skip post-processing entirely
 			fmt.Fprintln(os.Stderr, "no changes detected, outputs up to date")
-
-			totalDur := time.Since(buildStart)
-			printTiming(tsconfigDur, programDur, diagDur, emitDur, 0, 0, 0, 0, 0, 0, totalDur)
-
+			timing.Total = time.Since(buildStart)
+			timing.Print()
 			return 0
 		}
-		// Cache miss/invalid — fall through to full post-processing
 	}
 
-	// When the cache is invalid but no files were emitted (incremental warm rebuild
-	// with cache miss — e.g., output file deleted, config changed), we still need
-	// the emitted file list to build the source→output map for companion generation.
-	// In this case, enumerate existing .js files in the outDir.
-	effectiveEmittedFiles := emittedFiles
-	if noFilesEmitted && opts.OutDir != "" {
-		existingJS := discoverJSFiles(opts.OutDir)
-		if len(existingJS) > 0 {
-			effectiveEmittedFiles = existingJS
-		}
+	// Print deferred status messages (only when we're past the cache check)
+	if len(allCompanions) > 0 {
+		fmt.Fprintf(os.Stderr, "generated %d companion file(s)\n", len(allCompanions))
 	}
-
-	// Track files with syntax errors — skip companion generation for them
-	syntaxErrorFiles := compiler.FilesWithSyntaxErrors(
-		compiler.GetSyntacticDiagnostics(program),
-	)
-
-	// Resolve path aliases in emitted files using the parsed tsconfig paths.
-	// Only process actually emitted files (not discovered ones — they were already resolved).
-	aliasStart := time.Now()
-	if opts.Paths != nil && opts.Paths.Size() > 0 {
-		pathsMap := make(map[string][]string)
-		for k, v := range opts.Paths.Entries() {
-			pathsMap[k] = v
+	if len(controllers) > 0 {
+		totalRoutes := 0
+		for _, ctrl := range controllers {
+			totalRoutes += len(ctrl.Routes)
 		}
-		pathsBaseDir := opts.GetPathsBasePath(cwd)
-
-		resolver := pathalias.NewPathResolver(pathalias.Config{
-			PathsBaseDir: pathsBaseDir,
-			OutDir:       opts.OutDir,
-			RootDir:      opts.RootDir,
-			Paths:        pathsMap,
-		})
-		count, aliasErr := resolver.ResolveAllEmittedFiles(emittedFiles)
-		if aliasErr != nil {
-			fmt.Fprintf(os.Stderr, "warning: path alias resolution: %v\n", aliasErr)
-		} else if count > 0 {
-			fmt.Fprintf(os.Stderr, "resolved path aliases in %d file(s)\n", count)
-		}
-	}
-	aliasDur := time.Since(aliasStart)
-
-	// Create a single shared type checker + walker for both companion generation
-	// and controller analysis. Sharing the walker's registry means types already
-	// walked during companion generation (DTOs) short-circuit to KindRef during
-	// controller return type analysis — avoiding redundant deep type walks.
-	checkerStart := time.Now()
-	needCompanions := cfg != nil && (cfg.Transforms.Validation || cfg.Transforms.Serialization)
-	needControllers := cfg != nil && len(cfg.Controllers.Include) > 0
-
-	var sharedChecker *shimchecker.Checker
-	var sharedWalker *analyzer.TypeWalker
-	var checkerRelease func()
-	if needCompanions || needControllers {
-		sharedChecker, checkerRelease = shimcompiler.Program_GetTypeChecker(program, context.Background())
-		if sharedChecker == nil {
-			fmt.Fprintln(os.Stderr, "error: could not get type checker")
-			return 1
-		}
-		defer checkerRelease()
-		sharedWalker = analyzer.NewTypeWalker(sharedChecker)
-	}
-	checkerDur := time.Since(checkerStart)
-
-	// Generate companion files (validation + serialization)
-	// Skip files with syntax errors — their AST/type metadata may be unreliable.
-	// Use effectiveEmittedFiles (which includes discovered files on cache-miss warm builds).
-	companionStart := time.Now()
-	var allCompanions []codegen.CompanionFile
-	if needCompanions {
-		companions, compErr := generateCompanionsWithWalker(program, cfg, effectiveEmittedFiles, opts.RootDir, opts.OutDir, sharedChecker, sharedWalker, syntaxErrorFiles)
-		if compErr != nil {
-			fmt.Fprintf(os.Stderr, "error generating companions: %v\n", compErr)
-			return 1
-		}
-		allCompanions = companions
-		if len(companions) > 0 {
-			fmt.Fprintf(os.Stderr, "generated %d companion file(s)\n", len(companions))
-		}
-	}
-	companionDur := time.Since(companionStart)
-
-	// Analyze controllers using the shared checker + walker.
-	// Types already registered by companion generation will short-circuit to KindRef.
-	controllerStart := time.Now()
-	var controllers []analyzer.ControllerInfo
-	var controllerRegistry *metadata.TypeRegistry
-	if needControllers {
-		ca := analyzer.NewControllerAnalyzerWithWalker(program, sharedChecker, sharedWalker)
-		controllers = ca.AnalyzeProgram(cfg.Controllers.Include, cfg.Controllers.Exclude)
-		controllerRegistry = ca.Registry()
-		// Print warnings
-		warnings := ca.Warnings()
-		for _, w := range warnings {
+		fmt.Fprintf(os.Stderr, "found %d controller(s) with %d route(s)\n", len(controllers), totalRoutes)
+		// Print controller analyzer warnings (stored during pre-emit analysis)
+		for _, w := range controllerWarnings {
 			fmt.Fprintf(os.Stderr, "warning: %s\n", w.Message)
 		}
-		if len(controllers) > 0 {
-			totalRoutes := 0
-			for _, ctrl := range controllers {
-				totalRoutes += len(ctrl.Routes)
-			}
-			fmt.Fprintf(os.Stderr, "found %d controller(s) with %d route(s)\n", len(controllers), totalRoutes)
-		}
 	}
-	controllerDur := time.Since(controllerStart)
-
-	// Generate manifest file (using pre-analyzed controllers for route map)
-	manifestStart := time.Now()
-	if len(allCompanions) > 0 {
-		var routeMap map[string]codegen.RouteMapping
-		if len(controllers) > 0 {
-			routeMap = buildRouteMapFromControllers(controllers)
-		}
-		manifestDir := opts.OutDir
-		if manifestDir == "" {
-			manifestDir = determineOutputDir(allCompanions, emittedFiles, cwd)
-		}
-		manifestErr := generateManifest(allCompanions, manifestDir, routeMap)
-		if manifestErr != nil {
-			fmt.Fprintf(os.Stderr, "error generating manifest: %v\n", manifestErr)
-			return 1
-		}
-	}
-	manifestDur := time.Since(manifestStart)
 
 	// Generate OpenAPI document (using pre-analyzed controllers)
 	openapiStart := time.Now()
@@ -438,7 +522,44 @@ func runBuild(args []string) int {
 			return 1
 		}
 	}
-	openapiDur := time.Since(openapiStart)
+	timing.OpenAPI = time.Since(openapiStart)
+
+	// Generate TypeScript SDK if configured (runs in background goroutine)
+	var sdkWg sync.WaitGroup
+	var sdkErr error
+	if cfg != nil && cfg.SDK.Output != "" {
+		sdkInput := cfg.SDK.Input
+		if sdkInput == "" {
+			// Default: use OpenAPI output as SDK input
+			sdkInput = cfg.OpenAPI.Output
+		}
+		if sdkInput != "" {
+			if !filepath.IsAbs(sdkInput) {
+				sdkInput = filepath.Join(configDir, sdkInput)
+			}
+			sdkOutput := cfg.SDK.Output
+			if !filepath.IsAbs(sdkOutput) {
+				sdkOutput = filepath.Join(configDir, sdkOutput)
+			}
+			sdkWg.Add(1)
+			go func() {
+				defer sdkWg.Done()
+				// Hash-based skip: compare SHA256 of input against cached hash
+				sdkHashPath := filepath.Join(sdkOutput, ".sdk-hash")
+				inputHash := hashFileContent(sdkInput)
+				if existingHash, err := os.ReadFile(sdkHashPath); err == nil && string(existingHash) == inputHash {
+					fmt.Fprintln(os.Stderr, "SDK up to date, skipping generation")
+					return
+				}
+				if err := sdkgen.Generate(sdkInput, sdkOutput); err != nil {
+					sdkErr = err
+					return
+				}
+				os.WriteFile(sdkHashPath, []byte(inputHash), 0o644)
+				fmt.Fprintf(os.Stderr, "generated SDK: %s\n", cfg.SDK.Output)
+			}()
+		}
+	}
 
 	// Copy static assets if configured
 	if assets != "" {
@@ -449,6 +570,13 @@ func runBuild(args []string) int {
 		} else if count > 0 {
 			fmt.Fprintf(os.Stderr, "copied %d asset(s)\n", count)
 		}
+	}
+
+	// Wait for background SDK generation to complete
+	sdkWg.Wait()
+	if sdkErr != nil {
+		fmt.Fprintf(os.Stderr, "error generating SDK: %v\n", sdkErr)
+		return 1
 	}
 
 	// ── Save post-processing cache ─────────────────────────────────────
@@ -462,41 +590,15 @@ func runBuild(args []string) int {
 		}
 		cacheOutputs = append(cacheOutputs, openapiOutput)
 	}
-	if len(allCompanions) > 0 {
-		manifestDir := opts.OutDir
-		if manifestDir == "" {
-			manifestDir = determineOutputDir(allCompanions, emittedFiles, cwd)
-		}
-		manifestPath := filepath.Join(manifestDir, "__tsgonest_manifest.json")
-		cacheOutputs = append(cacheOutputs, manifestPath)
-	}
 	postCache := buildcache.New(configHash, cacheOutputs)
 	if saveErr := buildcache.Save(postCachePath, postCache); saveErr != nil {
 		fmt.Fprintf(os.Stderr, "warning: saving post-processing cache: %v\n", saveErr)
 	}
 
-	totalDur := time.Since(buildStart)
-
-	// Print timing breakdown
-	printTiming(tsconfigDur, programDur, diagDur, emitDur, aliasDur, checkerDur, companionDur, controllerDur, manifestDur, openapiDur, totalDur)
+	timing.Total = time.Since(buildStart)
+	timing.Print()
 
 	return 0
-}
-
-// printTiming outputs the build timing breakdown to stderr.
-func printTiming(tsconfig, program, diag, emit, aliases, checker, companions, controllers, manifest, openapi, total time.Duration) {
-	fmt.Fprintf(os.Stderr, "\n--- timing ---\n")
-	fmt.Fprintf(os.Stderr, "  tsconfig:      %s\n", tsconfig.Round(time.Millisecond))
-	fmt.Fprintf(os.Stderr, "  program:       %s\n", program.Round(time.Millisecond))
-	fmt.Fprintf(os.Stderr, "  diagnostics:   %s\n", diag.Round(time.Millisecond))
-	fmt.Fprintf(os.Stderr, "  emit:          %s\n", emit.Round(time.Millisecond))
-	fmt.Fprintf(os.Stderr, "  aliases:       %s\n", aliases.Round(time.Millisecond))
-	fmt.Fprintf(os.Stderr, "  checker:       %s\n", checker.Round(time.Millisecond))
-	fmt.Fprintf(os.Stderr, "  companions:    %s\n", companions.Round(time.Millisecond))
-	fmt.Fprintf(os.Stderr, "  controllers:   %s\n", controllers.Round(time.Millisecond))
-	fmt.Fprintf(os.Stderr, "  manifest:      %s\n", manifest.Round(time.Millisecond))
-	fmt.Fprintf(os.Stderr, "  openapi:       %s\n", openapi.Round(time.Millisecond))
-	fmt.Fprintf(os.Stderr, "  total:         %s\n", total.Round(time.Millisecond))
 }
 
 // cleanDir removes a directory after safety checks.
@@ -691,75 +793,138 @@ func generateCompanionsWithWalker(program *shimcompiler.Program, cfg *config.Con
 	return allCompanions, nil
 }
 
-// generateManifest creates the __tsgonest_manifest.json file in the output directory.
-func generateManifest(companions []codegen.CompanionFile, outputDir string, routeMap map[string]codegen.RouteMapping) error {
-	m := codegen.GenerateManifest(companions, outputDir, routeMap)
-	jsonBytes, err := codegen.ManifestJSON(m)
-	if err != nil {
-		return fmt.Errorf("serializing manifest: %w", err)
-	}
+// generateCompanionsInMemory generates companion file content in memory without writing to disk.
+// Returns both the companion files and a map of source file → type names found in that file.
+// This is used in the new pipeline where companions are written after emit.
+func generateCompanionsInMemory(program *shimcompiler.Program, cfg *config.Config, sourceToOutput map[string]string, checker *shimchecker.Checker, walker *analyzer.TypeWalker, skipFiles map[string]bool) ([]codegen.CompanionFile, map[string][]string, error) {
+	var allCompanions []codegen.CompanionFile
+	typesByFile := make(map[string][]string)
 
-	manifestPath := filepath.Join(outputDir, "__tsgonest_manifest.json")
+	for _, sf := range program.GetSourceFiles() {
+		if sf.IsDeclarationFile {
+			continue
+		}
 
-	// Create output directory if needed
-	if err := os.MkdirAll(outputDir, 0755); err != nil {
-		return fmt.Errorf("creating output directory %s: %w", outputDir, err)
-	}
+		if skipFiles[sf.FileName()] {
+			fmt.Fprintf(os.Stderr, "warning: skipping companion generation for %s (syntax errors)\n", filepath.Base(sf.FileName()))
+			continue
+		}
 
-	if err := os.WriteFile(manifestPath, jsonBytes, 0644); err != nil {
-		return fmt.Errorf("writing %s: %w", manifestPath, err)
-	}
-
-	fmt.Fprintf(os.Stderr, "generated manifest: %s\n", manifestPath)
-	return nil
-}
-
-// buildRouteMapFromControllers builds a route map from pre-analyzed controllers.
-// Maps "ControllerName.methodName" → RouteMapping with the return type name.
-func buildRouteMapFromControllers(controllers []analyzer.ControllerInfo) map[string]codegen.RouteMapping {
-	if len(controllers) == 0 {
-		return nil
-	}
-
-	routeMap := make(map[string]codegen.RouteMapping)
-	for _, ctrl := range controllers {
-		for _, route := range ctrl.Routes {
-			// Determine return type name
-			typeName := resolveReturnTypeName(&route.ReturnType)
-			if typeName == "" {
+		if len(cfg.Transforms.Include) > 0 {
+			if !analyzer.MatchesGlob(sf.FileName(), cfg.Transforms.Include, nil) {
 				continue
 			}
+		}
 
-			key := ctrl.Name + "." + route.OperationID
-			isArray := route.ReturnType.Kind == metadata.KindArray
-			routeMap[key] = codegen.RouteMapping{
-				ReturnType: typeName,
-				IsArray:    isArray,
+		outputBase, ok := sourceToOutput[sf.FileName()]
+		if !ok {
+			continue
+		}
+
+		types := make(map[string]*metadata.Metadata)
+		for _, stmt := range sf.Statements.Nodes {
+			switch stmt.Kind {
+			case ast.KindTypeAliasDeclaration:
+				decl := stmt.AsTypeAliasDeclaration()
+				name := decl.Name().Text()
+				resolvedType := shimchecker.Checker_getTypeFromTypeNode(checker, decl.Type)
+				m := walker.WalkNamedType(name, resolvedType)
+				types[name] = &m
+			case ast.KindInterfaceDeclaration:
+				decl := stmt.AsInterfaceDeclaration()
+				name := decl.Name().Text()
+				sym := checker.GetSymbolAtLocation(decl.Name())
+				if sym != nil {
+					resolvedType := shimchecker.Checker_getDeclaredTypeOfSymbol(checker, sym)
+					m := walker.WalkType(resolvedType)
+					types[name] = &m
+				}
+			case ast.KindClassDeclaration:
+				decl := stmt.AsClassDeclaration()
+				if decl.Name() != nil {
+					if isControllerClass(stmt) {
+						continue
+					}
+					name := decl.Name().Text()
+					sym := checker.GetSymbolAtLocation(decl.Name())
+					if sym != nil {
+						resolvedType := shimchecker.Checker_getDeclaredTypeOfSymbol(checker, sym)
+						m := walker.WalkType(resolvedType)
+						types[name] = &m
+					}
+				}
 			}
 		}
+
+		if len(types) == 0 {
+			continue
+		}
+
+		// Track type names per source file for companion map building
+		var fileTypeNames []string
+		for name := range types {
+			fileTypeNames = append(fileTypeNames, name)
+		}
+		typesByFile[sf.FileName()] = fileTypeNames
+
+		// Generate companion content (in memory, no disk write)
+		companions := codegen.GenerateCompanionFiles(outputBase, types, walker.Registry())
+		allCompanions = append(allCompanions, companions...)
 	}
 
-	if len(routeMap) == 0 {
-		return nil
-	}
-	return routeMap
+	return allCompanions, typesByFile, nil
 }
 
-// resolveReturnTypeName extracts the DTO type name from a route's return type metadata.
-// For arrays, it returns the element type name.
-// Returns empty string for primitive/any/void types.
-func resolveReturnTypeName(m *metadata.Metadata) string {
-	switch m.Kind {
-	case metadata.KindRef:
-		return m.Ref
-	case metadata.KindObject:
-		return m.Name
-	case metadata.KindArray:
-		if m.ElementType != nil {
-			return resolveReturnTypeName(m.ElementType)
+// buildSourceToOutputMapFromConfig creates a mapping from source .ts file paths to their
+// expected output paths, computed from tsconfig rootDir/outDir without needing emitted files.
+func buildSourceToOutputMapFromConfig(program *shimcompiler.Program, rootDir, outDir string) map[string]string {
+	result := make(map[string]string)
+
+	for _, sf := range program.GetSourceFiles() {
+		if sf.IsDeclarationFile {
+			continue
+		}
+		srcName := sf.FileName()
+
+		srcNoExt := srcName
+		for _, ext := range []string{".ts", ".tsx", ".mts", ".cts"} {
+			if strings.HasSuffix(srcNoExt, ext) {
+				srcNoExt = srcNoExt[:len(srcNoExt)-len(ext)]
+				break
+			}
+		}
+
+		var outputPath string
+		if rootDir != "" && outDir != "" {
+			rel, err := filepath.Rel(rootDir, srcNoExt)
+			if err == nil && !strings.HasPrefix(rel, "..") {
+				outputPath = filepath.Join(outDir, rel)
+			}
+		}
+		if outputPath == "" && outDir != "" {
+			outputPath = filepath.Join(outDir, filepath.Base(srcNoExt))
+		}
+		if outputPath == "" {
+			outputPath = srcNoExt
+		}
+
+		// Store with .ts extension (for companionPath to strip)
+		result[srcName] = outputPath + ".ts"
+	}
+
+	return result
+}
+
+// moduleFormatFromOpts determines the module format from compiler options.
+func moduleFormatFromOpts(opts *core.CompilerOptions) string {
+	if opts.Module != 0 {
+		// Module values: 1=CommonJS, 2=AMD, 3=UMD, 4=System, 5=ES2015, 6=ES2020, etc.
+		// Values >= 5 are ESM variants
+		if opts.Module == 1 {
+			return "commonjs"
 		}
 	}
-	return ""
+	return "esm"
 }
 
 // discoverJSFiles walks the output directory and returns all .js file paths.
@@ -955,6 +1120,17 @@ func runDumpMetadata(program *shimcompiler.Program) int {
 		return 1
 	}
 	return 0
+}
+
+// hashFileContent returns the hex-encoded SHA256 hash of a file's content.
+// Returns an empty string if the file cannot be read.
+func hashFileContent(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	h := sha256.Sum256(data)
+	return hex.EncodeToString(h[:])
 }
 
 // isControllerClass checks if a class declaration has a @Controller() decorator.

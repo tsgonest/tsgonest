@@ -16,6 +16,7 @@ export interface ValidationErrorDetail {
  */
 export class TsgonestValidationError extends Error {
   public readonly errors: ValidationErrorDetail[];
+  public status?: number;
 
   constructor(errors: ValidationErrorDetail[]) {
     const message = `Validation failed: ${errors.length} error(s)\n` +
