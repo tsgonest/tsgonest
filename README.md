@@ -22,7 +22,7 @@ A Go CLI wrapping [typescript-go](https://github.com/microsoft/typescript-go) (t
 ## Features
 
 - **Fast compilation** via tsgo (Go port of the TypeScript compiler)
-- **Generated validators** from TypeScript types — no decorator boilerplate
+- **Generated validators** from TypeScript types — `@Body()`, `@Query()`, `@Param()`, and `@Headers()` validated at compile time with auto-coercion
 - **Fast JSON serializers** via string concatenation with known property shapes — no generic object traversal
 - **OpenAPI 3.2** from static analysis of NestJS controllers — zero runtime decorators
 - **Watch mode** with auto-restart (`tsgonest dev`)

@@ -30,8 +30,8 @@ init:
 build:
   go build -o tsgonest ./cmd/tsgonest
   @mkdir -p packages/core/bin
-  @cp tsgonest packages/core/bin/tsgonest
-  @chmod 755 packages/core/bin/tsgonest
+  @cp tsgonest packages/core/bin/tsgonest-native
+  @chmod 755 packages/core/bin/tsgonest-native
 
 [windows]
 build:

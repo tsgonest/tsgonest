@@ -143,7 +143,7 @@ The code within `./shim/` is generated. **Do not edit it.** Regenerate with `jus
 - **Output**: Companion files (`*.tsgonest.js` + `*.tsgonest.d.ts`) alongside tsgo output — each companion exports validate, assert, serialize, and schema functions
 - **OpenAPI**: 3.2 only, static analysis (no runtime/reflect-metadata)
 - **Config**: `tsgonest.config.ts` (recommended, evaluated via Node.js) or `tsgonest.config.json`
-- **Runtime**: `@tsgonest/runtime` npm package provides `defineConfig` and `TsgonestValidationError`; validation and serialization are injected at compile time (no pipes/interceptors needed)
+- **Runtime**: `@tsgonest/runtime` npm package provides `defineConfig`, `TsgonestValidationError`, and `TsgonestSerializeInterceptor`; validation and serialization are injected at compile time for `@Body()`, `@Query()`, `@Param()`, and `@Headers()` parameters (no pipes/interceptors needed)
 - **Standard Schema**: v1 wrappers for 60+ framework interop
 - **CLI replacement**: `tsgonest dev` + `tsgonest build` replace `nest start --watch` + `nest build`
 - **Distribution**: Per-platform npm packages + GitHub releases
@@ -340,3 +340,6 @@ pnpm --filter docs start   # Serve the static export locally
 15. **Companion file naming**: Files use `.tsgonest.js`/`.tsgonest.d.ts` suffix (NOT `.validate.js`/`.serialize.js` — those are old format)
 16. **Controller classes have no companions**: `@Controller()` classes are detected and skipped for companion generation
 17. **@Res() routes are never serialized**: `@Returns<T>()` is purely for OpenAPI; the response is handled manually by the developer
+18. **Factory decorators are opaque**: tsgonest uses static analysis and cannot see through factory functions that return core NestJS decorators (`@Body`, `@Query`, `@Param`, `@Headers`, `@Get`, `@Post`, `@Put`, `@Delete`, `@Patch`, `@Controller`, etc.). Import aliases (`import { Body as NestBody }`) **are** supported via checker symbol resolution.
+19. **Coercion registry timing**: `@Query()`/`@Param()` DTO coercion must be enabled between Phase 1 (type walking) and Phase 2 (codegen) in `generateCompanionsInMemory`, because types aren't in the registry until after the walk phase.
+20. **Non-async methods with return transforms**: The controller rewriter auto-inserts `async` before methods that have return serialization transforms but aren't declared `async`. This ensures `await` correctly unwraps Promises before calling `stringify`.
