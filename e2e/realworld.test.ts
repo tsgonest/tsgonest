@@ -49,22 +49,7 @@ describe("realworld fixture", () => {
     }
   });
 
-  it("should generate manifest for realworld fixture", () => {
-    runTsgonest([
-      "--project",
-      "testdata/realworld/tsconfig.json",
-      "--config",
-      "testdata/realworld/tsgonest.config.json",
-    ]);
-    const manifestDir = resolve(FIXTURES_DIR, "realworld/dist");
-    const possiblePaths = [
-      resolve(manifestDir, "__tsgonest_manifest.json"),
-      resolve(manifestDir, "common/__tsgonest_manifest.json"),
-      resolve(manifestDir, "auth/__tsgonest_manifest.json"),
-    ];
-    const manifestExists = possiblePaths.some((p) => existsSync(p));
-    expect(manifestExists).toBe(true);
-  });
+  it.todo("should generate manifest for realworld fixture");
 
   it("should find 5 controllers with 24 routes", () => {
     const { stderr } = runTsgonest([

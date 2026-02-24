@@ -297,7 +297,7 @@ describe("tsgonest generated JS execution", () => {
     const mod = await import(validateFile);
 
     expect(() => mod.assertCreateUserDto("not an object")).toThrow(
-      "Validation failed"
+      "Expected object"
     );
   });
 
