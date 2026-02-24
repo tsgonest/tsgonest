@@ -352,19 +352,13 @@ func runBuild(args []string) int {
 			neededTypes = collectNeededTypes(controllers, markerCalls)
 		}
 
-		// ── Step 3b: Enable coercion on query/param DTO registry entries ─
-		// When a type is used as a whole-object @Query() or @Param(), its
-		// companion must emit string→number/boolean coercion. The controller
-		// analyzer sets Coerce on its local metadata copy, but the type
-		// registry (used by companion codegen) doesn't have it. Propagate here.
-		if needControllers {
-			enableCoercionForQueryParamTypes(controllers, sharedWalker.Registry())
-		}
+		// Collect query/param DTO type names that need coercion
+		coercionTypes := collectCoercionTypes(controllers)
 
 		// ── Step 4: Generate companions only for needed types ────────────
 		companionStart := time.Now()
 		if needCompanions && (neededTypes == nil || len(neededTypes) > 0) {
-			companions, typesByFile, compErr := generateCompanionsInMemory(program, cfg, sourceToOutput, sharedChecker, sharedWalker, syntaxErrorFiles, modFmt, neededTypes)
+			companions, typesByFile, compErr := generateCompanionsInMemory(program, cfg, sourceToOutput, sharedChecker, sharedWalker, syntaxErrorFiles, modFmt, neededTypes, coercionTypes)
 			if compErr != nil {
 				fmt.Fprintf(os.Stderr, "error generating companions: %v\n", compErr)
 				return 1
@@ -760,21 +754,21 @@ func generateOpenAPIFromControllers(controllers []analyzer.ControllerInfo, regis
 // collectNeededTypes gathers the set of type names that actually need companion files.
 // A type is "needed" if it's referenced as a controller body parameter, return type,
 // or in an explicit marker call (tsgonest.validate<T>(), tsgonest.assert<T>(), etc.).
-// enableCoercionForQueryParamTypes applies autoEnableCoercion to registry entries
-// for types used as whole-object @Query() or @Param() parameters. This ensures
-// companion codegen emits string→number/boolean coercion in assert functions.
-func enableCoercionForQueryParamTypes(controllers []analyzer.ControllerInfo, registry *metadata.TypeRegistry) {
+// collectCoercionTypes returns the set of type names used as whole-object
+// @Query() or @Param() parameters. These need string→number/boolean coercion
+// enabled in their companion assert functions.
+func collectCoercionTypes(controllers []analyzer.ControllerInfo) map[string]bool {
+	types := make(map[string]bool)
 	for _, ctrl := range controllers {
 		for _, route := range ctrl.Routes {
 			for _, param := range route.Parameters {
-				if (param.Category == "query" || param.Category == "param") && param.Name == "" && param.TypeName != "" {
-					if m, ok := registry.Types[param.TypeName]; ok {
-						analyzer.AutoEnableCoercion(m)
-					}
+				if (param.Category == "query" || param.Category == "param" || param.Category == "headers") && param.Name == "" && param.TypeName != "" {
+					types[param.TypeName] = true
 				}
 			}
 		}
 	}
+	return types
 }
 
 func collectNeededTypes(controllers []analyzer.ControllerInfo, markerCalls map[string][]rewrite.MarkerCall) map[string]bool {
@@ -863,7 +857,7 @@ type fileTypeInfo struct {
 	types      map[string]*metadata.Metadata
 }
 
-func generateCompanionsInMemory(program *shimcompiler.Program, cfg *config.Config, sourceToOutput map[string]string, checker *shimchecker.Checker, walker *analyzer.TypeWalker, skipFiles map[string]bool, moduleFormat string, neededTypes map[string]bool) ([]codegen.CompanionFile, map[string][]string, error) {
+func generateCompanionsInMemory(program *shimcompiler.Program, cfg *config.Config, sourceToOutput map[string]string, checker *shimchecker.Checker, walker *analyzer.TypeWalker, skipFiles map[string]bool, moduleFormat string, neededTypes map[string]bool, coercionTypes map[string]bool) ([]codegen.CompanionFile, map[string][]string, error) {
 	typesByFile := make(map[string][]string)
 
 	// ── Phase 1: Walk types (sequential — uses shared checker) ──────────
@@ -933,6 +927,17 @@ func generateCompanionsInMemory(program *shimcompiler.Program, cfg *config.Confi
 		})
 	}
 	walkDuration := time.Since(walkStart)
+
+	// Enable string→number/boolean coercion on registry entries for query/param DTOs.
+	// This must happen after Phase 1 (types walked into registry) and before Phase 2 (codegen).
+	if len(coercionTypes) > 0 {
+		registry := walker.Registry()
+		for typeName := range coercionTypes {
+			if m, ok := registry.Types[typeName]; ok {
+				analyzer.AutoEnableCoercion(m)
+			}
+		}
+	}
 
 	// ── Phase 2: Generate companion code (parallel) ──────────────────────
 	codegenStart := time.Now()

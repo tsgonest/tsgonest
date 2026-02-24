@@ -316,6 +316,21 @@ func wrapReturnsInMethod(text string, methodName string, transformFunc string, i
 	methodDecl := text[:bodyStart]
 	isAsync := isMethodAsync(methodDecl, methodName)
 
+	// If the method is not async, make it async so we can safely await the return value.
+	// This is necessary because the method may return a Promise (e.g., from an async service call)
+	// even though the method itself is not declared async.
+	// NestJS handles async methods natively, and adding async to a synchronous method is safe
+	// (it just wraps the return in a Promise, which NestJS already expects).
+	if !isAsync {
+		text = makeMethodAsync(text, methodName)
+		isAsync = true
+		// Re-find body boundaries since text changed
+		bodyStart, bodyEnd, found = findMethodBody(text, methodName)
+		if !found {
+			return text
+		}
+	}
+
 	// Work on the method body substring
 	body := text[bodyStart:bodyEnd]
 	newBody := wrapReturnsInBody(body, transformFunc, isArray, isAsync)
@@ -324,6 +339,31 @@ func wrapReturnsInMethod(text string, methodName string, transformFunc string, i
 	}
 
 	return text[:bodyStart] + newBody + text[bodyEnd:]
+}
+
+// makeMethodAsync inserts `async` before the method name in its declaration.
+// Handles both `methodName(` and indented declarations like `    methodName(`.
+func makeMethodAsync(text string, methodName string) string {
+	// Find the method declaration: methodName( preceded by whitespace/newline
+	// but NOT already preceded by `async`
+	pattern := regexp.MustCompile(`(\n[ \t]+)` + regexp.QuoteMeta(methodName) + `\s*\(`)
+	loc := pattern.FindStringIndex(text)
+	if loc == nil {
+		return text
+	}
+	// Find the method name start (skip the newline+whitespace prefix)
+	methodStart := loc[0]
+	nameIdx := strings.Index(text[methodStart:methodStart+len(text[loc[0]:loc[1]])], methodName)
+	if nameIdx < 0 {
+		return text
+	}
+	insertPos := methodStart + nameIdx
+	// Check if already async
+	before := strings.TrimRight(text[:insertPos], " \t")
+	if strings.HasSuffix(before, "async") {
+		return text
+	}
+	return text[:insertPos] + "async " + text[insertPos:]
 }
 
 // isMethodAsync checks if a method declaration preceding the body start is async.
