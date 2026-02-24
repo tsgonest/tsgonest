@@ -76,7 +76,30 @@ func resolveMigrateScript() (string, error) {
 		}
 	}
 
-	// 3. Fallback: node_modules/tsgonest/bin/migrate.cjs relative to CWD
+	// 3. Walk up from the binary directory to find the enclosing node_modules,
+	//    then resolve tsgonest/bin/migrate.cjs within it.
+	//    This handles both regular npm installs and npx cache layouts:
+	//      binary:     .../node_modules/@tsgonest/cli-darwin-arm64/bin/tsgonest
+	//      migrate.cjs: .../node_modules/tsgonest/bin/migrate.cjs
+	if binDir != "" {
+		dir := binDir
+		for {
+			base := filepath.Base(dir)
+			parent := filepath.Dir(dir)
+			if base == "node_modules" {
+				candidate := filepath.Join(dir, "tsgonest", "bin", "migrate.cjs")
+				if _, err := os.Stat(candidate); err == nil {
+					return candidate, nil
+				}
+			}
+			if parent == dir {
+				break
+			}
+			dir = parent
+		}
+	}
+
+	// 4. Fallback: node_modules/tsgonest/bin/migrate.cjs relative to CWD
 	cwd, err := os.Getwd()
 	if err == nil {
 		nmPath := filepath.Join(cwd, "node_modules", "tsgonest", "bin", "migrate.cjs")
@@ -85,7 +108,7 @@ func resolveMigrateScript() (string, error) {
 		}
 	}
 
-	return "", fmt.Errorf("could not find migrate.cjs — looked in binary dir and node_modules/tsgonest/bin/")
+	return "", fmt.Errorf("could not find migrate.cjs — looked in binary dir, node_modules tree, and CWD/node_modules/tsgonest/bin/")
 }
 
 // selfDir returns the directory containing the currently running executable,
