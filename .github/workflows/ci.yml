@@ -21,8 +21,19 @@ jobs:
 
       - uses: extractions/setup-just@v2
 
+      - uses: pnpm/action-setup@v4
+        with:
+          version: '10'
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+
       - name: Initialize project
         run: just init
+
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile
 
       # ── Go unit tests ────────────────────────────────────────
       - name: Run Go unit tests
@@ -33,16 +44,5 @@ jobs:
         run: just build
 
       # ── E2e tests ────────────────────────────────────────────
-      - uses: pnpm/action-setup@v4
-        with:
-          version: '10'
-
-      - uses: actions/setup-node@v6
-        with:
-          node-version: '24'
-
-      - name: Install workspace dependencies
-        run: pnpm install --frozen-lockfile
-
       - name: Run e2e tests
         run: just test-e2e
