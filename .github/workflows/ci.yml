@@ -39,9 +39,12 @@ jobs:
       - name: Run Go unit tests
         run: just test-unit
 
-      # ── Build binary (needed by e2e) ─────────────────────────
+      # ── Build binary + migrate script (needed by e2e) ────────
       - name: Build binary
         run: just build
+
+      - name: Build migrate script
+        run: pnpm --filter tsgonest build:migrate
 
       # ── E2e tests ────────────────────────────────────────────
       - name: Run e2e tests

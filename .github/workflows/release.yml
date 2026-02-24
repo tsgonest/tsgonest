@@ -12,7 +12,50 @@ permissions:
   pull-requests: read    # git-cliff needs this to enrich changelog with PR titles
 
 jobs:
+  # ── Gate: run the full test suite before releasing ────────
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+          cache: true
+          cache-dependency-path: '**/go.sum'
+
+      - uses: extractions/setup-just@v2
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: '10'
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+
+      - name: Initialize project
+        run: just init
+
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run Go unit tests
+        run: just test-unit
+
+      - name: Build binary
+        run: just build
+
+      - name: Build migrate script
+        run: pnpm --filter tsgonest build:migrate
+
+      - name: Run e2e tests
+        run: just test-e2e
+
+  # ── Release (only runs after tests pass) ──────────────────
   release:
+    needs: test
     runs-on: ubuntu-latest
 
     steps:
@@ -191,7 +234,7 @@ jobs:
       - name: Install workspace
         run: pnpm install --no-frozen-lockfile
 
-      # ── 6. Build TypeScript packages (runtime + types) ───────
+      # ── 6. Build TypeScript packages (runtime + types + migrate) ─
       - name: Build TypeScript packages
         run: pnpm build:packages
 
