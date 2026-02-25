@@ -212,13 +212,13 @@ func generateSerializeObjectAllRequired(accessor string, meta *metadata.Metadata
 	buf.WriteString("`{")
 
 	for i, prop := range meta.Properties {
-		propAccessor := accessor + "." + prop.Name
+		propAccessor := jsPropAccess(accessor, prop.Name)
 
 		if i > 0 {
 			buf.WriteByte(',')
 		}
-		// Static key portion
-		buf.WriteString(fmt.Sprintf(`\"%s\":`, prop.Name))
+		// Static key portion — use jsonKeyInTemplate for correct double-escaping
+		buf.WriteString(fmt.Sprintf(`\"%s\":`, jsonKeyInTemplate(prop.Name)))
 		// Dynamic value as ${...} interpolation
 		valExpr := generateSerializeExprTemplate(propAccessor, &prop.Type, registry, depth+1, ctx)
 		buf.WriteString("${")
@@ -271,11 +271,11 @@ func generateSerializeObjectWithOptional(accessor string, meta *metadata.Metadat
 	var buf strings.Builder
 	buf.WriteString("`{")
 	for i, prop := range required {
-		propAccessor := accessor + "." + prop.Name
+		propAccessor := jsPropAccess(accessor, prop.Name)
 		if i > 0 {
 			buf.WriteByte(',')
 		}
-		buf.WriteString(fmt.Sprintf(`\"%s\":`, prop.Name))
+		buf.WriteString(fmt.Sprintf(`\"%s\":`, jsonKeyInTemplate(prop.Name)))
 		valExpr := generateSerializeExprTemplate(propAccessor, &prop.Type, registry, depth+1, ctx)
 		buf.WriteString("${")
 		buf.WriteString(valExpr)
@@ -285,12 +285,12 @@ func generateSerializeObjectWithOptional(accessor string, meta *metadata.Metadat
 
 	// Append optional properties as ternary concatenation
 	for _, prop := range optional {
-		propAccessor := accessor + "." + prop.Name
+		propAccessor := jsPropAccess(accessor, prop.Name)
 		valExpr := generateSerializeExpr(propAccessor, &prop.Type, registry, depth+1, ctx)
 
 		// Build the key string literal as a JS string: ",\"name\":"
-		// Using fmt to construct a proper JS string literal
-		keyLiteral := fmt.Sprintf(`",\"%s\":"`, prop.Name)
+		// Use jsonKeyInString for correct double-escaping (JSON layer + JS string layer)
+		keyLiteral := fmt.Sprintf(`",\"%s\":"`, jsonKeyInString(prop.Name))
 		buf.WriteString(fmt.Sprintf(` + (%s !== undefined ? %s + %s : "")`, propAccessor, keyLiteral, valExpr))
 	}
 
@@ -394,7 +394,7 @@ func generateSerializeUnion(accessor string, meta *metadata.Metadata, registry *
 // serializing each branch with its specific schema. O(1) dispatch.
 func generateSerializeDiscriminatedUnion(accessor string, meta *metadata.Metadata, registry *metadata.TypeRegistry, depth int, ctx *serializeCtx) string {
 	disc := meta.Discriminant
-	discAccessor := fmt.Sprintf("%s[%q]", accessor, disc.Property)
+	discAccessor := jsPropAccess(accessor, disc.Property)
 
 	// Collect sorted keys for deterministic output
 	keys := make([]string, 0, len(disc.Mapping))

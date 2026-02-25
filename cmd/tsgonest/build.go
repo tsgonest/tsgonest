@@ -199,7 +199,7 @@ func runBuild(args []string) int {
 	if !filepath.IsAbs(resolvedTsconfigPath) {
 		resolvedTsconfigPath = filepath.Join(cwd, resolvedTsconfigPath)
 	}
-	postCachePath := buildcache.CachePath(resolvedTsconfigPath)
+	postCachePath := buildcache.CachePath(opts.OutDir, resolvedTsconfigPath)
 
 	// Clean output directory if requested (using parsed OutDir, no re-parsing needed)
 	if clean && opts.OutDir != "" {

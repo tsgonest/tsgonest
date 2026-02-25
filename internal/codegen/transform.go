@@ -146,9 +146,9 @@ func generateTransformObject(accessor string, meta *metadata.Metadata, registry 
 func generateTransformObjectAllRequired(accessor string, meta *metadata.Metadata, registry *metadata.TypeRegistry, depth int, ctx *transformCtx) string {
 	var parts []string
 	for _, prop := range meta.Properties {
-		propAccessor := accessor + "." + prop.Name
+		propAccessor := jsPropAccess(accessor, prop.Name)
 		valExpr := generateTransformExpr(propAccessor, &prop.Type, registry, depth+1, ctx)
-		parts = append(parts, fmt.Sprintf("%s: %s", prop.Name, valExpr))
+		parts = append(parts, fmt.Sprintf("%s: %s", jsObjectKey(prop.Name), valExpr))
 	}
 	return "{ " + strings.Join(parts, ", ") + " }"
 }
@@ -167,9 +167,9 @@ func generateTransformObjectWithOptional(accessor string, meta *metadata.Metadat
 		if !first {
 			buf.WriteString(", ")
 		}
-		propAccessor := accessor + "." + prop.Name
+		propAccessor := jsPropAccess(accessor, prop.Name)
 		valExpr := generateTransformExpr(propAccessor, &prop.Type, registry, depth+1, ctx)
-		buf.WriteString(fmt.Sprintf("%s: %s", prop.Name, valExpr))
+		buf.WriteString(fmt.Sprintf("%s: %s", jsObjectKey(prop.Name), valExpr))
 		first = false
 	}
 
@@ -180,9 +180,9 @@ func generateTransformObjectWithOptional(accessor string, meta *metadata.Metadat
 		if !prop.Type.Optional && prop.Required {
 			continue
 		}
-		propAccessor := accessor + "." + prop.Name
+		propAccessor := jsPropAccess(accessor, prop.Name)
 		valExpr := generateTransformExpr(propAccessor, &prop.Type, registry, depth+1, ctx)
-		buf.WriteString(fmt.Sprintf(" if (%s !== undefined) _r.%s = %s;", propAccessor, prop.Name, valExpr))
+		buf.WriteString(fmt.Sprintf(" if (%s !== undefined) %s = %s;", propAccessor, jsPropAccess("_r", prop.Name), valExpr))
 	}
 
 	buf.WriteString(" return _r; }())")
@@ -241,7 +241,7 @@ func generateTransformUnion(accessor string, meta *metadata.Metadata, registry *
 // generateTransformDiscriminatedUnion emits a switch on the discriminant property.
 func generateTransformDiscriminatedUnion(accessor string, meta *metadata.Metadata, registry *metadata.TypeRegistry, depth int, ctx *transformCtx) string {
 	disc := meta.Discriminant
-	discAccessor := fmt.Sprintf("%s[%q]", accessor, disc.Property)
+	discAccessor := jsPropAccess(accessor, disc.Property)
 
 	// Collect sorted keys for deterministic output
 	keys := make([]string, 0, len(disc.Mapping))

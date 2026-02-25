@@ -323,8 +323,8 @@ func generateTypeCheckWithPathInner(e *Emitter, accessor string, pathExpr string
 		e.EndBlockSuffix(" else {")
 		e.indent++
 		for _, prop := range meta.Properties {
-			propAccessor := accessor + "." + prop.Name
-			propPathExpr := fmt.Sprintf("%s + \".%s\"", pathExpr, prop.Name)
+			propAccessor := jsPropAccess(accessor, prop.Name)
+			propPathExpr := fmt.Sprintf("%s + %q", pathExpr, jsPropPathSuffix(prop.Name))
 			if prop.Required && !prop.Type.Optional {
 				e.Block("if (%s === undefined)", propAccessor)
 				e.Line("errors.push({ path: %s, expected: \"%s\", received: \"undefined\" });", propPathExpr, describeType(&prop.Type))
@@ -498,7 +498,7 @@ func generateAssertChecksInner(e *Emitter, accessor string, pathExpr string, met
 			e.EndBlock()
 		}
 		if meta.Atomic == "string" && meta.TemplatePattern != "" {
-			e.Block("if (typeof %s === \"string\" && !/%s/.test(%s))", accessor, meta.TemplatePattern, accessor)
+			e.Block("if (typeof %s === \"string\" && !/%s/.test(%s))", accessor, escapeForRegexLiteral(meta.TemplatePattern), accessor)
 			emitAssertThrow(e, pathExpr, fmt.Sprintf("pattern %s", jsStringEscape(meta.TemplatePattern)), fmt.Sprintf("\"\\\"\" + %s + \"\\\"\"", accessor))
 			e.EndBlock()
 		}
@@ -514,12 +514,12 @@ func generateAssertChecksInner(e *Emitter, accessor string, pathExpr string, met
 		e.EndBlockSuffix(" else {")
 		e.indent++
 		for _, prop := range meta.Properties {
-			propAccessor := accessor + "." + prop.Name
+			propAccessor := jsPropAccess(accessor, prop.Name)
 			var propPathExpr string
 			if isRecursive {
-				propPathExpr = fmt.Sprintf("%s + \".%s\"", pathExpr, prop.Name)
+				propPathExpr = fmt.Sprintf("%s + %q", pathExpr, jsPropPathSuffix(prop.Name))
 			} else {
-				propPathExpr = fmt.Sprintf("%s + \".%s\"", pathExpr, prop.Name)
+				propPathExpr = fmt.Sprintf("%s + %q", pathExpr, jsPropPathSuffix(prop.Name))
 			}
 			if prop.Required && !prop.Type.Optional {
 				e.Block("if (%s === undefined)", propAccessor)
@@ -746,7 +746,7 @@ func generateAssertConstraintChecks(e *Emitter, accessor string, pathExpr string
 		e.EndBlock()
 	}
 	if c.Pattern != nil {
-		e.Block("if (typeof %s === \"string\" && !/%s/.test(%s))", accessor, *c.Pattern, accessor)
+		e.Block("if (typeof %s === \"string\" && !/%s/.test(%s))", accessor, escapeForRegexLiteral(*c.Pattern), accessor)
 		emitAssertThrow(e, pathExpr, errMsg("pattern", fmt.Sprintf("pattern %s", jsStringEscape(*c.Pattern))), fmt.Sprintf("\"\\\"\" + %s + \"\\\"\"", accessor))
 		e.EndBlock()
 	}
@@ -963,7 +963,7 @@ func generateIsAtomicExpr(accessor string, meta *metadata.Metadata) string {
 		return "true"
 	}
 	if meta.Atomic == "string" && meta.TemplatePattern != "" {
-		parts = append(parts, fmt.Sprintf("/%s/.test(%s)", meta.TemplatePattern, accessor))
+		parts = append(parts, fmt.Sprintf("/%s/.test(%s)", escapeForRegexLiteral(meta.TemplatePattern), accessor))
 	}
 	return strings.Join(parts, " && ")
 }
@@ -971,7 +971,7 @@ func generateIsAtomicExpr(accessor string, meta *metadata.Metadata) string {
 func generateIsObjectExpr(accessor string, meta *metadata.Metadata, registry *metadata.TypeRegistry, depth int, ctx *validateCtx) string {
 	parts := []string{fmt.Sprintf("typeof %s === \"object\" && %s !== null", accessor, accessor)}
 	for _, prop := range meta.Properties {
-		propAccessor := accessor + "." + prop.Name
+		propAccessor := jsPropAccess(accessor, prop.Name)
 		if prop.Required && !prop.Type.Optional {
 			parts = append(parts, fmt.Sprintf("%s !== undefined", propAccessor))
 			parts = append(parts, generateIsExpr(propAccessor, &prop.Type, registry, depth+1, ctx))
@@ -1020,7 +1020,7 @@ func generateIsConstraintExprs(accessor string, prop *metadata.Property) []strin
 		exprs = append(exprs, fmt.Sprintf("(typeof %s !== \"string\" || %s.length <= %d)", accessor, accessor, *c.MaxLength))
 	}
 	if c.Pattern != nil {
-		exprs = append(exprs, fmt.Sprintf("(typeof %s !== \"string\" || /%s/.test(%s))", accessor, *c.Pattern, accessor))
+		exprs = append(exprs, fmt.Sprintf("(typeof %s !== \"string\" || /%s/.test(%s))", accessor, escapeForRegexLiteral(*c.Pattern), accessor))
 	}
 	if c.Format != nil {
 		pattern, ok := formatRegexes[*c.Format]
@@ -1082,7 +1082,7 @@ func generateIsUnionExpr(accessor string, meta *metadata.Metadata, registry *met
 func generateIsDiscriminatedUnionExpr(accessor string, meta *metadata.Metadata, registry *metadata.TypeRegistry, depth int, ctx *validateCtx) string {
 	// Use IIFE with switch for discriminated unions
 	disc := meta.Discriminant
-	discAccessor := fmt.Sprintf("%s[%q]", accessor, disc.Property)
+	discAccessor := jsPropAccess(accessor, disc.Property)
 
 	keys := make([]string, 0, len(disc.Mapping))
 	for k := range disc.Mapping {
@@ -1159,7 +1159,7 @@ func generateTypeCheckInner(e *Emitter, accessor string, path string, meta *meta
 		generateAtomicCheck(e, accessor, path, meta.Atomic)
 		// Template literal types produce a regex pattern — validate it at runtime
 		if meta.Atomic == "string" && meta.TemplatePattern != "" {
-			e.Block("if (typeof %s === \"string\" && !/%s/.test(%s))", accessor, meta.TemplatePattern, accessor)
+			e.Block("if (typeof %s === \"string\" && !/%s/.test(%s))", accessor, escapeForRegexLiteral(meta.TemplatePattern), accessor)
 			e.Line("errors.push({ path: %q, expected: \"pattern %s\", received: %s });", path, jsStringEscape(meta.TemplatePattern), accessor)
 			e.EndBlock()
 		}
@@ -1302,8 +1302,8 @@ func generateObjectCheck(e *Emitter, accessor string, path string, meta *metadat
 
 	// Check each property
 	for _, prop := range meta.Properties {
-		propAccessor := accessor + "." + prop.Name
-		propPath := path + "." + prop.Name
+		propAccessor := jsPropAccess(accessor, prop.Name)
+		propPath := path + jsPropPathSuffix(prop.Name)
 
 		// Emit default value assignment BEFORE validation.
 		// When a property has @default and the value is undefined, fill it in.
@@ -1565,10 +1565,11 @@ func generateConstraintChecksInner(e *Emitter, accessor string, path string, pro
 
 	// Pattern constraint
 	if c.Pattern != nil {
+		escapedPattern := escapeForRegexLiteral(*c.Pattern)
 		if typeVerified {
-			e.Block("if (!/%s/.test(%s))", *c.Pattern, accessor)
+			e.Block("if (!/%s/.test(%s))", escapedPattern, accessor)
 		} else {
-			e.Block("if (typeof %s === \"string\" && !/%s/.test(%s))", accessor, *c.Pattern, accessor)
+			e.Block("if (typeof %s === \"string\" && !/%s/.test(%s))", accessor, escapedPattern, accessor)
 		}
 		e.Line("errors.push({ path: %q, expected: \"%s\", received: %s });", path, errMsg("pattern", fmt.Sprintf("pattern %s", *c.Pattern)), accessor)
 		e.EndBlock()
@@ -1895,7 +1896,7 @@ func generateUnionCheck(e *Emitter, accessor string, path string, meta *metadata
 // for O(1) dispatch instead of O(n) try-each for discriminated unions.
 func generateDiscriminatedUnionCheck(e *Emitter, accessor string, path string, meta *metadata.Metadata, registry *metadata.TypeRegistry, depth int, ctx *validateCtx) {
 	disc := meta.Discriminant
-	discAccessor := fmt.Sprintf("%s[%q]", accessor, disc.Property)
+	discAccessor := jsPropAccess(accessor, disc.Property)
 
 	// First check the value is an object
 	e.Block("if (typeof %s !== \"object\" || %s === null)", accessor, accessor)
@@ -1936,7 +1937,7 @@ func generateDiscriminatedUnionCheck(e *Emitter, accessor string, path string, m
 		expectedVals[i] = jsLiteral(v)
 	}
 	expectedStr := jsStringEscape("one of " + strings.Join(expectedVals, " | "))
-	e.Line("errors.push({ path: \"%s.%s\", expected: \"%s\", received: %s });", path, disc.Property, expectedStr, discAccessor)
+	e.Line("errors.push({ path: \"%s%s\", expected: \"%s\", received: %s });", path, jsStringEscape(jsPropPathSuffix(disc.Property)), expectedStr, discAccessor)
 	e.indent--
 
 	e.indent--
@@ -2080,13 +2081,214 @@ func stripDefaultQuotes(s string) string {
 	return s
 }
 
+// isJSIdentifier reports whether s is a valid JavaScript identifier that can
+// be used in dot-notation property access (e.g., `obj.foo`). Names containing
+// spaces, hyphens, or starting with a digit must use bracket notation instead.
+func isJSIdentifier(s string) bool {
+	if len(s) == 0 {
+		return false
+	}
+	for i, r := range s {
+		if i == 0 {
+			if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || r == '_' || r == '$') {
+				return false
+			}
+		} else {
+			if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '$') {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// jsPropAccess returns a JavaScript property access expression. It uses dot
+// notation for valid identifiers (`obj.foo`) and bracket notation for names
+// that are not valid identifiers (`obj["antall ansatte"]`).
+// The special name `__proto__` always uses bracket notation to make the
+// access explicit and avoid confusion with the prototype accessor.
+func jsPropAccess(accessor, propName string) string {
+	if propName == "__proto__" {
+		return accessor + "[\"__proto__\"]"
+	}
+	if isJSIdentifier(propName) {
+		return accessor + "." + propName
+	}
+	return accessor + "[\"" + jsStringEscape(propName) + "\"]"
+}
+
+// jsObjectKey returns a JavaScript object literal key. For valid identifiers
+// it returns the name as-is (`foo`), for others it returns a quoted string
+// (`"antall ansatte"`). The special name `__proto__` uses computed property
+// name syntax (`["__proto__"]`) to avoid triggering the prototype setter
+// in object literals.
+func jsObjectKey(propName string) string {
+	if propName == "__proto__" {
+		return `["__proto__"]`
+	}
+	if isJSIdentifier(propName) {
+		return propName
+	}
+	return "\"" + jsStringEscape(propName) + "\""
+}
+
+// jsPropPathSuffix returns the path suffix for a property name as it would
+// appear in human-readable error paths. Valid identifiers use ".foo", while
+// non-identifiers use `["antall ansatte"]`.
+func jsPropPathSuffix(propName string) string {
+	if propName == "__proto__" {
+		return "[\"__proto__\"]"
+	}
+	if isJSIdentifier(propName) {
+		return "." + propName
+	}
+	return "[\"" + jsStringEscape(propName) + "\"]"
+}
+
 // jsStringEscape escapes a string so it can be safely embedded inside a
-// JavaScript double-quoted string literal. It escapes double quotes and
-// backslashes.
+// JavaScript double-quoted string literal. It handles backslashes, quotes,
+// control characters (< 0x20), and Unicode line/paragraph separators.
 func jsStringEscape(s string) string {
-	s = strings.ReplaceAll(s, `\`, `\\`)
-	s = strings.ReplaceAll(s, `"`, `\"`)
-	return s
+	var buf strings.Builder
+	buf.Grow(len(s))
+	for _, r := range s {
+		switch r {
+		case '\\':
+			buf.WriteString(`\\`)
+		case '"':
+			buf.WriteString(`\"`)
+		case '\n':
+			buf.WriteString(`\n`)
+		case '\r':
+			buf.WriteString(`\r`)
+		case '\t':
+			buf.WriteString(`\t`)
+		case '\b':
+			buf.WriteString(`\b`)
+		case '\f':
+			buf.WriteString(`\f`)
+		case '\u2028':
+			buf.WriteString(`\u2028`)
+		case '\u2029':
+			buf.WriteString(`\u2029`)
+		default:
+			if r < 0x20 {
+				buf.WriteString(fmt.Sprintf(`\x%02x`, r))
+			} else {
+				buf.WriteRune(r)
+			}
+		}
+	}
+	return buf.String()
+}
+
+// jsonKeyInTemplate escapes a property name for embedding as a JSON object key
+// inside a JavaScript template literal. The caller wraps the result with
+// escaped-quote delimiters: `\"RESULT\":${...}`.
+//
+// Two layers of escaping are applied:
+//  1. JSON escaping (for the JSON output): \ → \\, " → \", control chars → \uXXXX
+//  2. Template literal escaping: \ → \\, ` → \`, ${ → \${
+func jsonKeyInTemplate(s string) string {
+	var buf strings.Builder
+	runes := []rune(s)
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+		switch r {
+		case '\\':
+			buf.WriteString(`\\\\`) // JSON: \\  → template: \\\\
+		case '"':
+			buf.WriteString(`\\\"`) // JSON: \"  → template: \\\"
+		case '`':
+			buf.WriteString("\\`") // template: \`
+		case '\n':
+			buf.WriteString(`\\n`) // JSON: \n  → template: \\n
+		case '\r':
+			buf.WriteString(`\\r`)
+		case '\t':
+			buf.WriteString(`\\t`)
+		case '\b':
+			buf.WriteString(`\\b`)
+		case '\f':
+			buf.WriteString(`\\f`)
+		case '$':
+			if i+1 < len(runes) && runes[i+1] == '{' {
+				buf.WriteString(`\${`) // template: \${
+				i++                    // skip '{'
+			} else {
+				buf.WriteRune(r)
+			}
+		default:
+			if r < 0x20 {
+				buf.WriteString(fmt.Sprintf(`\\u%04x`, r))
+			} else {
+				buf.WriteRune(r)
+			}
+		}
+	}
+	return buf.String()
+}
+
+// jsonKeyInString escapes a property name for embedding as a JSON object key
+// inside a JavaScript string literal. The caller wraps the result with
+// escaped-quote delimiters: ",\"RESULT\":".
+//
+// Two layers of escaping are applied:
+//  1. JSON escaping (for the JSON output): \ → \\, " → \", control chars → \uXXXX
+//  2. JS string literal escaping: \ → \\, " → \"
+func jsonKeyInString(s string) string {
+	var buf strings.Builder
+	for _, r := range s {
+		switch r {
+		case '\\':
+			buf.WriteString(`\\\\`) // JSON: \\  → JS str: \\\\
+		case '"':
+			buf.WriteString(`\\\"`) // JSON: \"  → JS str: \\\"
+		case '\n':
+			buf.WriteString(`\\n`) // JSON: \n  → JS str: \\n
+		case '\r':
+			buf.WriteString(`\\r`)
+		case '\t':
+			buf.WriteString(`\\t`)
+		case '\b':
+			buf.WriteString(`\\b`)
+		case '\f':
+			buf.WriteString(`\\f`)
+		default:
+			if r < 0x20 {
+				buf.WriteString(fmt.Sprintf(`\\u%04x`, r))
+			} else {
+				buf.WriteRune(r)
+			}
+		}
+	}
+	return buf.String()
+}
+
+// escapeForRegexLiteral escapes forward slashes in a regex pattern string
+// so it can be safely embedded in a JavaScript regex literal (/pattern/).
+// Already-escaped slashes (\/) are left unchanged.
+func escapeForRegexLiteral(pattern string) string {
+	var buf strings.Builder
+	escaped := false
+	for _, r := range pattern {
+		if escaped {
+			buf.WriteRune(r)
+			escaped = false
+			continue
+		}
+		if r == '\\' {
+			buf.WriteRune(r)
+			escaped = true
+			continue
+		}
+		if r == '/' {
+			buf.WriteString(`\/`)
+			continue
+		}
+		buf.WriteRune(r)
+	}
+	return buf.String()
 }
 
 func describeType(meta *metadata.Metadata) string {
