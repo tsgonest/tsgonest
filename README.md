@@ -54,6 +54,15 @@ npx tsgonest build
 
 That's it — zero runtime setup needed. tsgonest injects validation and serialization into your controllers at compile time. Request bodies are validated, responses are fast-serialized, and `dist/openapi.json` contains your API docs.
 
+## Static analysis limits
+
+tsgonest intentionally stays compile-time only. A few dynamic NestJS patterns are not supported for OpenAPI extraction:
+
+- Controllers declared inside factory functions (non-top-level `@Controller` classes)
+- Dynamic path arguments in `@Controller(...)`, `@Get(...)`, `@Post(...)`, `@Sse(...)`, etc. (for example, `@Controller(prefix)` or `@Get(dynamicPath)`)
+
+When these patterns are detected, tsgonest prints a warning and excludes those controllers/routes from the generated OpenAPI document.
+
 ## CLI
 
 ```bash
