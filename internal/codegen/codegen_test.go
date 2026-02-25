@@ -1614,7 +1614,7 @@ func TestValidateDiscriminatedUnion_SwitchCodegen(t *testing.T) {
 	code := GenerateCompanionSelective("Dto", meta, reg, true, false)
 	// Should use switch instead of try-each
 	assertContains(t, code, "switch (")
-	assertContains(t, code, `["type"]`)
+	assertContains(t, code, `.type`)
 	// Should have cases for each discriminant value
 	assertContains(t, code, `case "bank"`)
 	assertContains(t, code, `case "card"`)
@@ -2091,7 +2091,7 @@ func TestSerializeDiscriminatedUnion(t *testing.T) {
 
 	// Should use switch on discriminant for each branch
 	assertContains(t, code, `switch (`)
-	assertContains(t, code, `["type"]`)
+	assertContains(t, code, `.type`)
 	assertContains(t, code, `case "card"`)
 	assertContains(t, code, `case "bank"`)
 	// Each case should serialize properly (not just JSON.stringify the whole union)
@@ -2721,6 +2721,82 @@ func TestGenerateHelpersFile(t *testing.T) {
 		t.Errorf("expected DTS path 'dist/_tsgonest_helpers.d.ts', got %q", files[1].Path)
 	}
 	assertContains(t, files[1].Content, "export declare function __s")
+}
+
+// --- Property names with spaces (bracket notation) ---
+
+func TestValidate_PropertyWithSpaces(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+	meta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Name: "LedgerRecord",
+		Properties: []metadata.Property{
+			{Name: "orgnummer", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+			{Name: "antall ansatte", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string", Optional: true}, Required: false},
+			{Name: "erp system", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string", Optional: true}, Required: false},
+			{Name: "l12m revenue", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string", Optional: true}, Required: false},
+		},
+	}
+
+	code := GenerateCompanionSelective("LedgerRecord", meta, reg, true, false)
+
+	// Normal identifier: dot access
+	assertContains(t, code, "input.orgnummer")
+	// Names with spaces: bracket access
+	assertContains(t, code, `input["antall ansatte"]`)
+	assertContains(t, code, `input["erp system"]`)
+	assertContains(t, code, `input["l12m revenue"]`)
+	// Must NOT produce dot access for names with spaces
+	assertNotContains(t, code, "input.antall ansatte")
+	assertNotContains(t, code, "input.erp system")
+	assertNotContains(t, code, "input.l12m revenue")
+}
+
+func TestSerialize_PropertyWithSpaces(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+	meta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Name: "LedgerRecord",
+		Properties: []metadata.Property{
+			{Name: "orgnummer", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+			{Name: "antall ansatte", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string", Optional: true}, Required: false},
+		},
+	}
+
+	code := GenerateCompanionSelective("LedgerRecord", meta, reg, false, true)
+
+	// Serialize should use bracket access for spaced names
+	assertContains(t, code, `input["antall ansatte"]`)
+	assertNotContains(t, code, "input.antall ansatte")
+}
+
+func TestJsPropAccess(t *testing.T) {
+	tests := []struct {
+		accessor string
+		prop     string
+		expected string
+	}{
+		{"input", "name", "input.name"},
+		{"input", "age", "input.age"},
+		{"input", "antall ansatte", `input["antall ansatte"]`},
+		{"input", "erp system", `input["erp system"]`},
+		{"input", "l12m revenue", `input["l12m revenue"]`},
+		{"_v1", "foo-bar", `_v1["foo-bar"]`},
+		{"_v1", "class", "_v1.class"},
+		{"_v1", "123abc", `_v1["123abc"]`},
+		{"_v1", "0", `_v1["0"]`},
+		{"_v1", "", `_v1[""]`},
+		{"input", "$valid", "input.$valid"},
+		{"input", "_under", "input._under"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.prop, func(t *testing.T) {
+			got := jsPropAccess(tt.accessor, tt.prop)
+			if got != tt.expected {
+				t.Errorf("jsPropAccess(%q, %q) = %q, want %q", tt.accessor, tt.prop, got, tt.expected)
+			}
+		})
+	}
 }
 
 func TestHelpersFilePath(t *testing.T) {

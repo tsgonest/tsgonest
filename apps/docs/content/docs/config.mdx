@@ -89,6 +89,8 @@ For the full set of OpenAPI metadata fields (contact, license, servers, security
 
 Controls which files are analyzed for NestJS controller routes (used for OpenAPI generation and route mapping).
 
+If an included file contains unsupported dynamic patterns (runtime-generated controllers or dynamic decorator path args), tsgonest emits warnings and excludes those routes from OpenAPI.
+
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
 | `include` | `string[]` | `["src/**/*.controller.ts"]` | Glob patterns for controller files |

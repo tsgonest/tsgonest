@@ -7,24 +7,41 @@ import (
 )
 
 func TestCachePath(t *testing.T) {
-	tests := []struct {
-		input string
-		want  string
-	}{
-		{"/foo/tsconfig.json", "/foo/tsconfig.tsgonest-cache"},
-		{"/foo/tsconfig.build.json", "/foo/tsconfig.build.tsgonest-cache"},
-		{"/foo/bar/tsconfig.app.json", "/foo/bar/tsconfig.app.tsgonest-cache"},
-		{"tsconfig.json", "tsconfig.tsgonest-cache"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.input, func(t *testing.T) {
-			got := CachePath(tt.input)
+	t.Run("with outDir", func(t *testing.T) {
+		tests := []struct {
+			outDir string
+			tsconf string
+			want   string
+		}{
+			{"/project/dist", "/project/tsconfig.json", "/project/dist/.tsgonest-cache"},
+			{"/project/dist", "/project/tsconfig.build.json", "/project/dist/.tsgonest-cache"},
+			{"dist", "tsconfig.json", "dist/.tsgonest-cache"},
+		}
+		for _, tt := range tests {
+			got := CachePath(tt.outDir, tt.tsconf)
 			if got != tt.want {
-				t.Errorf("CachePath(%q) = %q, want %q", tt.input, got, tt.want)
+				t.Errorf("CachePath(%q, %q) = %q, want %q", tt.outDir, tt.tsconf, got, tt.want)
 			}
-		})
-	}
+		}
+	})
+
+	t.Run("without outDir fallback", func(t *testing.T) {
+		tests := []struct {
+			tsconf string
+			want   string
+		}{
+			{"/foo/tsconfig.json", "/foo/tsconfig.tsgonest-cache"},
+			{"/foo/tsconfig.build.json", "/foo/tsconfig.build.tsgonest-cache"},
+			{"/foo/bar/tsconfig.app.json", "/foo/bar/tsconfig.app.tsgonest-cache"},
+			{"tsconfig.json", "tsconfig.tsgonest-cache"},
+		}
+		for _, tt := range tests {
+			got := CachePath("", tt.tsconf)
+			if got != tt.want {
+				t.Errorf("CachePath(\"\", %q) = %q, want %q", tt.tsconf, got, tt.want)
+			}
+		}
+	})
 }
 
 func TestHashFile(t *testing.T) {
