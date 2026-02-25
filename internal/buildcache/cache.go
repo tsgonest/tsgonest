@@ -42,14 +42,19 @@ type Cache struct {
 	Outputs []string `json:"outputs"`
 }
 
-// CachePath derives the cache file path from the tsconfig path.
-// For "tsconfig.build.json" → "tsconfig.build.tsgonest-cache" (sibling file).
-// For "tsconfig.json" → "tsconfig.tsgonest-cache".
-func CachePath(tsconfigPath string) string {
+// CachePath returns the cache file path inside the output directory.
+// The cache lives at `<outDir>/.tsgonest-cache` so that deleting the output
+// directory (deleteOutDir) also removes the cache, guaranteeing a fresh build.
+//
+// If outDir is empty (no output directory configured), it falls back to a
+// sibling file next to the tsconfig: "tsconfig.build.json" → "tsconfig.build.tsgonest-cache".
+func CachePath(outDir string, tsconfigPath string) string {
+	if outDir != "" {
+		return filepath.Join(outDir, ".tsgonest-cache")
+	}
+	// Fallback: sibling of tsconfig
 	dir := filepath.Dir(tsconfigPath)
 	base := filepath.Base(tsconfigPath)
-
-	// Strip .json extension
 	name := strings.TrimSuffix(base, ".json")
 	return filepath.Join(dir, name+".tsgonest-cache")
 }

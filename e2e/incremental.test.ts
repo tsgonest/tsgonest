@@ -77,7 +77,7 @@ describe("tsgonest incremental post-processing cache", () => {
   const fixtureDir = resolve(FIXTURES_DIR, "incremental-nestjs");
   const distDir = resolve(fixtureDir, "dist");
   const tsbuildinfo = resolve(fixtureDir, "tsconfig.tsbuildinfo");
-  const cacheFile = resolve(fixtureDir, "tsconfig.tsgonest-cache");
+  const cacheFile = resolve(distDir, ".tsgonest-cache");
   const configFile = resolve(fixtureDir, "tsgonest.config.json");
   const srcFile = resolve(fixtureDir, "src/item.dto.ts");
   const openapiFile = resolve(fixtureDir, "dist/openapi.json");
@@ -88,9 +88,6 @@ describe("tsgonest incremental post-processing cache", () => {
     }
     if (existsSync(tsbuildinfo)) {
       rmSync(tsbuildinfo);
-    }
-    if (existsSync(cacheFile)) {
-      rmSync(cacheFile);
     }
     const result = runTsgonest([
       "--project",
@@ -286,10 +283,7 @@ describe("tsgonest incremental post-processing cache", () => {
     if (existsSync(simpleDist)) {
       rmSync(simpleDist, { recursive: true });
     }
-    const simpleCacheFile = resolve(FIXTURES_DIR, "simple/tsconfig.tsgonest-cache");
-    if (existsSync(simpleCacheFile)) {
-      rmSync(simpleCacheFile);
-    }
+    const simpleCacheFile = resolve(simpleDist, ".tsgonest-cache");
 
     runTsgonest(["--project", "testdata/simple/tsconfig.json"]);
 
