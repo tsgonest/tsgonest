@@ -22,6 +22,7 @@ func TestRewriteController_BodyValidation(t *testing.T) {
 			Routes: []analyzer.Route{
 				{
 					OperationID: "create",
+					MethodName:  "create",
 					Parameters: []analyzer.RouteParameter{
 						{
 							Category:  "body",
@@ -65,6 +66,7 @@ func TestRewriteController_MultipleRoutes(t *testing.T) {
 			Routes: []analyzer.Route{
 				{
 					OperationID: "create",
+					MethodName:  "create",
 					Parameters: []analyzer.RouteParameter{
 						{
 							Category:  "body",
@@ -75,6 +77,7 @@ func TestRewriteController_MultipleRoutes(t *testing.T) {
 				},
 				{
 					OperationID: "update",
+					MethodName:  "update",
 					Parameters: []analyzer.RouteParameter{
 						{
 							Category:  "body",
@@ -116,6 +119,7 @@ func TestRewriteController_NoBody(t *testing.T) {
 			Routes: []analyzer.Route{
 				{
 					OperationID: "findAll",
+					MethodName:  "findAll",
 					Parameters:  []analyzer.RouteParameter{},
 				},
 			},
@@ -146,6 +150,7 @@ func TestRewriteController_RawResponse(t *testing.T) {
 			Routes: []analyzer.Route{
 				{
 					OperationID:     "download",
+					MethodName:      "download",
 					UsesRawResponse: true,
 					Parameters: []analyzer.RouteParameter{
 						{
@@ -197,6 +202,7 @@ func TestRewriteController_ReturnTransform(t *testing.T) {
 			Routes: []analyzer.Route{
 				{
 					OperationID: "findAll",
+					MethodName:  "findAll",
 					ReturnType:  metadata.Metadata{Kind: metadata.KindRef, Ref: "UserResponse"},
 				},
 			},
@@ -231,6 +237,7 @@ func TestRewriteController_ArrayReturn(t *testing.T) {
 			Routes: []analyzer.Route{
 				{
 					OperationID: "findAll",
+					MethodName:  "findAll",
 					ReturnType: metadata.Metadata{
 						Kind:        metadata.KindArray,
 						ElementType: &metadata.Metadata{Kind: metadata.KindRef, Ref: "UserResponse"},
@@ -265,6 +272,7 @@ func TestRewriteController_VoidReturn(t *testing.T) {
 			Routes: []analyzer.Route{
 				{
 					OperationID: "remove",
+					MethodName:  "remove",
 					ReturnType:  metadata.Metadata{Kind: metadata.KindVoid},
 				},
 			},
@@ -295,6 +303,7 @@ func TestRewriteController_BodyAndReturn(t *testing.T) {
 			Routes: []analyzer.Route{
 				{
 					OperationID: "create",
+					MethodName:  "create",
 					ReturnType:  metadata.Metadata{Kind: metadata.KindRef, Ref: "UserResponse"},
 					Parameters: []analyzer.RouteParameter{
 						{
@@ -337,6 +346,7 @@ func TestRewriteController_NoReturnCompanion(t *testing.T) {
 			Routes: []analyzer.Route{
 				{
 					OperationID: "findAll",
+					MethodName:  "findAll",
 					ReturnType:  metadata.Metadata{Kind: metadata.KindRef, Ref: "SomeExternalType"},
 				},
 			},
@@ -414,6 +424,7 @@ func TestRewriteController_WholeObjectQuery(t *testing.T) {
 			Routes: []analyzer.Route{
 				{
 					OperationID: "findAll",
+					MethodName:  "findAll",
 					Parameters: []analyzer.RouteParameter{
 						{
 							Category:  "query",
@@ -455,6 +466,7 @@ func TestRewriteController_ScalarParamCoercion(t *testing.T) {
 			Routes: []analyzer.Route{
 				{
 					OperationID: "findOne",
+					MethodName:  "findOne",
 					Parameters: []analyzer.RouteParameter{
 						{
 							Category:  "param",
@@ -497,6 +509,7 @@ func TestRewriteController_StringParamNoCoercion(t *testing.T) {
 			Routes: []analyzer.Route{
 				{
 					OperationID: "findBySlug",
+					MethodName:  "findBySlug",
 					Parameters: []analyzer.RouteParameter{
 						{
 							Category:  "param",
@@ -534,6 +547,7 @@ func TestRewriteController_MixedBodyQueryParam(t *testing.T) {
 			Routes: []analyzer.Route{
 				{
 					OperationID: "create",
+					MethodName:  "create",
 					Parameters: []analyzer.RouteParameter{
 						{
 							Category:  "body",
@@ -590,6 +604,7 @@ func TestRewriteController_WholeObjectParam(t *testing.T) {
 			Routes: []analyzer.Route{
 				{
 					OperationID: "findOne",
+					MethodName:  "findOne",
 					Parameters: []analyzer.RouteParameter{
 						{
 							Category:  "param",
@@ -628,6 +643,7 @@ func TestRewriteController_BooleanParamCoercion(t *testing.T) {
 			Routes: []analyzer.Route{
 				{
 					OperationID: "list",
+					MethodName:  "list",
 					Parameters: []analyzer.RouteParameter{
 						{
 							Category:  "query",

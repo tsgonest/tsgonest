@@ -66,7 +66,7 @@ describe("unsupported runtime-generated controllers", () => {
       )
       .filter(Boolean);
 
-    expect(operationIds).toContain("ok");
+    expect(operationIds).toContain("Static_ok");
     expect(operationIds).not.toContain("skippedDynamicRoute");
     expect(operationIds).not.toContain("skippedDynamicSseRoute");
     expect(operationIds).not.toContain("skippedByDynamicControllerPath");

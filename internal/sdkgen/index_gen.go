@@ -1,7 +1,6 @@
 package sdkgen
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -15,19 +14,37 @@ func generateIndex(versions []VersionGroup) string {
 	sb.WriteString("export { createRequestFn } from './client';\n")
 	sb.WriteString("export type { ClientConfig, SDKResult, SDKError, Fetcher, RequestFn, HeadersInit } from './client';\n")
 
+	// Re-export SSE types (always — they're type-only for most consumers)
+	sb.WriteString("export { SSEConnection } from './sse';\n")
+	sb.WriteString("export type { SSEEvent } from './sse';\n")
+
+	// Re-export buildFormData
+	sb.WriteString("export { buildFormData } from './form-data';\n")
+
 	// Re-export all types
 	sb.WriteString("export * from './types';\n")
 	sb.WriteString("\n")
 
-	// Re-export controller factories (only unversioned to avoid name collisions)
+	// Re-export controller factories and standalone functions (only unversioned to avoid name collisions)
 	for _, ver := range versions {
 		if ver.Version != "" {
-			continue // versioned controllers imported via @app/sdk/v1/orders
+			continue // versioned controllers imported via their versioned path
 		}
 		for _, ctrl := range ver.Controllers {
 			dirPath := controllerImportPath(ver.Version, ctrl.Name)
 			factoryName := controllerFactoryName(ctrl.Name)
 			ifaceName := controllerInterfaceName(ctrl.Name)
+
+			// Re-export standalone functions
+			var fnNames []string
+			for _, method := range ctrl.Methods {
+				fnNames = append(fnNames, method.Name)
+			}
+			if len(fnNames) > 0 {
+				sb.WriteString(fmt.Sprintf("export { %s } from './%s';\n", strings.Join(fnNames, ", "), dirPath))
+			}
+
+			// Re-export factory and interface
 			sb.WriteString(fmt.Sprintf("export { %s } from './%s';\n", factoryName, dirPath))
 			sb.WriteString(fmt.Sprintf("export type { %s } from './%s';\n", ifaceName, dirPath))
 		}
@@ -80,32 +97,6 @@ func generateIndex(versions []VersionGroup) string {
 	sb.WriteString("}\n")
 
 	return sb.String()
-}
-
-// generatePackageJSON generates a package.json with exports map for tree-shaking.
-func generatePackageJSON(versions []VersionGroup) string {
-	exports := map[string]string{
-		".":        "./index.ts",
-		"./client": "./client.ts",
-		"./types":  "./types.ts",
-	}
-
-	for _, ver := range versions {
-		for _, ctrl := range ver.Controllers {
-			dirPath := controllerImportPath(ver.Version, ctrl.Name)
-			exports["./"+dirPath] = "./" + dirPath + "/index.ts"
-		}
-	}
-
-	pkg := map[string]any{
-		"name":    "@app/sdk",
-		"version": "0.0.0",
-		"private": true,
-		"exports": exports,
-	}
-
-	data, _ := json.MarshalIndent(pkg, "", "  ")
-	return string(data) + "\n"
 }
 
 // controllerImportPath returns the import path for a controller from the SDK root.

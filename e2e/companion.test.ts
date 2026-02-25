@@ -106,13 +106,13 @@ describe("tsgonest companion file generation", () => {
 
     expect(doc.paths["/users"].get).toBeDefined();
     expect(doc.paths["/users"].post).toBeDefined();
-    expect(doc.paths["/users"].get.operationId).toBe("findAll");
-    expect(doc.paths["/users"].post.operationId).toBe("create");
+    expect(doc.paths["/users"].get.operationId).toBe("User_findAll");
+    expect(doc.paths["/users"].post.operationId).toBe("User_create");
 
     expect(doc.paths["/users/{id}"].get).toBeDefined();
     expect(doc.paths["/users/{id}"].put).toBeDefined();
     expect(doc.paths["/users/{id}"].delete).toBeDefined();
-    expect(doc.paths["/users/{id}"].get.operationId).toBe("findOne");
+    expect(doc.paths["/users/{id}"].get.operationId).toBe("User_findOne");
   });
 
   it("should have correct schemas in components", () => {
@@ -229,7 +229,7 @@ describe("tsgonest companion file generation", () => {
     expect(doc.paths).toHaveProperty("/users/profile/{userId}");
     const getProfile = doc.paths["/users/profile/{userId}"].get;
     expect(getProfile).toBeDefined();
-    expect(getProfile.operationId).toBe("getProfile");
+    expect(getProfile.operationId).toBe("User_getProfile");
 
     const params = getProfile.parameters;
     expect(params).toBeDefined();

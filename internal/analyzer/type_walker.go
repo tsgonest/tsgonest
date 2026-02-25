@@ -671,7 +671,8 @@ func (w *TypeWalker) analyzeObjectProperties(t *shimchecker.Type, name string) m
 			propMeta.Constraints = nil // don't leak to codegen
 		}
 
-		// Merge JSDoc constraints (takes precedence)
+		// Merge JSDoc constraints (takes precedence) and extract property annotations
+		var ann propertyAnnotations
 		if prop.ValueDeclaration != nil {
 			jsdocConstraints := w.extractJSDocConstraints(prop.ValueDeclaration)
 			if jsdocConstraints != nil {
@@ -681,6 +682,7 @@ func (w *TypeWalker) analyzeObjectProperties(t *shimchecker.Type, name string) m
 					mergeConstraints(constraints, jsdocConstraints)
 				}
 			}
+			ann = extractPropertyAnnotations(prop.ValueDeclaration)
 		}
 
 		properties = append(properties, metadata.Property{
@@ -690,6 +692,9 @@ func (w *TypeWalker) analyzeObjectProperties(t *shimchecker.Type, name string) m
 			Readonly:      isReadonly,
 			ExactOptional: w.exactOptionalPropertyTypes && isOptional,
 			Constraints:   constraints,
+			Description:   ann.Description,
+			WriteOnly:     ann.WriteOnly,
+			Example:       ann.Example,
 		})
 	}
 

@@ -20,8 +20,9 @@ func TestGenerate_BasicFixture(t *testing.T) {
 	expectedFiles := []string{
 		"types.ts",
 		"client.ts",
+		"sse.ts",
+		"form-data.ts",
 		"index.ts",
-		"package.json",
 		"orders/index.ts",
 		"products/index.ts",
 	}
@@ -39,11 +40,20 @@ func TestGenerate_BasicFixture(t *testing.T) {
 	assertContains(t, typesContent, "export interface Product {", "types.ts should contain Product interface")
 	assertContains(t, typesContent, "export interface OrderItem {", "types.ts should contain OrderItem interface")
 
-	// Verify client.ts contains infrastructure
+	// Verify client.ts contains core infrastructure
 	clientContent := readFile(t, filepath.Join(outputDir, "client.ts"))
 	assertContains(t, clientContent, "export interface SDKError", "client.ts should contain SDKError")
 	assertContains(t, clientContent, "export type SDKResult", "client.ts should contain SDKResult")
 	assertContains(t, clientContent, "export function createRequestFn", "client.ts should contain createRequestFn")
+
+	// Verify sse.ts contains SSEConnection
+	sseContent := readFile(t, filepath.Join(outputDir, "sse.ts"))
+	assertContains(t, sseContent, "export class SSEConnection", "sse.ts should contain SSEConnection")
+	assertContains(t, sseContent, "export interface SSEEvent", "sse.ts should contain SSEEvent")
+
+	// Verify form-data.ts contains buildFormData
+	formDataContent := readFile(t, filepath.Join(outputDir, "form-data.ts"))
+	assertContains(t, formDataContent, "export function buildFormData", "form-data.ts should contain buildFormData")
 
 	// Verify types.ts contains JSDoc comments from schema descriptions
 	assertContains(t, typesContent, "/** Represents a customer order */", "types.ts should have Order JSDoc")
@@ -54,14 +64,18 @@ func TestGenerate_BasicFixture(t *testing.T) {
 	ordersContent := readFile(t, filepath.Join(outputDir, "orders/index.ts"))
 	assertContains(t, ordersContent, "export interface OrdersController", "should have OrdersController interface")
 	assertContains(t, ordersContent, "export function createOrdersController", "should have factory")
-	assertContains(t, ordersContent, "listOrders", "should have listOrders method")
-	assertContains(t, ordersContent, "createOrder", "should have createOrder method")
-	assertContains(t, ordersContent, "getOrder", "should have getOrder method")
-	assertContains(t, ordersContent, "deleteOrder", "should have deleteOrder method")
+	// Verify standalone exported functions
+	assertContains(t, ordersContent, "export async function listOrders(", "should have standalone listOrders")
+	assertContains(t, ordersContent, "export async function createOrder(", "should have standalone createOrder")
+	assertContains(t, ordersContent, "export async function getOrder(", "should have standalone getOrder")
+	assertContains(t, ordersContent, "export async function deleteOrder(", "should have standalone deleteOrder")
+	// Verify factory delegates to standalone functions
+	assertContains(t, ordersContent, "listOrders: (options", "factory should delegate listOrders")
+	assertContains(t, ordersContent, "=> listOrders(request", "factory should call standalone listOrders")
 	assertContains(t, ordersContent, "import type {", "should import types")
 	assertContains(t, ordersContent, "../types", "should reference ../types")
 	assertContains(t, ordersContent, "../client", "should reference ../client")
-	// Verify JSDoc on methods (multi-line: summary + description)
+	// Verify JSDoc on standalone functions
 	assertContains(t, ordersContent, "* List all orders", "should have listOrders JSDoc summary")
 	assertContains(t, ordersContent, "* Returns a paginated list of orders", "should have listOrders JSDoc description")
 
@@ -70,11 +84,8 @@ func TestGenerate_BasicFixture(t *testing.T) {
 	assertContains(t, indexContent, "createClient", "index.ts should export createClient")
 	assertContains(t, indexContent, "createOrdersController", "index.ts should export orders factory")
 	assertContains(t, indexContent, "createProductsController", "index.ts should export products factory")
-
-	// Verify package.json exports
-	pkgContent := readFile(t, filepath.Join(outputDir, "package.json"))
-	assertContains(t, pkgContent, `"./orders"`, "package.json should have orders export")
-	assertContains(t, pkgContent, `"./products"`, "package.json should have products export")
+	// Verify standalone functions are re-exported
+	assertContains(t, indexContent, "listOrders", "index.ts should re-export standalone listOrders")
 }
 
 func TestGenerate_VersionedFixture(t *testing.T) {
@@ -90,8 +101,9 @@ func TestGenerate_VersionedFixture(t *testing.T) {
 	expectedFiles := []string{
 		"types.ts",
 		"client.ts",
+		"sse.ts",
+		"form-data.ts",
 		"index.ts",
-		"package.json",
 		"health/index.ts",    // unversioned
 		"v1/orders/index.ts", // versioned
 		"v2/orders/index.ts", // versioned
@@ -116,12 +128,6 @@ func TestGenerate_VersionedFixture(t *testing.T) {
 	indexContent := readFile(t, filepath.Join(outputDir, "index.ts"))
 	assertContains(t, indexContent, "v1:", "index.ts should have v1 namespace")
 	assertContains(t, indexContent, "v2:", "index.ts should have v2 namespace")
-
-	// Verify package.json has versioned exports
-	pkgContent := readFile(t, filepath.Join(outputDir, "package.json"))
-	assertContains(t, pkgContent, `"./v1/orders"`, "package.json should have v1/orders export")
-	assertContains(t, pkgContent, `"./v2/orders"`, "package.json should have v2/orders export")
-	assertContains(t, pkgContent, `"./health"`, "package.json should have health export")
 }
 
 func TestGenerate_NoExtensions(t *testing.T) {
@@ -217,8 +223,9 @@ func TestGenerate_FileUploads(t *testing.T) {
 	assertContains(t, uploadsContent, "albumName: string", "text field in multipart should be string")
 	assertContains(t, uploadsContent, "title: string", "text field in multipart should be string")
 
-	// --- buildFormData import for multipart controllers ---
+	// --- buildFormData import for multipart controllers (from form-data.ts) ---
 	assertContains(t, uploadsContent, "import { buildFormData }", "should import buildFormData")
+	assertContains(t, uploadsContent, "from '../form-data'", "should import buildFormData from form-data.ts")
 	assertContains(t, uploadsContent, "buildFormData(options.body)", "should call buildFormData")
 
 	// --- contentType: 'multipart/form-data' in request ---
@@ -241,23 +248,24 @@ func TestGenerate_FileUploads(t *testing.T) {
 	eventsContent := readFile(t, filepath.Join(outputDir, "events/index.ts"))
 	assertContains(t, eventsContent, "SSEConnection<StreamEvent>", "typed SSE response should be SSEConnection<StreamEvent>")
 	assertContains(t, eventsContent, "responseType: 'sse'", "typed SSE should have sse responseType")
-	assertContains(t, eventsContent, "import { SSEConnection }", "should import SSEConnection from client")
+	assertContains(t, eventsContent, "import { SSEConnection }", "should import SSEConnection")
+	assertContains(t, eventsContent, "from '../sse'", "should import SSEConnection from sse.ts")
 	assertContains(t, eventsContent, "import type { StreamEvent }", "should import StreamEvent type")
 
 	// --- Untyped SSE: SSEConnection<string> ---
 	assertContains(t, eventsContent, "SSEConnection<string>", "untyped SSE response should be SSEConnection<string>")
 	assertContains(t, eventsContent, "responseType: 'sse-raw'", "untyped SSE should have sse-raw responseType")
 
-	// --- client.ts should have SSEConnection class ---
-	clientContentFU := readFile(t, filepath.Join(outputDir, "client.ts"))
-	assertContains(t, clientContentFU, "export class SSEConnection", "client.ts should export SSEConnection class")
-	assertContains(t, clientContentFU, "export interface SSEEvent", "client.ts should export SSEEvent interface")
+	// --- sse.ts should have SSEConnection class (split from client.ts) ---
+	sseContentFU := readFile(t, filepath.Join(outputDir, "sse.ts"))
+	assertContains(t, sseContentFU, "export class SSEConnection", "sse.ts should export SSEConnection class")
+	assertContains(t, sseContentFU, "export interface SSEEvent", "sse.ts should export SSEEvent interface")
 
-	// --- client.ts should have buildFormData utility ---
-	clientContent := readFile(t, filepath.Join(outputDir, "client.ts"))
-	assertContains(t, clientContent, "export function buildFormData", "client.ts should export buildFormData")
-	assertContains(t, clientContent, "instanceof Blob", "buildFormData should handle Blob")
-	assertContains(t, clientContent, "Array.isArray(value)", "buildFormData should handle arrays")
+	// --- form-data.ts should have buildFormData utility (split from client.ts) ---
+	formDataContentFU := readFile(t, filepath.Join(outputDir, "form-data.ts"))
+	assertContains(t, formDataContentFU, "export function buildFormData", "form-data.ts should export buildFormData")
+	assertContains(t, formDataContentFU, "instanceof Blob", "buildFormData should handle Blob")
+	assertContains(t, formDataContentFU, "Array.isArray(value)", "buildFormData should handle arrays")
 }
 
 func TestControllerDirName(t *testing.T) {

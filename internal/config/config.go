@@ -58,6 +58,20 @@ type OpenAPIConfig struct {
 	License         *OpenAPILicense                  `json:"license,omitempty"`
 	Servers         []OpenAPIServer                  `json:"servers,omitempty"`
 	SecuritySchemes map[string]OpenAPISecurityScheme `json:"securitySchemes,omitempty"`
+	// Security defines global security requirements applied to all operations.
+	// Routes with @public JSDoc opt out. Example: [{"bearer": []}]
+	Security []map[string][]string `json:"security,omitempty"`
+	// Tags defines tag descriptions for the OpenAPI document.
+	// Tags referenced by controllers are auto-collected; this allows adding descriptions.
+	Tags []OpenAPITag `json:"tags,omitempty"`
+	// TermsOfService is the URL to the API terms of service.
+	TermsOfService string `json:"termsOfService,omitempty"`
+}
+
+// OpenAPITag represents a tag with an optional description in the OpenAPI document.
+type OpenAPITag struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
 }
 
 // OpenAPIContact holds contact info for the OpenAPI document.

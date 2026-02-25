@@ -688,9 +688,18 @@ func generateOpenAPIFromControllers(controllers []analyzer.ControllerInfo, regis
 
 	// Apply document-level config (title, description, servers, security schemes)
 	docCfg := openapi.DocumentConfig{
-		Title:       cfg.OpenAPI.Title,
-		Description: cfg.OpenAPI.Description,
-		Version:     cfg.OpenAPI.Version,
+		Title:          cfg.OpenAPI.Title,
+		Description:    cfg.OpenAPI.Description,
+		Version:        cfg.OpenAPI.Version,
+		TermsOfService: cfg.OpenAPI.TermsOfService,
+		Security:       cfg.OpenAPI.Security,
+	}
+	// Map config tags to openapi tags
+	for _, t := range cfg.OpenAPI.Tags {
+		docCfg.Tags = append(docCfg.Tags, openapi.Tag{
+			Name:        t.Name,
+			Description: t.Description,
+		})
 	}
 	if cfg.OpenAPI.Contact != nil {
 		docCfg.Contact = &openapi.Contact{

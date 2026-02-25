@@ -34,7 +34,7 @@ describe("@Returns<T>() decorator", () => {
     const doc = JSON.parse(readFileSync(openapiFile, "utf-8"));
     const getReport = doc.paths["/reports/{id}"]?.get;
     expect(getReport).toBeDefined();
-    expect(getReport.operationId).toBe("getReport");
+    expect(getReport.operationId).toBe("Report_getReport");
 
     const response200 = getReport.responses["200"];
     expect(response200.content).toBeDefined();

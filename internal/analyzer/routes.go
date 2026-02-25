@@ -41,8 +41,12 @@ type Route struct {
 	Method string
 	// Path is the full route path (controller prefix + method sub-path).
 	Path string
-	// OperationID is derived from the method name (e.g., "findAll", "create").
+	// OperationID is the OpenAPI operationId (e.g., "User_findAll", "User_create").
+	// Format: ControllerName_methodName, or overridden via @operationid JSDoc.
 	OperationID string
+	// MethodName is the raw TypeScript method name (e.g., "findAll", "create").
+	// Used by the rewriter to locate method bodies in compiled JS output.
+	MethodName string
 	// Parameters holds the route parameters (@Body, @Query, @Param, @Headers).
 	Parameters []RouteParameter
 	// ReturnTypeName is the original return type name from source code (e.g., "UserResponse").
@@ -77,6 +81,23 @@ type Route struct {
 	// ResponseDescription overrides the response description in OpenAPI.
 	// Set by @Returns<T>({ description: 'PDF invoice' }).
 	ResponseDescription string
+	// IsPublic indicates the route explicitly opts out of global/controller security.
+	// Set by @public JSDoc on the method or controller.
+	IsPublic bool
+	// Extensions holds vendor extension properties (x-* keys) from @extension JSDoc.
+	Extensions map[string]string
+	// AdditionalResponses holds extra success responses from multiple @Returns<T>() decorators.
+	// The first @Returns determines the primary response; subsequent ones with different
+	// status codes become additional responses.
+	AdditionalResponses []AdditionalResponse
+}
+
+// AdditionalResponse represents an additional success response from @Returns<T>().
+type AdditionalResponse struct {
+	StatusCode  int
+	ReturnType  metadata.Metadata
+	ContentType string
+	Description string
 }
 
 // SecurityRequirement represents an OpenAPI security requirement.
@@ -95,6 +116,9 @@ type ErrorResponse struct {
 	TypeName string
 	// Type is the resolved type metadata for the error response body.
 	Type metadata.Metadata
+	// Description is an optional human-readable description of the error.
+	// Parsed from @throws {404} TypeName - description text
+	Description string
 }
 
 // RouteParameter represents a parameter extracted from a controller method.
@@ -118,6 +142,8 @@ type RouteParameter struct {
 	// Default is "application/json". Other values: "text/plain", "multipart/form-data", "application/x-www-form-urlencoded".
 	// Only meaningful for body parameters.
 	ContentType string
+	// Description is from JSDoc @param tag. Used as ParameterObject.description in OpenAPI.
+	Description string
 }
 
 // ControllerAnalyzer extracts NestJS controller information from source files.
@@ -260,11 +286,19 @@ func (a *ControllerAnalyzer) analyzeClass(classNode *ast.Node, sourceFile string
 		return nil
 	}
 
-	// Check class-level JSDoc for @tsgonest-ignore openapi, @hidden, @exclude
-	ignoreOpenAPI := isControllerIgnoredForOpenAPI(classNode)
+	// Extract class-level JSDoc metadata (@tag, @security, @hidden, etc.)
+	classInfo := extractClassJSDoc(classNode)
 
-	// Derive tag from class name
-	tag := deriveTag(className)
+	// Derive tags: class-level @tag overrides auto-derived tag
+	var defaultTags []string
+	if len(classInfo.Tags) > 0 {
+		defaultTags = classInfo.Tags
+	} else {
+		tag := deriveTag(className)
+		if tag != "" {
+			defaultTags = []string{tag}
+		}
+	}
 
 	// Analyze methods
 	var routes []Route
@@ -274,8 +308,20 @@ func (a *ControllerAnalyzer) analyzeClass(classNode *ast.Node, sourceFile string
 				continue
 			}
 
-			route := a.analyzeMethod(member, controllerPath, tag, className, sourceFile)
+			route := a.analyzeMethod(member, controllerPath, "", className, sourceFile)
 			if route != nil {
+				// Apply class-level defaults: tags (if method didn't override)
+				if len(route.Tags) == 0 {
+					route.Tags = defaultTags
+				}
+				// Apply class-level security (if method didn't set its own)
+				if len(route.Security) == 0 && len(classInfo.Security) > 0 {
+					route.Security = classInfo.Security
+				}
+				// Apply class-level @public (if method didn't set its own security)
+				if !route.IsPublic && classInfo.IsPublic {
+					route.IsPublic = true
+				}
 				routes = append(routes, *route)
 			}
 		}
@@ -286,7 +332,7 @@ func (a *ControllerAnalyzer) analyzeClass(classNode *ast.Node, sourceFile string
 		Path:          controllerPath,
 		Routes:        routes,
 		SourceFile:    sourceFile,
-		IgnoreOpenAPI: ignoreOpenAPI,
+		IgnoreOpenAPI: classInfo.IgnoreOpenAPI,
 	}
 }
 
@@ -305,7 +351,7 @@ func (a *ControllerAnalyzer) analyzeMethod(methodNode *ast.Node, controllerPath 
 	statusCode := 0
 	version := ""
 	isSSE := false
-	var returnsDecoratorInfo *DecoratorInfo
+	var returnsDecoratorInfos []*DecoratorInfo
 
 	for _, dec := range methodNode.Decorators() {
 		info := ParseDecorator(dec)
@@ -350,7 +396,7 @@ func (a *ControllerAnalyzer) analyzeMethod(methodNode *ast.Node, controllerPath 
 				version = info.Args[0]
 			}
 		case "Returns":
-			returnsDecoratorInfo = info
+			returnsDecoratorInfos = append(returnsDecoratorInfos, info)
 		}
 	}
 
@@ -389,12 +435,41 @@ func (a *ControllerAnalyzer) analyzeMethod(methodNode *ast.Node, controllerPath 
 	var returnType metadata.Metadata
 	var responseContentType string
 	var responseDescription string
-	if usesRawResponse && returnsDecoratorInfo != nil {
-		// @Res() + @Returns<T>() — use the type argument for OpenAPI
+	var additionalResponses []AdditionalResponse
+
+	if usesRawResponse && len(returnsDecoratorInfos) > 0 {
+		// @Res() + @Returns<T>() — use the first type argument for primary OpenAPI response
 		var statusOverride int
-		returnType, responseContentType, responseDescription, statusOverride = a.extractReturnsDecoratorType(returnsDecoratorInfo)
+		returnType, responseContentType, responseDescription, statusOverride = a.extractReturnsDecoratorType(returnsDecoratorInfos[0])
 		if statusOverride > 0 {
 			statusCode = statusOverride
+		}
+		// Additional @Returns decorators become additional responses
+		for _, ri := range returnsDecoratorInfos[1:] {
+			rt, ct, desc, st := a.extractReturnsDecoratorType(ri)
+			if st == 0 {
+				st = statusCode // default to same status code
+			}
+			additionalResponses = append(additionalResponses, AdditionalResponse{
+				StatusCode: st, ReturnType: rt, ContentType: ct, Description: desc,
+			})
+		}
+	} else if len(returnsDecoratorInfos) > 0 {
+		// @Returns<T>() without @Res() — primary response from first decorator
+		var statusOverride int
+		returnType, responseContentType, responseDescription, statusOverride = a.extractReturnsDecoratorType(returnsDecoratorInfos[0])
+		if statusOverride > 0 {
+			statusCode = statusOverride
+		}
+		// Additional @Returns decorators
+		for _, ri := range returnsDecoratorInfos[1:] {
+			rt, ct, desc, st := a.extractReturnsDecoratorType(ri)
+			if st == 0 {
+				st = statusCode
+			}
+			additionalResponses = append(additionalResponses, AdditionalResponse{
+				StatusCode: st, ReturnType: rt, ContentType: ct, Description: desc,
+			})
 		}
 	} else if usesRawResponse {
 		returnType = metadata.Metadata{Kind: metadata.KindVoid}
@@ -408,7 +483,7 @@ func (a *ControllerAnalyzer) analyzeMethod(methodNode *ast.Node, controllerPath 
 	}
 
 	// Extract JSDoc metadata from the method
-	summary, description, deprecated, hidden, jsdocTags, security, errorResponses, contentType, ignoreWarnings := extractMethodJSDoc(methodNode)
+	summary, description, deprecated, hidden, jsdocTags, security, errorResponses, contentType, operationIDOverride, isPublic, paramDescs, methodExtensions, ignoreWarnings := extractMethodJSDoc(methodNode)
 
 	// @hidden or @exclude — skip this route from OpenAPI generation
 	if hidden {
@@ -416,6 +491,36 @@ func (a *ControllerAnalyzer) analyzeMethod(methodNode *ast.Node, controllerPath 
 	}
 	if len(jsdocTags) > 0 {
 		tags = jsdocTags // Override controller-derived tags
+	}
+
+	// Apply @param JSDoc descriptions to parameters.
+	// Match by decorator name (e.g., @Param("id")) or local variable name.
+	if len(paramDescs) > 0 {
+		for i := range params {
+			// Try matching by decorator param name first (e.g., "id" from @Param("id"))
+			if desc, ok := paramDescs[params[i].Name]; ok && desc != "" {
+				params[i].Description = desc
+			} else if desc, ok := paramDescs[params[i].LocalName]; ok && desc != "" {
+				// Fallback: match by local variable name (e.g., "body" from `@Body() body: Dto`)
+				params[i].Description = desc
+			}
+		}
+	}
+
+	// Save the raw TypeScript method name before transforming operationID.
+	// The rewriter needs the original method name to find method bodies in JS output.
+	rawMethodName := operationID
+
+	// Build operationId: JSDoc @operationid override > ClassName_vN_methodName > ClassName_methodName
+	if operationIDOverride != "" {
+		operationID = operationIDOverride
+	} else if className != "" {
+		tag := deriveTag(className)
+		if version != "" {
+			operationID = tag + "_v" + version + "_" + operationID
+		} else {
+			operationID = tag + "_" + operationID
+		}
 	}
 
 	// Apply content type to body parameters:
@@ -454,7 +559,7 @@ func (a *ControllerAnalyzer) analyzeMethod(methodNode *ast.Node, controllerPath 
 		// Warn when @Res()/@Response() is used WITHOUT @Returns — return type cannot be determined statically.
 		// When @Returns<T>() is present, we have the type info and no warning is needed.
 		// When @tsgonest-ignore uses-raw-response is in JSDoc, suppress the warning.
-		if usesRawResponse && returnsDecoratorInfo == nil && !ignoreWarnings["uses-raw-response"] {
+		if usesRawResponse && len(returnsDecoratorInfos) == 0 && !ignoreWarnings["uses-raw-response"] {
 			a.warnings.Add(sourceFile, "uses-raw-response",
 				fmt.Sprintf("%s — uses @Res()/@Response(); response type cannot be determined statically. "+
 					"The OpenAPI response will be empty (void). "+
@@ -476,6 +581,7 @@ func (a *ControllerAnalyzer) analyzeMethod(methodNode *ast.Node, controllerPath 
 		Method:              httpMethod,
 		Path:                fullPath,
 		OperationID:         operationID,
+		MethodName:          rawMethodName,
 		Parameters:          params,
 		ReturnType:          returnType,
 		StatusCode:          statusCode,
@@ -490,6 +596,9 @@ func (a *ControllerAnalyzer) analyzeMethod(methodNode *ast.Node, controllerPath 
 		UsesRawResponse:     usesRawResponse,
 		ResponseContentType: responseContentType,
 		ResponseDescription: responseDescription,
+		IsPublic:            isPublic,
+		Extensions:          methodExtensions,
+		AdditionalResponses: additionalResponses,
 	}
 }
 
@@ -1141,41 +1250,83 @@ func (a *ControllerAnalyzer) extractReturnsDecoratorType(info *DecoratorInfo) (r
 	return
 }
 
-// isControllerIgnoredForOpenAPI checks if a controller class has JSDoc annotations
-// that exclude it from OpenAPI generation. Recognized annotations:
+// classJSDocInfo holds JSDoc metadata extracted from a controller class declaration.
+type classJSDocInfo struct {
+	// IgnoreOpenAPI is true when the controller should be excluded from OpenAPI generation.
+	IgnoreOpenAPI bool
+	// Tags are from @tag JSDoc — override the auto-derived controller tag.
+	Tags []string
+	// Security are from @security JSDoc — inherited by methods without their own @security.
+	Security []SecurityRequirement
+	// IsPublic is from @public JSDoc — marks all routes as public (no security).
+	IsPublic bool
+	// Description is from the JSDoc body text or @description tag.
+	Description string
+}
+
+// extractClassJSDoc parses class-level JSDoc for OpenAPI-relevant metadata.
+// Recognized annotations:
 //   - @tsgonest-ignore openapi — explicit OpenAPI exclusion
-//   - @hidden — compatible with NestJS/Swagger convention
-//   - @exclude — compatible with NestJS/Swagger convention
-func isControllerIgnoredForOpenAPI(classNode *ast.Node) bool {
+//   - @hidden / @exclude — compatible with NestJS/Swagger convention
+//   - @tag <name> — override auto-derived tag for all routes in this controller
+//   - @security <scheme> [scopes...] — security requirement inherited by all methods
+//   - @public — marks all routes as public (no security requirement)
+//   - @description <text> — controller description (not currently used in OpenAPI)
+func extractClassJSDoc(classNode *ast.Node) classJSDocInfo {
+	var info classJSDocInfo
 	if classNode == nil {
-		return false
+		return info
 	}
 	jsdocs := classNode.JSDoc(nil)
 	if len(jsdocs) == 0 {
-		return false
+		return info
 	}
 	jsdoc := jsdocs[len(jsdocs)-1].AsJSDoc()
+
+	// Extract description from JSDoc body text
+	if jsdoc.Comment != nil {
+		info.Description = extractNodeListText(jsdoc.Comment)
+	}
+
 	if jsdoc.Tags == nil {
-		return false
+		return info
 	}
 	for _, tagNode := range jsdoc.Tags.Nodes {
 		tagName, comment := extractJSDocTagInfo(tagNode)
 		switch strings.ToLower(tagName) {
 		case "hidden", "exclude":
-			return true
+			info.IgnoreOpenAPI = true
 		case "tsgonest-ignore":
 			if strings.TrimSpace(strings.ToLower(comment)) == "openapi" {
-				return true
+				info.IgnoreOpenAPI = true
 			}
+		case "tag":
+			t := strings.TrimSpace(comment)
+			if t != "" {
+				info.Tags = append(info.Tags, t)
+			}
+		case "security":
+			parts := strings.Fields(strings.TrimSpace(comment))
+			if len(parts) >= 1 {
+				sec := SecurityRequirement{Name: parts[0]}
+				if len(parts) > 1 {
+					sec.Scopes = parts[1:]
+				}
+				info.Security = append(info.Security, sec)
+			}
+		case "public":
+			info.IsPublic = true
+		case "description":
+			info.Description = strings.TrimSpace(comment)
 		}
 	}
-	return false
+	return info
 }
 
 // extractMethodJSDoc extracts OpenAPI-relevant JSDoc tags from a method declaration.
 // Returns summary, description, deprecated, hidden, tags, security, error responses, content type,
-// and a set of ignored warning kinds (from @tsgonest-ignore tags).
-func extractMethodJSDoc(node *ast.Node) (summary string, description string, deprecated bool, hidden bool, tags []string, security []SecurityRequirement, errorResponses []ErrorResponse, contentType string, ignoreWarnings map[string]bool) {
+// operationID override, isPublic, paramDescriptions, extensions, and a set of ignored warning kinds.
+func extractMethodJSDoc(node *ast.Node) (summary string, description string, deprecated bool, hidden bool, tags []string, security []SecurityRequirement, errorResponses []ErrorResponse, contentType string, operationIDOverride string, isPublic bool, paramDescriptions map[string]string, extensions map[string]string, ignoreWarnings map[string]bool) {
 	if node == nil {
 		return
 	}
@@ -1197,6 +1348,25 @@ func extractMethodJSDoc(node *ast.Node) (summary string, description string, dep
 	}
 
 	for _, tagNode := range jsdoc.Tags.Nodes {
+		// Handle @param tags specially — they use KindJSDocParameterTag, not KindJSDocTag
+		if tagNode.Kind == ast.KindJSDocParameterTag {
+			paramTag := tagNode.AsJSDocParameterOrPropertyTag()
+			if paramTag != nil && paramTag.Name() != nil {
+				name := paramTag.Name().Text()
+				desc := ""
+				if paramTag.Comment != nil {
+					desc = strings.TrimSpace(extractNodeListText(paramTag.Comment))
+				}
+				if name != "" && desc != "" {
+					if paramDescriptions == nil {
+						paramDescriptions = make(map[string]string)
+					}
+					paramDescriptions[name] = desc
+				}
+			}
+			continue
+		}
+
 		tagName, comment := extractJSDocTagInfo(tagNode)
 		if tagName == "" {
 			continue
@@ -1228,15 +1398,31 @@ func extractMethodJSDoc(node *ast.Node) (summary string, description string, dep
 			}
 		case "operationid":
 			// Override the auto-generated operationId
-			// (handled separately in the caller)
+			operationIDOverride = strings.TrimSpace(comment)
 		case "throws":
 			// @throws {400} BadRequestError
+			// @throws {404} NotFoundError - The resource was not found
 			er := parseThrowsTag(comment)
 			if er != nil {
 				errorResponses = append(errorResponses, *er)
 			}
+		case "public":
+			isPublic = true
 		case "contenttype":
 			contentType = strings.TrimSpace(comment)
+		case "extension":
+			// @extension x-key value
+			parts := strings.SplitN(strings.TrimSpace(comment), " ", 2)
+			if len(parts) >= 1 && strings.HasPrefix(parts[0], "x-") {
+				if extensions == nil {
+					extensions = make(map[string]string)
+				}
+				value := ""
+				if len(parts) >= 2 {
+					value = strings.TrimSpace(parts[1])
+				}
+				extensions[parts[0]] = value
+			}
 		case "tsgonest-ignore":
 			// @tsgonest-ignore uses-raw-response
 			// Suppresses the specified warning kind.
@@ -1253,7 +1439,13 @@ func extractMethodJSDoc(node *ast.Node) (summary string, description string, dep
 	return
 }
 
-// parseThrowsTag parses a @throws tag comment like "{400} BadRequestError" or "{401} UnauthorizedError".
+// parseThrowsTag parses a @throws tag comment. Supported formats:
+//
+//	@throws {400} BadRequestError
+//	@throws {404} NotFoundError - The resource was not found
+//
+// The description (after " - ") is optional. If present, it overrides the
+// default status description in the OpenAPI response.
 func parseThrowsTag(comment string) *ErrorResponse {
 	comment = strings.TrimSpace(comment)
 	if !strings.HasPrefix(comment, "{") {
@@ -1270,14 +1462,27 @@ func parseThrowsTag(comment string) *ErrorResponse {
 		return nil
 	}
 
-	typeName := strings.TrimSpace(comment[closeBrace+1:])
+	rest := strings.TrimSpace(comment[closeBrace+1:])
+	if rest == "" {
+		return nil
+	}
+
+	// Split on " - " to separate TypeName from description
+	typeName := rest
+	description := ""
+	if idx := strings.Index(rest, " - "); idx >= 0 {
+		typeName = strings.TrimSpace(rest[:idx])
+		description = strings.TrimSpace(rest[idx+3:])
+	}
+
 	if typeName == "" {
 		return nil
 	}
 
 	return &ErrorResponse{
-		StatusCode: statusCode,
-		TypeName:   typeName,
+		StatusCode:  statusCode,
+		TypeName:    typeName,
+		Description: description,
 	}
 }
 

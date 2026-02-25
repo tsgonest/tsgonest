@@ -30,8 +30,9 @@ describe("tsgonest sdk CLI", () => {
     // All core files should exist
     expect(existsSync(resolve(outputDir, "types.ts"))).toBe(true);
     expect(existsSync(resolve(outputDir, "client.ts"))).toBe(true);
+    expect(existsSync(resolve(outputDir, "sse.ts"))).toBe(true);
+    expect(existsSync(resolve(outputDir, "form-data.ts"))).toBe(true);
     expect(existsSync(resolve(outputDir, "index.ts"))).toBe(true);
-    expect(existsSync(resolve(outputDir, "package.json"))).toBe(true);
     expect(existsSync(resolve(outputDir, "orders/index.ts"))).toBe(true);
     expect(existsSync(resolve(outputDir, "products/index.ts"))).toBe(true);
 
@@ -67,9 +68,10 @@ describe("tsgonest sdk CLI", () => {
     ]);
     expect(exitCode).toBe(0);
 
-    const clientContent = readFileSync(resolve(outputDir, "client.ts"), "utf-8");
-    expect(clientContent).toContain("SSEConnection");
-    expect(clientContent).toContain("buildFormData");
+    const sseContent = readFileSync(resolve(outputDir, "sse.ts"), "utf-8");
+    expect(sseContent).toContain("SSEConnection");
+    const formDataContent = readFileSync(resolve(outputDir, "form-data.ts"), "utf-8");
+    expect(formDataContent).toContain("buildFormData");
 
     rmSync(outputDir, { recursive: true });
   });
@@ -264,6 +266,15 @@ describe("SDK runtime verification", () => {
     expect(typeof controller.getOrder).toBe("function");
     expect(typeof controller.deleteOrder).toBe("function");
   });
+
+  it("standalone functions are exported and callable", async () => {
+    const mod = await import(resolve(sdkDir, "orders/index.ts"));
+    // Standalone functions should be exported directly
+    expect(typeof mod.listOrders).toBe("function");
+    expect(typeof mod.createOrder).toBe("function");
+    expect(typeof mod.getOrder).toBe("function");
+    expect(typeof mod.deleteOrder).toBe("function");
+  });
 });
 
 describe("SSEConnection runtime", () => {
@@ -279,8 +290,8 @@ describe("SSEConnection runtime", () => {
       sdkDir,
     ]);
     expect(exitCode).toBe(0);
-    const clientMod = await import(resolve(sdkDir, "client.ts"));
-    SSEConnection = clientMod.SSEConnection;
+    const sseMod = await import(resolve(sdkDir, "sse.ts"));
+    SSEConnection = sseMod.SSEConnection;
   });
 
   function createMockResponse(chunks: string[]): any {
@@ -418,8 +429,8 @@ describe("buildFormData runtime", () => {
       sdkDir,
     ]);
     expect(exitCode).toBe(0);
-    const clientMod = await import(resolve(sdkDir, "client.ts"));
-    buildFormData = clientMod.buildFormData;
+    const formDataMod = await import(resolve(sdkDir, "form-data.ts"));
+    buildFormData = formDataMod.buildFormData;
   });
 
   it("should handle string values", () => {

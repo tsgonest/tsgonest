@@ -63,6 +63,8 @@ type Schema struct {
 	ContentMediaType string   `json:"contentMediaType,omitempty"`
 	ContentSchema    *Schema  `json:"contentSchema,omitempty"` // JSON Schema for content-encoded data (e.g., SSE data field)
 	ReadOnly         *bool    `json:"readOnly,omitempty"`
+	WriteOnly        *bool    `json:"writeOnly,omitempty"`
+	Example          *string  `json:"example,omitempty"`
 }
 
 // Discriminator represents an OpenAPI discriminator object for discriminated unions.
@@ -201,10 +203,21 @@ func (g *SchemaGenerator) buildObjectSchema(m *metadata.Metadata) *Schema {
 			applyConstraints(propSchema, prop.Constraints)
 		}
 
+		// Apply property annotations from JSDoc
+		if prop.Description != "" {
+			propSchema.Description = prop.Description
+		}
+		if prop.Example != nil {
+			propSchema.Example = prop.Example
+		}
 		schema.Properties[prop.Name] = propSchema
 		if prop.Readonly {
 			t := true
 			propSchema.ReadOnly = &t
+		}
+		if prop.WriteOnly {
+			t := true
+			propSchema.WriteOnly = &t
 		}
 
 		if prop.Required {

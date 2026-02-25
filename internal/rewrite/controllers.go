@@ -72,13 +72,13 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 						paramName = param.Name
 					}
 					if paramName == "" {
-						paramName = findBodyParamName(text, route.OperationID)
+						paramName = findBodyParamName(text, route.MethodName)
 						if paramName == "" {
 							continue
 						}
 					}
 					validations = append(validations, bodyValidation{
-						methodName: route.OperationID,
+						methodName: route.MethodName,
 						paramName:  paramName,
 						typeName:   typeName,
 					})
@@ -99,7 +99,7 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 							continue
 						}
 						validations = append(validations, bodyValidation{
-							methodName: route.OperationID,
+							methodName: route.MethodName,
 							paramName:  paramName,
 							typeName:   typeName,
 						})
@@ -112,7 +112,7 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 								paramName = param.Name
 							}
 							scalarCoercions = append(scalarCoercions, scalarCoercion{
-								methodName: route.OperationID,
+								methodName: route.MethodName,
 								paramName:  paramName,
 								atomic:     param.Type.Atomic,
 							})
@@ -136,7 +136,7 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 			}
 			isArray := route.ReturnType.Kind == metadata.KindArray
 			transforms = append(transforms, returnTransform{
-				methodName: route.OperationID,
+				methodName: route.MethodName,
 				typeName:   returnTypeName,
 				isArray:    isArray,
 			})

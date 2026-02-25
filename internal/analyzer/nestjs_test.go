@@ -315,8 +315,8 @@ func TestControllerAnalyzer_BasicController(t *testing.T) {
 	if r0.Path != "/users" {
 		t.Errorf("route 0: expected Path='/users', got %q", r0.Path)
 	}
-	if r0.OperationID != "findAll" {
-		t.Errorf("route 0: expected OperationID='findAll', got %q", r0.OperationID)
+	if r0.OperationID != "User_findAll" {
+		t.Errorf("route 0: expected OperationID='User_findAll', got %q", r0.OperationID)
 	}
 	if r0.StatusCode != 200 {
 		t.Errorf("route 0: expected StatusCode=200, got %d", r0.StatusCode)
@@ -831,16 +831,16 @@ func TestControllerAnalyzer_VersionDecorator(t *testing.T) {
 	if r0.Version != "1" {
 		t.Errorf("route 0: expected Version='1', got %q", r0.Version)
 	}
-	if r0.OperationID != "findAllV1" {
-		t.Errorf("route 0: expected OperationID='findAllV1', got %q", r0.OperationID)
+	if r0.OperationID != "User_v1_findAllV1" {
+		t.Errorf("route 0: expected OperationID='User_v1_findAllV1', got %q", r0.OperationID)
 	}
 
 	r1 := controllers[0].Routes[1]
 	if r1.Version != "2" {
 		t.Errorf("route 1: expected Version='2', got %q", r1.Version)
 	}
-	if r1.OperationID != "findAllV2" {
-		t.Errorf("route 1: expected OperationID='findAllV2', got %q", r1.OperationID)
+	if r1.OperationID != "User_v2_findAllV2" {
+		t.Errorf("route 1: expected OperationID='User_v2_findAllV2', got %q", r1.OperationID)
 	}
 
 	r2 := controllers[0].Routes[2]
@@ -1902,8 +1902,8 @@ func TestControllerAnalyzer_DynamicRoutePath_WarnsAndSkipsRoute(t *testing.T) {
 	}
 
 	route := controllers[0].Routes[0]
-	if route.OperationID != "goodRoute" {
-		t.Errorf("expected remaining route OperationID='goodRoute', got %q", route.OperationID)
+	if route.OperationID != "User_goodRoute" {
+		t.Errorf("expected remaining route OperationID='User_goodRoute', got %q", route.OperationID)
 	}
 	if route.Path != "/users/static" {
 		t.Errorf("expected remaining route Path='/users/static', got %q", route.Path)

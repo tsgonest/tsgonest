@@ -10,23 +10,25 @@ import (
 	"github.com/tsgonest/tsgonest/internal/metadata"
 )
 
-// Document represents an OpenAPI 3.1 document.
+// Document represents an OpenAPI 3.2 document.
 type Document struct {
-	OpenAPI    string               `json:"openapi"`
-	Info       Info                 `json:"info"`
-	Servers    []Server             `json:"servers,omitempty"`
-	Paths      map[string]*PathItem `json:"paths"`
-	Components *Components          `json:"components,omitempty"`
-	Tags       []Tag                `json:"tags,omitempty"`
+	OpenAPI    string                `json:"openapi"`
+	Info       Info                  `json:"info"`
+	Servers    []Server              `json:"servers,omitempty"`
+	Paths      map[string]*PathItem  `json:"paths"`
+	Components *Components           `json:"components,omitempty"`
+	Tags       []Tag                 `json:"tags,omitempty"`
+	Security   []map[string][]string `json:"security,omitempty"`
 }
 
 // Info holds API metadata.
 type Info struct {
-	Title       string   `json:"title"`
-	Description string   `json:"description,omitempty"`
-	Version     string   `json:"version"`
-	Contact     *Contact `json:"contact,omitempty"`
-	License     *License `json:"license,omitempty"`
+	Title          string   `json:"title"`
+	Description    string   `json:"description,omitempty"`
+	Version        string   `json:"version"`
+	TermsOfService string   `json:"termsOfService,omitempty"`
+	Contact        *Contact `json:"contact,omitempty"`
+	License        *License `json:"license,omitempty"`
 }
 
 // Contact holds API contact info.
@@ -72,16 +74,63 @@ type Operation struct {
 	Responses           Responses             `json:"responses"`
 	XTsgonestController string                `json:"x-tsgonest-controller,omitempty"`
 	XTsgonestMethod     string                `json:"x-tsgonest-method,omitempty"`
+	// Extensions holds vendor extension properties (x-* keys) from @extension JSDoc.
+	// These are serialized as top-level fields in the operation JSON.
+	Extensions map[string]string `json:"-"` // excluded from default marshaling
+}
+
+// MarshalJSON implements custom JSON marshaling to:
+//  1. Include vendor extensions (x-* keys) as top-level fields.
+//  2. Serialize an explicitly empty Security slice as "security": [] (for @public routes).
+//     Go's omitempty omits both nil and empty slices, but OpenAPI requires [] to override global security.
+func (op Operation) MarshalJSON() ([]byte, error) {
+	// Alias to avoid infinite recursion
+	type OperationAlias Operation
+	data, err := json.Marshal(OperationAlias(op))
+	if err != nil {
+		return nil, err
+	}
+
+	// Check if we need post-processing: empty-but-non-nil security or vendor extensions
+	needsEmptySecurity := op.Security != nil && len(op.Security) == 0
+	needsExtensions := len(op.Extensions) > 0
+
+	if !needsEmptySecurity && !needsExtensions {
+		return data, nil
+	}
+
+	// Unmarshal into raw map for modification
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, err
+	}
+
+	// Inject "security": [] for @public routes
+	if needsEmptySecurity {
+		raw["security"] = json.RawMessage(`[]`)
+	}
+
+	// Merge vendor extensions
+	for k, v := range op.Extensions {
+		encoded, err := json.Marshal(v)
+		if err != nil {
+			return nil, err
+		}
+		raw[k] = encoded
+	}
+
+	return json.Marshal(raw)
 }
 
 // Parameter represents an OpenAPI parameter (query, path, header).
 type Parameter struct {
-	Name     string  `json:"name"`
-	In       string  `json:"in"` // "query", "path", "header"
-	Required bool    `json:"required"`
-	Style    string  `json:"style,omitempty"`   // "form", "simple", "deepObject", etc.
-	Explode  *bool   `json:"explode,omitempty"` // true for repeated query params (?a=1&a=2)
-	Schema   *Schema `json:"schema"`
+	Name        string  `json:"name"`
+	In          string  `json:"in"` // "query", "path", "header"
+	Description string  `json:"description,omitempty"`
+	Required    bool    `json:"required"`
+	Style       string  `json:"style,omitempty"`   // "form", "simple", "deepObject", etc.
+	Explode     *bool   `json:"explode,omitempty"` // true for repeated query params (?a=1&a=2)
+	Schema      *Schema `json:"schema"`
 }
 
 // RequestBody represents an OpenAPI request body.
@@ -126,10 +175,15 @@ type DocumentConfig struct {
 	Title           string
 	Description     string
 	Version         string
+	TermsOfService  string
 	Contact         *Contact
 	License         *License
 	Servers         []Server
 	SecuritySchemes map[string]*SecurityScheme
+	// Security defines global security requirements for all operations.
+	Security []map[string][]string
+	// Tags defines tag descriptions (merged with auto-collected tags).
+	Tags []Tag
 }
 
 // Tag represents an OpenAPI tag.
@@ -176,8 +230,18 @@ func (g *Generator) buildOperation(route analyzer.Route, controllerName string) 
 		XTsgonestMethod:     route.OperationID,
 	}
 
-	// Map security requirements
-	if len(route.Security) > 0 {
+	// Map vendor extensions from @extension JSDoc
+	if len(route.Extensions) > 0 {
+		op.Extensions = route.Extensions
+	}
+
+	// Map security requirements.
+	// @public → empty security array (overrides global security).
+	// Per-route @security → explicit security requirements.
+	// No annotation → inherits global security (omit from operation).
+	if route.IsPublic {
+		op.Security = []map[string][]string{} // empty array = no security
+	} else if len(route.Security) > 0 {
 		for _, sec := range route.Security {
 			scopes := sec.Scopes
 			if scopes == nil {
@@ -216,10 +280,11 @@ func (g *Generator) buildOperation(route analyzer.Route, controllerName string) 
 					g.decomposeQueryObject(op, resolved)
 				} else {
 					op.Parameters = append(op.Parameters, Parameter{
-						Name:     param.Name,
-						In:       "query",
-						Required: param.Required,
-						Schema:   g.schemaGen.MetadataToSchema(&param.Type),
+						Name:        param.Name,
+						In:          "query",
+						Description: param.Description,
+						Required:    param.Required,
+						Schema:      g.schemaGen.MetadataToSchema(&param.Type),
 					})
 				}
 			} else {
@@ -228,10 +293,11 @@ func (g *Generator) buildOperation(route analyzer.Route, controllerName string) 
 					name = "query"
 				}
 				op.Parameters = append(op.Parameters, Parameter{
-					Name:     name,
-					In:       "query",
-					Required: param.Required,
-					Schema:   g.schemaGen.MetadataToSchema(&param.Type),
+					Name:        name,
+					In:          "query",
+					Description: param.Description,
+					Required:    param.Required,
+					Schema:      g.schemaGen.MetadataToSchema(&param.Type),
 				})
 			}
 
@@ -241,10 +307,11 @@ func (g *Generator) buildOperation(route analyzer.Route, controllerName string) 
 				name = "id" // fallback
 			}
 			op.Parameters = append(op.Parameters, Parameter{
-				Name:     name,
-				In:       "path",
-				Required: true, // path params are always required
-				Schema:   g.schemaGen.MetadataToSchema(&param.Type),
+				Name:        name,
+				In:          "path",
+				Description: param.Description,
+				Required:    true, // path params are always required
+				Schema:      g.schemaGen.MetadataToSchema(&param.Type),
 			})
 
 		case "headers":
@@ -256,10 +323,11 @@ func (g *Generator) buildOperation(route analyzer.Route, controllerName string) 
 					g.decomposeHeaderObject(op, resolved)
 				} else {
 					op.Parameters = append(op.Parameters, Parameter{
-						Name:     param.Name,
-						In:       "header",
-						Required: param.Required,
-						Schema:   g.schemaGen.MetadataToSchema(&param.Type),
+						Name:        param.Name,
+						In:          "header",
+						Description: param.Description,
+						Required:    param.Required,
+						Schema:      g.schemaGen.MetadataToSchema(&param.Type),
 					})
 				}
 			} else {
@@ -268,10 +336,11 @@ func (g *Generator) buildOperation(route analyzer.Route, controllerName string) 
 					name = "headers"
 				}
 				op.Parameters = append(op.Parameters, Parameter{
-					Name:     name,
-					In:       "header",
-					Required: param.Required,
-					Schema:   g.schemaGen.MetadataToSchema(&param.Type),
+					Name:        name,
+					In:          "header",
+					Description: param.Description,
+					Required:    param.Required,
+					Schema:      g.schemaGen.MetadataToSchema(&param.Type),
 				})
 			}
 		}
@@ -315,20 +384,46 @@ func (g *Generator) buildOperation(route analyzer.Route, controllerName string) 
 		}
 	}
 
+	// Add additional success responses from multiple @Returns<T>() decorators
+	for _, ar := range route.AdditionalResponses {
+		arStatusStr := fmt.Sprintf("%d", ar.StatusCode)
+		arContentType := "application/json"
+		if ar.ContentType != "" {
+			arContentType = ar.ContentType
+		}
+		arDescription := statusDescription(ar.StatusCode)
+		if ar.Description != "" {
+			arDescription = ar.Description
+		}
+		if ar.ReturnType.Kind == metadata.KindVoid {
+			op.Responses[arStatusStr] = &Response{Description: arDescription}
+		} else {
+			arSchema := g.schemaGen.MetadataToSchema(&ar.ReturnType)
+			op.Responses[arStatusStr] = &Response{
+				Description: arDescription,
+				Content:     map[string]MediaType{arContentType: {Schema: arSchema}},
+			}
+		}
+	}
+
 	// Add error responses from @throws
 	for _, er := range route.ErrorResponses {
 		errStatusStr := fmt.Sprintf("%d", er.StatusCode)
+		errDescription := statusDescription(er.StatusCode)
+		if er.Description != "" {
+			errDescription = er.Description
+		}
 		if er.Type.Kind != "" {
 			errSchema := g.schemaGen.MetadataToSchema(&er.Type)
 			op.Responses[errStatusStr] = &Response{
-				Description: statusDescription(er.StatusCode),
+				Description: errDescription,
 				Content: map[string]MediaType{
 					"application/json": {Schema: errSchema},
 				},
 			}
 		} else {
 			op.Responses[errStatusStr] = &Response{
-				Description: statusDescription(er.StatusCode),
+				Description: errDescription,
 			}
 		}
 	}
@@ -443,6 +538,9 @@ func (doc *Document) ApplyConfig(cfg DocumentConfig) {
 	if cfg.Version != "" {
 		doc.Info.Version = cfg.Version
 	}
+	if cfg.TermsOfService != "" {
+		doc.Info.TermsOfService = cfg.TermsOfService
+	}
 	if cfg.Contact != nil {
 		doc.Info.Contact = cfg.Contact
 	}
@@ -457,6 +555,29 @@ func (doc *Document) ApplyConfig(cfg DocumentConfig) {
 			doc.Components = &Components{}
 		}
 		doc.Components.SecuritySchemes = cfg.SecuritySchemes
+	}
+	if len(cfg.Security) > 0 {
+		doc.Security = cfg.Security
+	}
+	// Merge config tag descriptions with auto-collected tags
+	if len(cfg.Tags) > 0 {
+		tagDescMap := make(map[string]string)
+		for _, t := range cfg.Tags {
+			tagDescMap[t.Name] = t.Description
+		}
+		// Update existing tags with descriptions
+		for i := range doc.Tags {
+			if desc, ok := tagDescMap[doc.Tags[i].Name]; ok {
+				doc.Tags[i].Description = desc
+				delete(tagDescMap, doc.Tags[i].Name)
+			}
+		}
+		// Add config-only tags that weren't already collected from routes
+		for name, desc := range tagDescMap {
+			doc.Tags = append(doc.Tags, Tag{Name: name, Description: desc})
+		}
+		// Re-sort to maintain alphabetical order
+		sort.Slice(doc.Tags, func(i, j int) bool { return doc.Tags[i].Name < doc.Tags[j].Name })
 	}
 }
 

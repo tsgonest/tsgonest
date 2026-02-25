@@ -115,6 +115,12 @@ type Property struct {
 	Readonly      bool         `json:"readonly,omitempty"`
 	ExactOptional bool         `json:"exactOptional,omitempty"`
 	Constraints   *Constraints `json:"constraints,omitempty"`
+	// Description is from @description JSDoc on the property declaration.
+	Description string `json:"description,omitempty"`
+	// WriteOnly is from @writeOnly JSDoc on the property declaration.
+	WriteOnly bool `json:"writeOnly,omitempty"`
+	// Example is from @example JSDoc on the property declaration.
+	Example *string `json:"example,omitempty"`
 }
 
 // Constraints represents validation constraints extracted from JSDoc tags.

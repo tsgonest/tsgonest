@@ -643,6 +643,57 @@ func stripQuotes(s string) string {
 	return s
 }
 
+// propertyAnnotations holds OpenAPI-only annotations extracted from a property's JSDoc.
+// These are separate from validation constraints — they only affect the schema output.
+type propertyAnnotations struct {
+	Description string
+	WriteOnly   bool
+	Example     *string
+}
+
+// extractPropertyAnnotations extracts OpenAPI-relevant JSDoc annotations from a property declaration:
+//   - @description <text> — property description in the schema
+//   - @writeOnly — marks the property as write-only in the schema
+//   - @example <value> — example value in the schema
+//
+// Only explicit tags are used — JSDoc body text is NOT extracted.
+func extractPropertyAnnotations(node *ast.Node) propertyAnnotations {
+	var ann propertyAnnotations
+	if node == nil {
+		return ann
+	}
+	// Walk up to find JSDoc (it may be on the parent VariableStatement or PropertySignature)
+	for n := node; n != nil; n = n.Parent {
+		jsdocs := n.JSDoc(nil)
+		if len(jsdocs) > 0 {
+			jsdoc := jsdocs[len(jsdocs)-1].AsJSDoc()
+			if jsdoc.Tags != nil {
+				for _, tagNode := range jsdoc.Tags.Nodes {
+					tagName, comment := extractJSDocTagInfo(tagNode)
+					switch strings.ToLower(tagName) {
+					case "description":
+						ann.Description = strings.TrimSpace(comment)
+					case "writeonly":
+						ann.WriteOnly = true
+					case "example":
+						v := strings.TrimSpace(comment)
+						if v != "" {
+							ann.Example = &v
+						}
+					}
+				}
+			}
+			return ann // Found JSDoc, don't walk further
+		}
+		// Stop walking at statement-level nodes
+		if n.Kind == ast.KindPropertySignature || n.Kind == ast.KindPropertyDeclaration ||
+			n.Kind == ast.KindVariableStatement || n.Kind == ast.KindClassDeclaration {
+			break
+		}
+	}
+	return ann
+}
+
 // extractNodeListText concatenates text from a NodeList of JSDoc text/link nodes.
 func extractNodeListText(nodeList *ast.NodeList) string {
 	if nodeList == nil {

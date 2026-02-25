@@ -28,9 +28,19 @@ func Generate(inputPath, outputDir string) error {
 		return err
 	}
 
-	// Generate client infrastructure
+	// Generate client infrastructure (split for tree-shaking)
 	clientCode := generateClient()
 	if err := writeFile(filepath.Join(outputDir, "client.ts"), clientCode); err != nil {
+		return err
+	}
+
+	sseCode := generateSSE()
+	if err := writeFile(filepath.Join(outputDir, "sse.ts"), sseCode); err != nil {
+		return err
+	}
+
+	formDataCode := generateFormData()
+	if err := writeFile(filepath.Join(outputDir, "form-data.ts"), formDataCode); err != nil {
 		return err
 	}
 
@@ -52,12 +62,6 @@ func Generate(inputPath, outputDir string) error {
 	// Generate index.ts
 	indexCode := generateIndex(doc.Versions)
 	if err := writeFile(filepath.Join(outputDir, "index.ts"), indexCode); err != nil {
-		return err
-	}
-
-	// Generate package.json
-	pkgCode := generatePackageJSON(doc.Versions)
-	if err := writeFile(filepath.Join(outputDir, "package.json"), pkgCode); err != nil {
 		return err
 	}
 
