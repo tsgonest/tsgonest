@@ -4,6 +4,19 @@ description: All notable changes to tsgonest.
 ---
 
 
+## [0.5.2] - 2026-02-26
+
+### Bug Fixes
+- Harden codegen emit for JS edge cases and move build cache into outDir ([#3](https://github.com/tsgonest/tsgonest/issues/3)) ([`7837b7b`](https://github.com/tsgonest/tsgonest/commit/7837b7b))
+  - Rewrite `jsStringEscape` to handle all control chars, Unicode line/paragraph separators
+  - Fix `__proto__` as object key (computed property name) and property access (bracket notation)
+  - Add double-escaping for property names in template literals and string concatenation
+  - Fix regex literal injection (`//` line-comment) in 7 emission sites
+  - Fix discriminant accessor in validate, serialize, and transform codegen
+  - Move post-processing cache into `outDir` so `deleteOutDir` clears stale caches
+
+## [0.5.1] - 2026-02-25
+
 ### Bug Fixes
 - Warn and skip unsupported runtime controller routes ([#2](https://github.com/tsgonest/tsgonest/issues/2)) ([`5d8c3de`](https://github.com/tsgonest/tsgonest/commit/5d8c3dee197129417c98db959db7f0fcddd4ddad))
 
