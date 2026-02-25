@@ -1,0 +1,8 @@
+{
+  "controllers": {
+    "include": ["src/**/*.controller.ts"]
+  },
+  "openapi": {
+    "output": "dist/openapi.json"
+  }
+}

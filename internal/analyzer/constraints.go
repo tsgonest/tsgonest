@@ -571,7 +571,7 @@ func extractJSDocTagInfo(tagNode *ast.Node) (tagName string, comment string) {
 					// The inner type should be a TypeReference with an identifier name
 					if typeExpr.Type.Kind == ast.KindTypeReference {
 						ref := typeExpr.Type.AsTypeReferenceNode()
-						if ref != nil && ref.TypeName != nil {
+						if ref != nil && ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier {
 							return "type", ref.TypeName.Text()
 						}
 					}

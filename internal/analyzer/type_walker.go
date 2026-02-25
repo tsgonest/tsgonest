@@ -838,7 +838,7 @@ func (w *TypeWalker) WalkTypeNode(node *ast.Node) metadata.Metadata {
 	// Skip wrapper types (Promise, Observable) — their inner type is already unwrapped.
 	if result.Name == "" && node.Kind == ast.KindTypeReference {
 		ref := node.AsTypeReferenceNode()
-		if ref.TypeName != nil {
+		if ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier {
 			name := ref.TypeName.Text()
 			if name != "Promise" && name != "Observable" && name != "Array" {
 				result.Name = name

@@ -173,6 +173,10 @@ func (a *ControllerAnalyzer) Registry() *metadata.TypeRegistry {
 func (a *ControllerAnalyzer) AnalyzeSourceFile(sf *ast.SourceFile) []ControllerInfo {
 	var controllers []ControllerInfo
 
+	// Warn for runtime-generated controllers (non-top-level classes with @Controller).
+	// These are not statically analyzable and are intentionally excluded from OpenAPI.
+	a.warnUnsupportedRuntimeControllers(sf)
+
 	for _, stmt := range sf.Statements.Nodes {
 		if stmt.Kind != ast.KindClassDeclaration {
 			continue
@@ -212,6 +216,10 @@ func (a *ControllerAnalyzer) AnalyzeProgram(includePatterns []string, excludePat
 // Returns nil if the class is not a controller.
 func (a *ControllerAnalyzer) analyzeClass(classNode *ast.Node, sourceFile string) *ControllerInfo {
 	classDecl := classNode.AsClassDeclaration()
+	className := ""
+	if classDecl.Name() != nil {
+		className = classDecl.Name().Text()
+	}
 
 	// Look for @Controller decorator
 	controllerPath := ""
@@ -222,15 +230,27 @@ func (a *ControllerAnalyzer) analyzeClass(classNode *ast.Node, sourceFile string
 			continue
 		}
 		if IsControllerDecorator(info) {
+			pathArg, hasPathArg, unsupported := extractStaticDecoratorPathArg(dec)
+			if unsupported {
+				a.warnUnsupportedDynamicControllerPath(classNode, sourceFile, className)
+				return nil
+			}
 			isController = true
-			controllerPath = GetControllerPath(info)
+			if hasPathArg {
+				controllerPath = pathArg
+			}
 			break
 		}
 		// Try resolving import alias
 		if origName := a.resolveDecoratorOriginalName(dec); origName == "Controller" {
+			pathArg, hasPathArg, unsupported := extractStaticDecoratorPathArg(dec)
+			if unsupported {
+				a.warnUnsupportedDynamicControllerPath(classNode, sourceFile, className)
+				return nil
+			}
 			isController = true
-			if len(info.Args) > 0 {
-				controllerPath = cleanPath(info.Args[0])
+			if hasPathArg {
+				controllerPath = pathArg
 			}
 			break
 		}
@@ -238,11 +258,6 @@ func (a *ControllerAnalyzer) analyzeClass(classNode *ast.Node, sourceFile string
 
 	if !isController {
 		return nil
-	}
-
-	className := ""
-	if classDecl.Name() != nil {
-		className = classDecl.Name().Text()
 	}
 
 	// Check class-level JSDoc for @tsgonest-ignore openapi, @hidden, @exclude
@@ -279,6 +294,10 @@ func (a *ControllerAnalyzer) analyzeClass(classNode *ast.Node, sourceFile string
 // Returns nil if the method has no HTTP method decorator.
 func (a *ControllerAnalyzer) analyzeMethod(methodNode *ast.Node, controllerPath string, tag string, className string, sourceFile string) *Route {
 	methodDecl := methodNode.AsMethodDeclaration()
+	operationID := ""
+	if methodDecl.Name() != nil {
+		operationID = methodDecl.Name().Text()
+	}
 
 	// Look for HTTP method decorators, @HttpCode, @Version, @Sse, and @Returns
 	httpMethod := ""
@@ -294,18 +313,33 @@ func (a *ControllerAnalyzer) analyzeMethod(methodNode *ast.Node, controllerPath 
 			continue
 		}
 
-		switch info.Name {
+		decName := info.Name
+		if origName := a.resolveDecoratorOriginalName(dec); origName != "" {
+			decName = origName
+		}
+
+		switch decName {
 		case "Get", "Post", "Put", "Delete", "Patch", "Head", "Options":
-			httpMethod = httpMethodForDecorator(info.Name)
-			if len(info.Args) > 0 {
-				subPath = info.Args[0]
+			pathArg, hasPathArg, unsupported := extractStaticDecoratorPathArg(dec)
+			if unsupported {
+				a.warnUnsupportedDynamicRoutePath(methodNode, sourceFile, className, operationID, decName)
+				return nil
+			}
+			httpMethod = httpMethodForDecorator(decName)
+			if hasPathArg {
+				subPath = pathArg
 			}
 		case "Sse":
 			// @Sse('path') — Server-Sent Events endpoint, maps to GET
+			pathArg, hasPathArg, unsupported := extractStaticDecoratorPathArg(dec)
+			if unsupported {
+				a.warnUnsupportedDynamicRoutePath(methodNode, sourceFile, className, operationID, decName)
+				return nil
+			}
 			httpMethod = "GET"
 			isSSE = true
-			if len(info.Args) > 0 {
-				subPath = info.Args[0]
+			if hasPathArg {
+				subPath = pathArg
 			}
 		case "HttpCode":
 			if info.NumericArg != nil {
@@ -317,33 +351,6 @@ func (a *ControllerAnalyzer) analyzeMethod(methodNode *ast.Node, controllerPath 
 			}
 		case "Returns":
 			returnsDecoratorInfo = info
-		default:
-			// Try resolving import alias
-			if origName := a.resolveDecoratorOriginalName(dec); origName != "" {
-				switch origName {
-				case "Get", "Post", "Put", "Delete", "Patch", "Head", "Options":
-					httpMethod = httpMethodForDecorator(origName)
-					if len(info.Args) > 0 {
-						subPath = info.Args[0]
-					}
-				case "Sse":
-					httpMethod = "GET"
-					isSSE = true
-					if len(info.Args) > 0 {
-						subPath = info.Args[0]
-					}
-				case "HttpCode":
-					if info.NumericArg != nil {
-						statusCode = int(*info.NumericArg)
-					}
-				case "Version":
-					if len(info.Args) > 0 {
-						version = info.Args[0]
-					}
-				case "Returns":
-					returnsDecoratorInfo = info
-				}
-			}
 		}
 	}
 
@@ -358,12 +365,6 @@ func (a *ControllerAnalyzer) analyzeMethod(methodNode *ast.Node, controllerPath 
 
 	// Build full path
 	fullPath := CombinePaths(controllerPath, subPath)
-
-	// Get method name for operationId
-	operationID := ""
-	if methodDecl.Name() != nil {
-		operationID = methodDecl.Name().Text()
-	}
 
 	// Extract parameters, detecting @Res()/@Response() usage
 	var params []RouteParameter
@@ -492,6 +493,134 @@ func (a *ControllerAnalyzer) analyzeMethod(methodNode *ast.Node, controllerPath 
 	}
 }
 
+// warnUnsupportedRuntimeControllers scans for @Controller classes that are not
+// top-level declarations (e.g., class declarations nested inside factory
+// functions). These runtime-generated controllers are intentionally excluded
+// from OpenAPI because their final routes are not statically knowable.
+func (a *ControllerAnalyzer) warnUnsupportedRuntimeControllers(sf *ast.SourceFile) {
+	if sf == nil || a.warnings == nil {
+		return
+	}
+
+	var visit ast.Visitor
+	visit = func(node *ast.Node) bool {
+		if node == nil {
+			return false
+		}
+
+		if node.Kind == ast.KindClassDeclaration && node.Parent != nil && node.Parent.Kind != ast.KindSourceFile {
+			if a.hasControllerDecorator(node) {
+				a.warnUnsupportedRuntimeController(node, sf.FileName())
+			}
+		}
+
+		ast.ForEachChildAndJSDoc(node, sf, visit)
+		return false
+	}
+
+	for _, stmt := range sf.Statements.Nodes {
+		visit(stmt)
+	}
+}
+
+func (a *ControllerAnalyzer) hasControllerDecorator(node *ast.Node) bool {
+	for _, dec := range node.Decorators() {
+		info := ParseDecorator(dec)
+		if info == nil {
+			continue
+		}
+		if IsControllerDecorator(info) || a.resolveDecoratorOriginalName(dec) == "Controller" {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *ControllerAnalyzer) warnUnsupportedRuntimeController(classNode *ast.Node, sourceFile string) {
+	if a.warnings == nil || classNode == nil {
+		return
+	}
+
+	loc := sourceFile
+	if sf := ast.GetSourceFileOfNode(classNode); sf != nil {
+		line, _ := shimscanner.GetECMALineAndCharacterOfPosition(sf, classNode.Pos())
+		loc = fmt.Sprintf("%s:%d", sourceFile, line+1)
+	}
+
+	a.warnings.Add(sourceFile, "unsupported-runtime-controller",
+		fmt.Sprintf("%s — runtime-generated controller detected (non-top-level @Controller class). tsgonest uses static analysis; routes are excluded from OpenAPI", loc))
+}
+
+func (a *ControllerAnalyzer) warnUnsupportedDynamicControllerPath(classNode *ast.Node, sourceFile string, className string) {
+	if a.warnings == nil || classNode == nil {
+		return
+	}
+
+	loc := sourceFile
+	if sf := ast.GetSourceFileOfNode(classNode); sf != nil {
+		line, _ := shimscanner.GetECMALineAndCharacterOfPosition(sf, classNode.Pos())
+		loc = fmt.Sprintf("%s:%d", sourceFile, line+1)
+	}
+	if className != "" {
+		loc = className + " (" + loc + ")"
+	}
+
+	a.warnings.Add(sourceFile, "unsupported-dynamic-controller-path",
+		fmt.Sprintf("%s — dynamic @Controller() path is not supported by static analysis; controller is excluded from OpenAPI", loc))
+}
+
+func (a *ControllerAnalyzer) warnUnsupportedDynamicRoutePath(methodNode *ast.Node, sourceFile string, className string, methodName string, decoratorName string) {
+	if a.warnings == nil || methodNode == nil {
+		return
+	}
+
+	loc := methodName + "()"
+	if className != "" {
+		loc = className + "." + loc
+	}
+	if sf := ast.GetSourceFileOfNode(methodNode); sf != nil {
+		line, _ := shimscanner.GetECMALineAndCharacterOfPosition(sf, methodNode.Pos())
+		loc = fmt.Sprintf("%s (%s:%d)", loc, sourceFile, line+1)
+	} else if sourceFile != "" {
+		loc = fmt.Sprintf("%s (%s)", loc, sourceFile)
+	}
+
+	a.warnings.Add(sourceFile, "unsupported-dynamic-route-path",
+		fmt.Sprintf("%s — dynamic @%s() path argument is not supported by static analysis; route is excluded from OpenAPI", loc, decoratorName))
+}
+
+// extractStaticDecoratorPathArg extracts the first decorator argument when it
+// is a statically analyzable path literal.
+//
+// Returns:
+//   - path: normalized path value
+//   - hasArg: whether the decorator has a first argument
+//   - unsupported: true when a first argument exists but is non-literal (e.g.,
+//     identifier, call expression, template expression with interpolation)
+func extractStaticDecoratorPathArg(dec *ast.Node) (path string, hasArg bool, unsupported bool) {
+	if dec == nil || dec.Kind != ast.KindDecorator {
+		return "", false, false
+	}
+	expr := dec.AsDecorator().Expression
+	if expr.Kind != ast.KindCallExpression {
+		return "", false, false
+	}
+	call := expr.AsCallExpression()
+	if call.Arguments == nil || len(call.Arguments.Nodes) == 0 {
+		return "", false, false
+	}
+	arg := call.Arguments.Nodes[0]
+
+	switch arg.Kind {
+	case ast.KindStringLiteral:
+		return cleanPath(arg.AsStringLiteral().Text), true, false
+	case ast.KindNoSubstitutionTemplateLiteral:
+		return cleanPath(arg.AsNoSubstitutionTemplateLiteral().Text), true, false
+	default:
+		return "", true, true
+	}
+}
+
 // analyzeParameter extracts parameter information from a decorated parameter.
 // Returns nil if the parameter has no recognized NestJS decorator.
 //
@@ -615,9 +744,11 @@ func (a *ControllerAnalyzer) analyzeParameter(paramNode *ast.Node, className str
 	// Determine if required (not optional, not nullable)
 	required := paramDecl.QuestionToken == nil && !paramType.Optional && !paramType.Nullable
 
-	// Extract local variable name from the parameter declaration
+	// Extract local variable name from the parameter declaration.
+	// Binding patterns (destructured params like `{ page, limit }: Dto`) don't
+	// have a simple text name — skip them to avoid a panic in Node.Text().
 	localName := ""
-	if paramDecl.Name() != nil {
+	if paramDecl.Name() != nil && paramDecl.Name().Kind == ast.KindIdentifier {
 		localName = paramDecl.Name().Text()
 	}
 
@@ -648,7 +779,7 @@ func resolveTypeNodeName(typeNode *ast.Node, checker *shimchecker.Checker) strin
 	// TypeReference nodes have a TypeName child
 	if typeNode.Kind == ast.KindTypeReference {
 		ref := typeNode.AsTypeReferenceNode()
-		if ref.TypeName != nil {
+		if ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier {
 			return ref.TypeName.Text()
 		}
 	}
@@ -657,7 +788,7 @@ func resolveTypeNodeName(typeNode *ast.Node, checker *shimchecker.Checker) strin
 		for _, member := range typeNode.AsIntersectionTypeNode().Types.Nodes {
 			if member.Kind == ast.KindTypeReference {
 				ref := member.AsTypeReferenceNode()
-				if ref.TypeName != nil {
+				if ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier {
 					return ref.TypeName.Text()
 				}
 			}
@@ -884,6 +1015,11 @@ func resolveInnerTypeName(typeNode *ast.Node) string {
 	}
 	ref := typeNode.AsTypeReferenceNode()
 	if ref.TypeName == nil {
+		return ""
+	}
+	// QualifiedName (e.g., Express.Multer.File) can't be resolved to a simple
+	// companion name — skip it.
+	if ref.TypeName.Kind != ast.KindIdentifier {
 		return ""
 	}
 	name := ref.TypeName.Text()
