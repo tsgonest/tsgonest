@@ -557,10 +557,12 @@ func runBuild(args []string) int {
 			totalRoutes += len(ctrl.Routes)
 		}
 		fmt.Fprintf(os.Stderr, "found %d controller(s) with %d route(s)\n", len(controllers), totalRoutes)
-		// Print controller analyzer warnings (stored during pre-emit analysis)
-		for _, w := range controllerWarnings {
-			fmt.Fprintf(os.Stderr, "warning: %s\n", w.Message)
-		}
+	}
+
+	// Print controller analyzer warnings (stored during pre-emit analysis),
+	// even when zero controllers were extracted.
+	for _, w := range controllerWarnings {
+		fmt.Fprintf(os.Stderr, "warning: %s\n", w.Message)
 	}
 
 	// Generate OpenAPI document (using pre-analyzed controllers)
@@ -1178,4 +1180,3 @@ func hashFileContent(path string) string {
 	h := sha256.Sum256(data)
 	return hex.EncodeToString(h[:])
 }
-

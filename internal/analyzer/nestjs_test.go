@@ -1,6 +1,7 @@
 package analyzer_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/microsoft/typescript-go/shim/ast"
@@ -1658,6 +1659,265 @@ func TestControllerAnalyzer_AliasedControllerDecorator(t *testing.T) {
 	}
 	if controllers[0].Routes[0].Method != "GET" {
 		t.Errorf("expected Method='GET', got %q", controllers[0].Routes[0].Method)
+	}
+}
+
+// --- Robustness Tests: BindingPattern & QualifiedName ---
+
+func TestControllerAnalyzer_DestructuredBodyParam(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Post(path?: string): MethodDecorator { return (t, k, d) => d; }
+		function Body(): ParameterDecorator { return () => {}; }
+
+		interface CreateLeaveRequestDTO {
+			requestData: string;
+		}
+
+		@Controller("leave")
+		export class LeaveController {
+			@Post()
+			create(@Body() { requestData }: CreateLeaveRequestDTO): string { return ""; }
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 {
+		t.Fatalf("expected 1 controller, got %d", len(controllers))
+	}
+	if len(controllers[0].Routes) != 1 {
+		t.Fatalf("expected 1 route, got %d", len(controllers[0].Routes))
+	}
+
+	route := controllers[0].Routes[0]
+	if len(route.Parameters) != 1 {
+		t.Fatalf("expected 1 parameter, got %d", len(route.Parameters))
+	}
+
+	param := route.Parameters[0]
+	if param.Category != "body" {
+		t.Errorf("expected Category='body', got %q", param.Category)
+	}
+	// Destructured params have no simple local name
+	if param.LocalName != "" {
+		t.Errorf("expected LocalName='' for destructured param, got %q", param.LocalName)
+	}
+	if param.TypeName != "CreateLeaveRequestDTO" {
+		t.Errorf("expected TypeName='CreateLeaveRequestDTO', got %q", param.TypeName)
+	}
+}
+
+func TestControllerAnalyzer_QualifiedNameReturnType(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+
+		declare namespace Express {
+			namespace Multer {
+				interface File {
+					fieldname: string;
+					originalname: string;
+					size: number;
+				}
+			}
+		}
+
+		@Controller("files")
+		export class FileController {
+			@Get()
+			getFile(): Promise<Express.Multer.File> { return {} as any; }
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	// Should not panic on QualifiedName in return type
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 {
+		t.Fatalf("expected 1 controller, got %d", len(controllers))
+	}
+	if len(controllers[0].Routes) != 1 {
+		t.Fatalf("expected 1 route, got %d", len(controllers[0].Routes))
+	}
+}
+
+func TestControllerAnalyzer_QualifiedNameParamType(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Post(path?: string): MethodDecorator { return (t, k, d) => d; }
+		function Body(): ParameterDecorator { return () => {}; }
+
+		declare namespace Express {
+			namespace Multer {
+				interface File {
+					fieldname: string;
+					originalname: string;
+					size: number;
+				}
+			}
+		}
+
+		@Controller("upload")
+		export class UploadController {
+			@Post()
+			upload(@Body() file: Express.Multer.File): string { return ""; }
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	// Should not panic on QualifiedName in parameter type annotation
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 {
+		t.Fatalf("expected 1 controller, got %d", len(controllers))
+	}
+	if len(controllers[0].Routes) != 1 {
+		t.Fatalf("expected 1 route, got %d", len(controllers[0].Routes))
+	}
+
+	route := controllers[0].Routes[0]
+	if len(route.Parameters) != 1 {
+		t.Fatalf("expected 1 parameter, got %d", len(route.Parameters))
+	}
+
+	param := route.Parameters[0]
+	if param.Category != "body" {
+		t.Errorf("expected Category='body', got %q", param.Category)
+	}
+	// QualifiedName can't resolve to a simple type name
+	if param.TypeName != "" {
+		t.Errorf("expected TypeName='' for qualified name type, got %q", param.TypeName)
+	}
+}
+
+func TestControllerAnalyzer_RuntimeGeneratedController_WarnsAndSkips(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+
+		export function makeController() {
+			@Controller("runtime")
+			class RuntimeController {
+				@Get()
+				findAll(): string { return ""; }
+			}
+			return RuntimeController;
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 0 {
+		t.Fatalf("expected 0 controllers (runtime-generated should be skipped), got %d", len(controllers))
+	}
+
+	warnings := ca.Warnings()
+	found := false
+	for _, w := range warnings {
+		if w.Kind == "unsupported-runtime-controller" {
+			found = true
+			if !strings.Contains(w.Message, "excluded from OpenAPI") {
+				t.Errorf("expected warning to mention OpenAPI exclusion, got %q", w.Message)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected unsupported-runtime-controller warning, got: %#v", warnings)
+	}
+}
+
+func TestControllerAnalyzer_DynamicControllerPath_WarnsAndSkipsController(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+
+		const prefix = "users";
+
+		@Controller(prefix)
+		export class UserController {
+			@Get()
+			findAll(): string { return ""; }
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 0 {
+		t.Fatalf("expected 0 controllers (dynamic controller path should be skipped), got %d", len(controllers))
+	}
+
+	warnings := ca.Warnings()
+	found := false
+	for _, w := range warnings {
+		if w.Kind == "unsupported-dynamic-controller-path" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected unsupported-dynamic-controller-path warning, got: %#v", warnings)
+	}
+}
+
+func TestControllerAnalyzer_DynamicRoutePath_WarnsAndSkipsRoute(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+
+		const dynamicRoute = "runtime-path";
+
+		@Controller("users")
+		export class UserController {
+			@Get(dynamicRoute)
+			badRoute(): string { return ""; }
+
+			@Get("static")
+			goodRoute(): string { return ""; }
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 {
+		t.Fatalf("expected 1 controller, got %d", len(controllers))
+	}
+	if len(controllers[0].Routes) != 1 {
+		t.Fatalf("expected 1 remaining static route, got %d", len(controllers[0].Routes))
+	}
+
+	route := controllers[0].Routes[0]
+	if route.OperationID != "goodRoute" {
+		t.Errorf("expected remaining route OperationID='goodRoute', got %q", route.OperationID)
+	}
+	if route.Path != "/users/static" {
+		t.Errorf("expected remaining route Path='/users/static', got %q", route.Path)
+	}
+
+	warnings := ca.Warnings()
+	found := false
+	for _, w := range warnings {
+		if w.Kind == "unsupported-dynamic-route-path" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected unsupported-dynamic-route-path warning, got: %#v", warnings)
 	}
 }
 
