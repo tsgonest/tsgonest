@@ -448,7 +448,9 @@ func (r *schemaResolver) initFingerprints() {
 	}
 }
 
-// schemaFingerprint returns a string fingerprint of an object schema's property names and required set.
+// schemaFingerprint returns a string fingerprint of an object schema's property names, required set,
+// and property types. Including types prevents false matches between schemas that share the same
+// property names but have different property types (e.g., paginated response wrappers).
 func schemaFingerprint(node *SchemaNode) string {
 	var names []string
 	for name := range node.Properties {
@@ -465,9 +467,42 @@ func schemaFingerprint(node *SchemaNode) string {
 		if reqSet[n] {
 			marker = "!"
 		}
-		parts = append(parts, n+marker)
+		propType := propFingerprint(node.Properties[n])
+		parts = append(parts, n+marker+":"+propType)
 	}
 	return strings.Join(parts, ",")
+}
+
+// propFingerprint returns a compact type fingerprint for a property schema node.
+func propFingerprint(node *SchemaNode) string {
+	if node == nil {
+		return "?"
+	}
+	if node.Ref != "" {
+		return "$" + node.Ref
+	}
+	if node.Type != "" {
+		if node.Type == "array" && node.Items != nil {
+			return "[]" + propFingerprint(node.Items)
+		}
+		if node.Format != "" {
+			return node.Type + ":" + node.Format
+		}
+		return node.Type
+	}
+	if len(node.AnyOf) > 0 {
+		return "anyOf"
+	}
+	if len(node.OneOf) > 0 {
+		return "oneOf"
+	}
+	if len(node.AllOf) > 0 {
+		return "allOf"
+	}
+	if len(node.Enum) > 0 {
+		return "enum"
+	}
+	return "?"
 }
 
 // rawSchemaFingerprint extracts a fingerprint from raw JSON schema (for matching inline objects).
@@ -500,9 +535,59 @@ func rawSchemaFingerprint(node map[string]json.RawMessage) string {
 		if reqSet[n] {
 			marker = "!"
 		}
-		parts = append(parts, n+marker)
+		propType := rawPropFingerprint(props[n])
+		parts = append(parts, n+marker+":"+propType)
 	}
 	return strings.Join(parts, ",")
+}
+
+// rawPropFingerprint extracts a compact type fingerprint from a raw JSON schema property.
+func rawPropFingerprint(raw json.RawMessage) string {
+	if raw == nil {
+		return "?"
+	}
+	var node map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &node); err != nil {
+		return "?"
+	}
+	if refRaw, ok := node["$ref"]; ok {
+		var ref string
+		json.Unmarshal(refRaw, &ref)
+		name := strings.TrimPrefix(ref, "#/components/schemas/")
+		return "$" + name
+	}
+	var typeStr string
+	if t, ok := node["type"]; ok {
+		json.Unmarshal(t, &typeStr)
+	}
+	if typeStr != "" {
+		if typeStr == "array" {
+			if items, ok := node["items"]; ok {
+				return "[]" + rawPropFingerprint(items)
+			}
+		}
+		var formatStr string
+		if f, ok := node["format"]; ok {
+			json.Unmarshal(f, &formatStr)
+		}
+		if formatStr != "" {
+			return typeStr + ":" + formatStr
+		}
+		return typeStr
+	}
+	if _, ok := node["anyOf"]; ok {
+		return "anyOf"
+	}
+	if _, ok := node["oneOf"]; ok {
+		return "oneOf"
+	}
+	if _, ok := node["allOf"]; ok {
+		return "allOf"
+	}
+	if _, ok := node["enum"]; ok {
+		return "enum"
+	}
+	return "?"
 }
 
 func (r *schemaResolver) schemaToTS(raw json.RawMessage) string {

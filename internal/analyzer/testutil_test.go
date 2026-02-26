@@ -252,3 +252,35 @@ func (env *walkerEnv) walkExportedTypeWithRegistry(t *testing.T, typeName string
 	t.Fatalf("type %q not found in source file", typeName)
 	return metadata.Metadata{}, nil
 }
+
+// walkAllNamedTypes walks all type aliases in the source file using WalkNamedType
+// (matching production behavior in generateCompanionsInMemory), then returns the
+// walker for inspection. This is critical for testing sub-field type registration.
+func (env *walkerEnv) walkAllNamedTypes(t *testing.T) *analyzer.TypeWalker {
+	t.Helper()
+
+	walker := analyzer.NewTypeWalker(env.checker)
+
+	for _, stmt := range env.sourceFile.Statements.Nodes {
+		if stmt.Kind == ast.KindTypeAliasDeclaration {
+			decl := stmt.AsTypeAliasDeclaration()
+			// Skip generic type aliases (matching build.go pre-registration pass)
+			if decl.TypeParameters != nil {
+				continue
+			}
+			name := decl.Name().Text()
+			resolvedType := shimchecker.Checker_getTypeFromTypeNode(env.checker, decl.Type)
+			walker.WalkNamedType(name, resolvedType)
+		}
+		if stmt.Kind == ast.KindInterfaceDeclaration {
+			decl := stmt.AsInterfaceDeclaration()
+			sym := env.checker.GetSymbolAtLocation(decl.Name())
+			if sym != nil {
+				resolvedType := shimchecker.Checker_getDeclaredTypeOfSymbol(env.checker, sym)
+				walker.WalkType(resolvedType)
+			}
+		}
+	}
+
+	return walker
+}

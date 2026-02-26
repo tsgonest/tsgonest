@@ -2147,5 +2147,515 @@ func TestControllerAnalyzer_DynamicRoutePath_WarnsAndSkipsRoute(t *testing.T) {
 	}
 }
 
+// --- @Controller({ path, version }) Object Form Tests ---
+
+func TestControllerAnalyzer_ControllerObjectForm_PathAndVersion(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(opts: string | { path?: string; version?: string }): ClassDecorator { return (target) => target; }
+		function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+
+		@Controller({ path: 'users', version: '1' })
+		export class UserController {
+			@Get()
+			findAll(): string { return ""; }
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 {
+		t.Fatalf("expected 1 controller, got %d", len(controllers))
+	}
+
+	ctrl := controllers[0]
+	if ctrl.Path != "users" {
+		t.Errorf("expected Path='users', got %q", ctrl.Path)
+	}
+	if len(ctrl.Routes) != 1 {
+		t.Fatalf("expected 1 route, got %d", len(ctrl.Routes))
+	}
+
+	// Route should inherit controller-level version
+	route := ctrl.Routes[0]
+	if route.Version != "1" {
+		t.Errorf("expected route Version='1' (inherited from controller), got %q", route.Version)
+	}
+	if route.Path != "/users" {
+		t.Errorf("expected route Path='/users', got %q", route.Path)
+	}
+}
+
+func TestControllerAnalyzer_ControllerObjectForm_PathOnly(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(opts: string | { path?: string; version?: string }): ClassDecorator { return (target) => target; }
+		function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+
+		@Controller({ path: 'orders' })
+		export class OrderController {
+			@Get()
+			findAll(): string { return ""; }
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 {
+		t.Fatalf("expected 1 controller, got %d", len(controllers))
+	}
+
+	ctrl := controllers[0]
+	if ctrl.Path != "orders" {
+		t.Errorf("expected Path='orders', got %q", ctrl.Path)
+	}
+	if len(ctrl.Routes) != 1 {
+		t.Fatalf("expected 1 route, got %d", len(ctrl.Routes))
+	}
+
+	// No controller version, so route version should be empty
+	route := ctrl.Routes[0]
+	if route.Version != "" {
+		t.Errorf("expected route Version='' (no controller version), got %q", route.Version)
+	}
+	if route.Path != "/orders" {
+		t.Errorf("expected route Path='/orders', got %q", route.Path)
+	}
+}
+
+func TestControllerAnalyzer_ControllerObjectForm_VersionAppliedAsDefault(t *testing.T) {
+	// Controller-level version should be applied as default to methods
+	// that don't have their own @Version() decorator.
+	env := setupWalker(t, `
+		function Controller(opts: string | { path?: string; version?: string }): ClassDecorator { return (target) => target; }
+		function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+		function Version(version: string): MethodDecorator { return (t, k, d) => d; }
+
+		@Controller({ path: 'products', version: '1' })
+		export class ProductController {
+			@Get()
+			findAll(): string { return ""; }
+
+			@Get(":id")
+			findOne(): string { return ""; }
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 {
+		t.Fatalf("expected 1 controller, got %d", len(controllers))
+	}
+	if len(controllers[0].Routes) != 2 {
+		t.Fatalf("expected 2 routes, got %d", len(controllers[0].Routes))
+	}
+
+	// Both routes should inherit controller-level version "1"
+	for _, route := range controllers[0].Routes {
+		if route.Version != "1" {
+			t.Errorf("route %s: expected Version='1' (from controller), got %q", route.Path, route.Version)
+		}
+	}
+}
+
+func TestControllerAnalyzer_ControllerObjectForm_MethodVersionOverridesController(t *testing.T) {
+	// Method-level @Version('2') should override controller-level version='1'.
+	env := setupWalker(t, `
+		function Controller(opts: string | { path?: string; version?: string }): ClassDecorator { return (target) => target; }
+		function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+		function Version(version: string): MethodDecorator { return (t, k, d) => d; }
+
+		@Controller({ path: 'items', version: '1' })
+		export class ItemController {
+			@Get()
+			findAllV1(): string { return ""; }
+
+			@Version("2")
+			@Get("latest")
+			findAllV2(): string { return ""; }
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 {
+		t.Fatalf("expected 1 controller, got %d", len(controllers))
+	}
+	if len(controllers[0].Routes) != 2 {
+		t.Fatalf("expected 2 routes, got %d", len(controllers[0].Routes))
+	}
+
+	// Route 0 (findAllV1): no @Version, should inherit controller "1"
+	r0 := controllers[0].Routes[0]
+	if r0.Version != "1" {
+		t.Errorf("findAllV1: expected Version='1' (inherited from controller), got %q", r0.Version)
+	}
+
+	// Route 1 (findAllV2): has @Version("2"), should override controller
+	r1 := controllers[0].Routes[1]
+	if r1.Version != "2" {
+		t.Errorf("findAllV2: expected Version='2' (method override), got %q", r1.Version)
+	}
+}
+
+// --- @All() Decorator Tests ---
+
+func TestControllerAnalyzer_AllDecorator(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function All(path?: string): MethodDecorator { return (t, k, d) => d; }
+
+		@Controller("health")
+		export class HealthController {
+			@All()
+			handleAll(): string { return "ok"; }
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 {
+		t.Fatalf("expected 1 controller, got %d", len(controllers))
+	}
+
+	routes := controllers[0].Routes
+	// @All() should expand to 7 HTTP methods: GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS
+	if len(routes) != 7 {
+		t.Fatalf("expected 7 routes from @All(), got %d", len(routes))
+	}
+
+	expectedMethods := []string{"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"}
+	for i, route := range routes {
+		if route.Method != expectedMethods[i] {
+			t.Errorf("route %d: expected Method=%q, got %q", i, expectedMethods[i], route.Method)
+		}
+		if route.Path != "/health" {
+			t.Errorf("route %d: expected Path='/health', got %q", i, route.Path)
+		}
+	}
+}
+
+func TestControllerAnalyzer_AllDecoratorWithPath(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function All(path?: string): MethodDecorator { return (t, k, d) => d; }
+
+		@Controller("api")
+		export class ApiController {
+			@All("wildcard")
+			handleAll(): string { return "ok"; }
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 {
+		t.Fatalf("expected 1 controller, got %d", len(controllers))
+	}
+
+	routes := controllers[0].Routes
+	if len(routes) != 7 {
+		t.Fatalf("expected 7 routes, got %d", len(routes))
+	}
+
+	for _, route := range routes {
+		if route.Path != "/api/wildcard" {
+			t.Errorf("expected Path='/api/wildcard', got %q", route.Path)
+		}
+	}
+}
+
+func TestControllerAnalyzer_AllDecoratorDefaultStatusCodes(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function All(path?: string): MethodDecorator { return (t, k, d) => d; }
+
+		@Controller("test")
+		export class TestController {
+			@All()
+			handleAll(): string { return "ok"; }
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	routes := controllers[0].Routes
+
+	// POST should default to 201, all others to 200
+	for _, route := range routes {
+		expected := 200
+		if route.Method == "POST" {
+			expected = 201
+		}
+		if route.StatusCode != expected {
+			t.Errorf("method %s: expected StatusCode=%d, got %d", route.Method, expected, route.StatusCode)
+		}
+	}
+}
+
+// --- Array Path Tests ---
+
+func TestControllerAnalyzer_ArrayPathOnMethod(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Get(path?: string | string[]): MethodDecorator { return (t, k, d) => d; }
+
+		@Controller("users")
+		export class UserController {
+			@Get(["active", "enabled"])
+			findActive(): string { return ""; }
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 {
+		t.Fatalf("expected 1 controller, got %d", len(controllers))
+	}
+
+	routes := controllers[0].Routes
+	if len(routes) != 2 {
+		t.Fatalf("expected 2 routes for array path, got %d", len(routes))
+	}
+
+	if routes[0].Path != "/users/active" {
+		t.Errorf("route 0: expected Path='/users/active', got %q", routes[0].Path)
+	}
+	if routes[1].Path != "/users/enabled" {
+		t.Errorf("route 1: expected Path='/users/enabled', got %q", routes[1].Path)
+	}
+	// Both should be GET
+	for i, r := range routes {
+		if r.Method != "GET" {
+			t.Errorf("route %d: expected Method='GET', got %q", i, r.Method)
+		}
+	}
+}
+
+func TestControllerAnalyzer_ArrayPathOnController(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string | string[]): ClassDecorator { return (target) => target; }
+		function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+
+		@Controller(["v1/users", "v2/users"])
+		export class UserController {
+			@Get()
+			findAll(): string { return ""; }
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	// Array controller paths produce multiple ControllerInfo
+	if len(controllers) != 2 {
+		t.Fatalf("expected 2 controllers for array path, got %d", len(controllers))
+	}
+
+	if controllers[0].Path != "v1/users" {
+		t.Errorf("controller 0: expected Path='v1/users', got %q", controllers[0].Path)
+	}
+	if controllers[1].Path != "v2/users" {
+		t.Errorf("controller 1: expected Path='v2/users', got %q", controllers[1].Path)
+	}
+
+	// Each controller should have 1 route
+	for i, ctrl := range controllers {
+		if len(ctrl.Routes) != 1 {
+			t.Fatalf("controller %d: expected 1 route, got %d", i, len(ctrl.Routes))
+		}
+	}
+
+	if controllers[0].Routes[0].Path != "/v1/users" {
+		t.Errorf("controller 0 route: expected Path='/v1/users', got %q", controllers[0].Routes[0].Path)
+	}
+	if controllers[1].Routes[0].Path != "/v2/users" {
+		t.Errorf("controller 1 route: expected Path='/v2/users', got %q", controllers[1].Routes[0].Path)
+	}
+}
+
+// --- @Header() Decorator Tests ---
+
+func TestControllerAnalyzer_HeaderDecorator(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+		function Header(name: string, value: string): MethodDecorator { return (t, k, d) => d; }
+
+		@Controller("users")
+		export class UserController {
+			@Get()
+			@Header("Cache-Control", "none")
+			@Header("X-Custom", "test-value")
+			findAll(): string { return ""; }
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 {
+		t.Fatalf("expected 1 controller, got %d", len(controllers))
+	}
+
+	route := controllers[0].Routes[0]
+	if len(route.ResponseHeaders) != 2 {
+		t.Fatalf("expected 2 response headers, got %d", len(route.ResponseHeaders))
+	}
+
+	if route.ResponseHeaders[0].Name != "Cache-Control" || route.ResponseHeaders[0].Value != "none" {
+		t.Errorf("header 0: expected Cache-Control=none, got %s=%s", route.ResponseHeaders[0].Name, route.ResponseHeaders[0].Value)
+	}
+	if route.ResponseHeaders[1].Name != "X-Custom" || route.ResponseHeaders[1].Value != "test-value" {
+		t.Errorf("header 1: expected X-Custom=test-value, got %s=%s", route.ResponseHeaders[1].Name, route.ResponseHeaders[1].Value)
+	}
+}
+
+// --- @Redirect() Decorator Tests ---
+
+func TestControllerAnalyzer_RedirectDecorator(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+		function Redirect(url?: string, statusCode?: number): MethodDecorator { return (t, k, d) => d; }
+
+		@Controller("auth")
+		export class AuthController {
+			@Get("google")
+			@Redirect("https://accounts.google.com", 301)
+			googleLogin(): void {}
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 {
+		t.Fatalf("expected 1 controller, got %d", len(controllers))
+	}
+
+	route := controllers[0].Routes[0]
+	if route.Redirect == nil {
+		t.Fatal("expected Redirect to be non-nil")
+	}
+	if route.Redirect.URL != "https://accounts.google.com" {
+		t.Errorf("expected Redirect.URL='https://accounts.google.com', got %q", route.Redirect.URL)
+	}
+	if route.Redirect.StatusCode != 301 {
+		t.Errorf("expected Redirect.StatusCode=301, got %d", route.Redirect.StatusCode)
+	}
+}
+
+func TestControllerAnalyzer_RedirectDecoratorDefaultStatus(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+		function Redirect(url?: string, statusCode?: number): MethodDecorator { return (t, k, d) => d; }
+
+		@Controller("legacy")
+		export class LegacyController {
+			@Get("old")
+			@Redirect("https://new.example.com/new")
+			redirectOld(): void {}
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	route := controllers[0].Routes[0]
+
+	if route.Redirect == nil {
+		t.Fatal("expected Redirect to be non-nil")
+	}
+	if route.Redirect.StatusCode != 302 {
+		t.Errorf("expected default Redirect.StatusCode=302, got %d", route.Redirect.StatusCode)
+	}
+}
+
+// --- @Version() Array Tests ---
+
+func TestControllerAnalyzer_VersionArrayDecorator(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+		function Version(version: string | string[]): MethodDecorator { return (t, k, d) => d; }
+
+		@Controller("users")
+		export class UserController {
+			@Version(["1", "2"])
+			@Get()
+			findAll(): string { return ""; }
+
+			@Version("3")
+			@Get("single")
+			findSingle(): string { return ""; }
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 {
+		t.Fatalf("expected 1 controller, got %d", len(controllers))
+	}
+
+	if len(controllers[0].Routes) != 2 {
+		t.Fatalf("expected 2 routes, got %d", len(controllers[0].Routes))
+	}
+
+	r0 := controllers[0].Routes[0]
+	if len(r0.Versions) != 2 {
+		t.Fatalf("route 0: expected Versions length=2, got %d", len(r0.Versions))
+	}
+	if r0.Versions[0] != "1" || r0.Versions[1] != "2" {
+		t.Errorf("route 0: expected Versions=['1', '2'], got %v", r0.Versions)
+	}
+	// Version field should be set to the first element for backward compatibility
+	if r0.Version != "1" {
+		t.Errorf("route 0: expected Version='1', got %q", r0.Version)
+	}
+
+	r1 := controllers[0].Routes[1]
+	if len(r1.Versions) != 0 {
+		t.Errorf("route 1: expected Versions empty for scalar @Version, got %v", r1.Versions)
+	}
+	if r1.Version != "3" {
+		t.Errorf("route 1: expected Version='3', got %q", r1.Version)
+	}
+}
+
 // The following ensures we're using the shimcompiler import correctly.
 var _ = (*shimcompiler.Program)(nil)

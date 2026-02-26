@@ -3,7 +3,6 @@ package analyzer
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -90,6 +89,32 @@ type Route struct {
 	// The first @Returns determines the primary response; subsequent ones with different
 	// status codes become additional responses.
 	AdditionalResponses []AdditionalResponse
+	// ResponseHeaders holds response headers from @Header() decorator.
+	// Each entry maps a header name to its static value.
+	ResponseHeaders []ResponseHeader
+	// Redirect holds redirect information from @Redirect() decorator.
+	// Non-nil when the method uses @Redirect(url, statusCode).
+	Redirect *RedirectInfo
+	// Versions holds multiple version strings from @Version(['1', '2']).
+	// When non-empty, this replaces the single Version field and causes the route
+	// to be expanded into multiple versioned paths in OpenAPI.
+	Versions []string
+}
+
+// ResponseHeader represents a response header from the @Header() decorator.
+type ResponseHeader struct {
+	// Name is the header name (e.g., "Cache-Control").
+	Name string
+	// Value is the static header value (e.g., "none").
+	Value string
+}
+
+// RedirectInfo holds the redirect URL and status code from @Redirect().
+type RedirectInfo struct {
+	// URL is the redirect target URL.
+	URL string
+	// StatusCode is the HTTP redirect status code (default 302).
+	StatusCode int
 }
 
 // AdditionalResponse represents an additional success response from @Returns<T>().
@@ -208,10 +233,8 @@ func (a *ControllerAnalyzer) AnalyzeSourceFile(sf *ast.SourceFile) []ControllerI
 			continue
 		}
 
-		info := a.analyzeClass(stmt, sf.FileName())
-		if info != nil {
-			controllers = append(controllers, *info)
-		}
+		infos := a.analyzeClass(stmt, sf.FileName())
+		controllers = append(controllers, infos...)
 	}
 
 	return controllers
@@ -240,7 +263,8 @@ func (a *ControllerAnalyzer) AnalyzeProgram(includePatterns []string, excludePat
 
 // analyzeClass attempts to parse a class declaration as a NestJS controller.
 // Returns nil if the class is not a controller.
-func (a *ControllerAnalyzer) analyzeClass(classNode *ast.Node, sourceFile string) *ControllerInfo {
+// May return multiple ControllerInfo for @Controller(['path1', 'path2']) array paths.
+func (a *ControllerAnalyzer) analyzeClass(classNode *ast.Node, sourceFile string) []ControllerInfo {
 	classDecl := classNode.AsClassDeclaration()
 	className := ""
 	if classDecl.Name() != nil {
@@ -248,42 +272,42 @@ func (a *ControllerAnalyzer) analyzeClass(classNode *ast.Node, sourceFile string
 	}
 
 	// Look for @Controller decorator
-	controllerPath := ""
+	var controllerPaths []string
+	controllerVersion := ""
 	isController := false
 	for _, dec := range classNode.Decorators() {
 		info := ParseDecorator(dec)
 		if info == nil {
 			continue
 		}
-		if IsControllerDecorator(info) {
-			pathArg, hasPathArg, unsupported := extractStaticDecoratorPathArg(dec)
-			if unsupported {
-				a.warnUnsupportedDynamicControllerPath(classNode, sourceFile, className)
-				return nil
+		isCtrl := IsControllerDecorator(info)
+		if !isCtrl {
+			if origName := a.resolveDecoratorOriginalName(dec); origName == "Controller" {
+				isCtrl = true
 			}
-			isController = true
-			if hasPathArg {
-				controllerPath = pathArg
-			}
-			break
 		}
-		// Try resolving import alias
-		if origName := a.resolveDecoratorOriginalName(dec); origName == "Controller" {
-			pathArg, hasPathArg, unsupported := extractStaticDecoratorPathArg(dec)
+		if isCtrl {
+			pathArgs, hasPathArg, unsupported := extractStaticDecoratorPathArgs(dec)
 			if unsupported {
 				a.warnUnsupportedDynamicControllerPath(classNode, sourceFile, className)
 				return nil
 			}
 			isController = true
 			if hasPathArg {
-				controllerPath = pathArg
+				controllerPaths = pathArgs
 			}
+			controllerVersion = extractControllerVersion(dec)
 			break
 		}
 	}
 
 	if !isController {
 		return nil
+	}
+
+	// Default to single empty path if no paths specified
+	if len(controllerPaths) == 0 {
+		controllerPaths = []string{""}
 	}
 
 	// Extract class-level JSDoc metadata (@tag, @security, @hidden, etc.)
@@ -300,58 +324,75 @@ func (a *ControllerAnalyzer) analyzeClass(classNode *ast.Node, sourceFile string
 		}
 	}
 
-	// Analyze methods
-	var routes []Route
-	if classDecl.Members != nil {
-		for _, member := range classDecl.Members.Nodes {
-			if member.Kind != ast.KindMethodDeclaration {
-				continue
-			}
+	// For each controller path, analyze methods and produce a ControllerInfo.
+	// Usually there's just one path, but @Controller(['v1/users', 'v2/users']) produces multiple.
+	var result []ControllerInfo
+	for _, controllerPath := range controllerPaths {
+		var routes []Route
+		if classDecl.Members != nil {
+			for _, member := range classDecl.Members.Nodes {
+				if member.Kind != ast.KindMethodDeclaration {
+					continue
+				}
 
-			route := a.analyzeMethod(member, controllerPath, "", className, sourceFile)
-			if route != nil {
-				// Apply class-level defaults: tags (if method didn't override)
-				if len(route.Tags) == 0 {
-					route.Tags = defaultTags
+				methodRoutes := a.analyzeMethod(member, controllerPath, "", className, sourceFile)
+				for _, route := range methodRoutes {
+					// Apply class-level defaults: tags (if method didn't override)
+					if len(route.Tags) == 0 {
+						route.Tags = defaultTags
+					}
+					// Apply class-level security (if method didn't set its own)
+					if len(route.Security) == 0 && len(classInfo.Security) > 0 {
+						route.Security = classInfo.Security
+					}
+					// Apply class-level @public (if method didn't set its own security)
+					if !route.IsPublic && classInfo.IsPublic {
+						route.IsPublic = true
+					}
+					// Apply controller-level version (if method didn't set its own @Version)
+					if route.Version == "" && controllerVersion != "" {
+						route.Version = controllerVersion
+					}
+					routes = append(routes, *route)
 				}
-				// Apply class-level security (if method didn't set its own)
-				if len(route.Security) == 0 && len(classInfo.Security) > 0 {
-					route.Security = classInfo.Security
-				}
-				// Apply class-level @public (if method didn't set its own security)
-				if !route.IsPublic && classInfo.IsPublic {
-					route.IsPublic = true
-				}
-				routes = append(routes, *route)
 			}
 		}
+
+		result = append(result, ControllerInfo{
+			Name:          className,
+			Path:          controllerPath,
+			Routes:        routes,
+			SourceFile:    sourceFile,
+			IgnoreOpenAPI: classInfo.IgnoreOpenAPI,
+		})
 	}
 
-	return &ControllerInfo{
-		Name:          className,
-		Path:          controllerPath,
-		Routes:        routes,
-		SourceFile:    sourceFile,
-		IgnoreOpenAPI: classInfo.IgnoreOpenAPI,
-	}
+	return result
 }
 
 // analyzeMethod attempts to parse a method declaration as a NestJS route handler.
 // Returns nil if the method has no HTTP method decorator.
-func (a *ControllerAnalyzer) analyzeMethod(methodNode *ast.Node, controllerPath string, tag string, className string, sourceFile string) *Route {
+// May return multiple routes for @All() (expanded to all HTTP methods) or
+// array path arguments (expanded to one route per path).
+func (a *ControllerAnalyzer) analyzeMethod(methodNode *ast.Node, controllerPath string, tag string, className string, sourceFile string) []*Route {
 	methodDecl := methodNode.AsMethodDeclaration()
 	operationID := ""
 	if methodDecl.Name() != nil {
 		operationID = methodDecl.Name().Text()
 	}
 
-	// Look for HTTP method decorators, @HttpCode, @Version, @Sse, and @Returns
+	// Look for HTTP method decorators, @HttpCode, @Version, @Sse, @Header, @Redirect, and @Returns
 	httpMethod := ""
+	var httpMethods []string // populated for @All()
 	subPath := ""
+	var subPaths []string // populated for array path args like @Get(['a', 'b'])
 	statusCode := 0
 	version := ""
+	var versions []string
 	isSSE := false
 	var returnsDecoratorInfos []*DecoratorInfo
+	var responseHeaders []ResponseHeader
+	var redirect *RedirectInfo
 
 	for _, dec := range methodNode.Decorators() {
 		info := ParseDecorator(dec)
@@ -366,14 +407,36 @@ func (a *ControllerAnalyzer) analyzeMethod(methodNode *ast.Node, controllerPath 
 
 		switch decName {
 		case "Get", "Post", "Put", "Delete", "Patch", "Head", "Options":
-			pathArg, hasPathArg, unsupported := extractStaticDecoratorPathArg(dec)
+			pathArgs, hasPathArg, unsupported := extractStaticDecoratorPathArgs(dec)
 			if unsupported {
 				a.warnUnsupportedDynamicRoutePath(methodNode, sourceFile, className, operationID, decName)
 				return nil
 			}
 			httpMethod = httpMethodForDecorator(decName)
 			if hasPathArg {
-				subPath = pathArg
+				if len(pathArgs) > 1 {
+					subPaths = pathArgs
+					subPath = pathArgs[0]
+				} else if len(pathArgs) == 1 {
+					subPath = pathArgs[0]
+				}
+			}
+		case "All":
+			pathArgs, hasPathArg, unsupported := extractStaticDecoratorPathArgs(dec)
+			if unsupported {
+				a.warnUnsupportedDynamicRoutePath(methodNode, sourceFile, className, operationID, decName)
+				return nil
+			}
+			// @All() expands to all standard HTTP methods
+			httpMethods = []string{"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"}
+			httpMethod = "GET" // placeholder for validation below
+			if hasPathArg {
+				if len(pathArgs) > 1 {
+					subPaths = pathArgs
+					subPath = pathArgs[0]
+				} else if len(pathArgs) == 1 {
+					subPath = pathArgs[0]
+				}
 			}
 		case "Sse":
 			// @Sse('path') — Server-Sent Events endpoint, maps to GET
@@ -395,6 +458,31 @@ func (a *ControllerAnalyzer) analyzeMethod(methodNode *ast.Node, controllerPath 
 			if len(info.Args) > 0 {
 				version = info.Args[0]
 			}
+			// Also check for array version: @Version(['1', '2'])
+			arrayVersions := extractDecoratorArrayArg(dec)
+			if len(arrayVersions) > 0 {
+				versions = arrayVersions
+				version = arrayVersions[0]
+			}
+		case "Header":
+			// @Header('Cache-Control', 'none') — response header
+			if len(info.Args) >= 2 {
+				responseHeaders = append(responseHeaders, ResponseHeader{
+					Name:  info.Args[0],
+					Value: info.Args[1],
+				})
+			}
+		case "Redirect":
+			// @Redirect('https://example.com', 301)
+			url := ""
+			code := 302 // NestJS default
+			if len(info.Args) > 0 {
+				url = info.Args[0]
+			}
+			if info.NumericArg != nil {
+				code = int(*info.NumericArg)
+			}
+			redirect = &RedirectInfo{URL: url, StatusCode: code}
 		case "Returns":
 			returnsDecoratorInfos = append(returnsDecoratorInfos, info)
 		}
@@ -577,7 +665,7 @@ func (a *ControllerAnalyzer) analyzeMethod(methodNode *ast.Node, controllerPath 
 		resolvedErrors = append(resolvedErrors, er)
 	}
 
-	return &Route{
+	baseRoute := &Route{
 		Method:              httpMethod,
 		Path:                fullPath,
 		OperationID:         operationID,
@@ -592,6 +680,7 @@ func (a *ControllerAnalyzer) analyzeMethod(methodNode *ast.Node, controllerPath 
 		Security:            security,
 		ErrorResponses:      resolvedErrors,
 		Version:             version,
+		Versions:            versions,
 		IsSSE:               isSSE,
 		UsesRawResponse:     usesRawResponse,
 		ResponseContentType: responseContentType,
@@ -599,7 +688,74 @@ func (a *ControllerAnalyzer) analyzeMethod(methodNode *ast.Node, controllerPath 
 		IsPublic:            isPublic,
 		Extensions:          methodExtensions,
 		AdditionalResponses: additionalResponses,
+		ResponseHeaders:     responseHeaders,
+		Redirect:            redirect,
 	}
+
+	// Expand into multiple routes for @All() and/or array paths.
+	return expandRoutes(baseRoute, httpMethods, subPaths, controllerPath)
+}
+
+// expandRoutes expands a base route into multiple routes when @All() or array paths are used.
+// For @All(), each HTTP method gets its own route. For array paths, each path gets its own route.
+// When both are present, the cross-product is produced.
+func expandRoutes(base *Route, httpMethods []string, subPaths []string, controllerPath string) []*Route {
+	// No expansion needed — single method, single path
+	if len(httpMethods) == 0 && len(subPaths) <= 1 {
+		return []*Route{base}
+	}
+
+	// Determine methods to iterate
+	methods := httpMethods
+	if len(methods) == 0 {
+		methods = []string{base.Method}
+	}
+
+	// Determine paths to iterate
+	paths := subPaths
+	if len(paths) == 0 {
+		paths = []string{""} // placeholder, base.Path is already computed
+	}
+
+	var routes []*Route
+	for _, method := range methods {
+		for _, sp := range paths {
+			r := *base // shallow copy
+			r.Method = method
+			if len(subPaths) > 1 {
+				r.Path = CombinePaths(controllerPath, sp)
+			}
+			// For @All(), adjust default status code per method
+			if len(httpMethods) > 0 && base.StatusCode == defaultStatusCode(base.Method) {
+				r.StatusCode = defaultStatusCode(method)
+			}
+			routes = append(routes, &r)
+		}
+	}
+	return routes
+}
+
+// extractDecoratorArrayArg extracts string array elements from the first argument
+// of a decorator call when it is an array literal.
+// e.g., @Version(['1', '2']) → ["1", "2"]
+// Returns nil if the first argument is not an array literal or contains non-string elements.
+func extractDecoratorArrayArg(dec *ast.Node) []string {
+	if dec == nil || dec.Kind != ast.KindDecorator {
+		return nil
+	}
+	expr := dec.AsDecorator().Expression
+	if expr.Kind != ast.KindCallExpression {
+		return nil
+	}
+	call := expr.AsCallExpression()
+	if call.Arguments == nil || len(call.Arguments.Nodes) == 0 {
+		return nil
+	}
+	arg := call.Arguments.Nodes[0]
+	if arg.Kind != ast.KindArrayLiteralExpression {
+		return nil
+	}
+	return extractArrayStringLiterals(arg)
 }
 
 // warnUnsupportedRuntimeControllers scans for @Controller classes that are not
@@ -725,9 +881,157 @@ func extractStaticDecoratorPathArg(dec *ast.Node) (path string, hasArg bool, uns
 		return cleanPath(arg.AsStringLiteral().Text), true, false
 	case ast.KindNoSubstitutionTemplateLiteral:
 		return cleanPath(arg.AsNoSubstitutionTemplateLiteral().Text), true, false
+	case ast.KindObjectLiteralExpression:
+		// NestJS supports @Controller({ path: 'xxx', version: '1' })
+		opts := extractControllerObjectOptions(arg)
+		return opts.Path, true, false
+	case ast.KindArrayLiteralExpression:
+		// NestJS supports @Get(['path1', 'path2']) and @Controller(['v1/users', 'v2/users']).
+		// For single-path extraction, use the first element.
+		paths := extractArrayStringLiterals(arg)
+		if len(paths) > 0 {
+			return cleanPath(paths[0]), true, false
+		}
+		return "", true, true
 	default:
 		return "", true, true
 	}
+}
+
+// extractStaticDecoratorPathArgs extracts all path arguments from a decorator.
+// NestJS supports both single-string and array-of-strings for route paths:
+//
+//	@Get("path")        → ["path"]
+//	@Get(["a", "b"])    → ["a", "b"]
+//	@Controller(["x"])  → ["x"]
+//
+// Returns nil if no paths, or unsupported=true for dynamic args.
+func extractStaticDecoratorPathArgs(dec *ast.Node) (paths []string, hasArg bool, unsupported bool) {
+	if dec == nil || dec.Kind != ast.KindDecorator {
+		return nil, false, false
+	}
+	expr := dec.AsDecorator().Expression
+	if expr.Kind != ast.KindCallExpression {
+		return nil, false, false
+	}
+	call := expr.AsCallExpression()
+	if call.Arguments == nil || len(call.Arguments.Nodes) == 0 {
+		return nil, false, false
+	}
+	arg := call.Arguments.Nodes[0]
+
+	switch arg.Kind {
+	case ast.KindStringLiteral:
+		return []string{cleanPath(arg.AsStringLiteral().Text)}, true, false
+	case ast.KindNoSubstitutionTemplateLiteral:
+		return []string{cleanPath(arg.AsNoSubstitutionTemplateLiteral().Text)}, true, false
+	case ast.KindObjectLiteralExpression:
+		opts := extractControllerObjectOptions(arg)
+		return []string{opts.Path}, true, false
+	case ast.KindArrayLiteralExpression:
+		elements := extractArrayStringLiterals(arg)
+		if len(elements) == 0 {
+			return nil, true, true
+		}
+		cleaned := make([]string, len(elements))
+		for i, e := range elements {
+			cleaned[i] = cleanPath(e)
+		}
+		return cleaned, true, false
+	default:
+		return nil, true, true
+	}
+}
+
+// extractArrayStringLiterals extracts string literal values from an array literal expression.
+// Returns nil if any element is not a string literal.
+func extractArrayStringLiterals(node *ast.Node) []string {
+	if node.Kind != ast.KindArrayLiteralExpression {
+		return nil
+	}
+	arr := node.AsArrayLiteralExpression()
+	if arr.Elements == nil || len(arr.Elements.Nodes) == 0 {
+		return nil
+	}
+	var result []string
+	for _, elem := range arr.Elements.Nodes {
+		switch elem.Kind {
+		case ast.KindStringLiteral:
+			result = append(result, elem.AsStringLiteral().Text)
+		case ast.KindNoSubstitutionTemplateLiteral:
+			result = append(result, elem.AsNoSubstitutionTemplateLiteral().Text)
+		default:
+			return nil // non-literal element, bail out
+		}
+	}
+	return result
+}
+
+// extractControllerVersion extracts the version from a @Controller() decorator
+// when the argument is an object literal with a "version" property.
+// Returns empty string for string-argument or no-argument forms.
+func extractControllerVersion(dec *ast.Node) string {
+	if dec == nil || dec.Kind != ast.KindDecorator {
+		return ""
+	}
+	expr := dec.AsDecorator().Expression
+	if expr.Kind != ast.KindCallExpression {
+		return ""
+	}
+	call := expr.AsCallExpression()
+	if call.Arguments == nil || len(call.Arguments.Nodes) == 0 {
+		return ""
+	}
+	arg := call.Arguments.Nodes[0]
+	if arg.Kind != ast.KindObjectLiteralExpression {
+		return ""
+	}
+	return extractControllerObjectOptions(arg).Version
+}
+
+// controllerOptions holds options extracted from @Controller({ path, version }) object form.
+type controllerOptions struct {
+	Path    string
+	Version string
+}
+
+// extractControllerObjectOptions extracts path and version from an object
+// literal argument to @Controller(). Supports NestJS's object form:
+// @Controller({ path: 'xxx', version: '1' })
+func extractControllerObjectOptions(node *ast.Node) controllerOptions {
+	opts := controllerOptions{}
+	if node.Kind != ast.KindObjectLiteralExpression {
+		return opts
+	}
+	obj := node.AsObjectLiteralExpression()
+	for _, prop := range obj.Properties.Nodes {
+		if prop.Kind != ast.KindPropertyAssignment {
+			continue
+		}
+		pa := prop.AsPropertyAssignment()
+		name := ""
+		if pa.Name().Kind == ast.KindIdentifier {
+			name = pa.Name().AsIdentifier().Text
+		} else if pa.Name().Kind == ast.KindStringLiteral {
+			name = pa.Name().AsStringLiteral().Text
+		}
+		init := pa.Initializer
+		switch name {
+		case "path":
+			if init.Kind == ast.KindStringLiteral {
+				opts.Path = cleanPath(init.AsStringLiteral().Text)
+			} else if init.Kind == ast.KindNoSubstitutionTemplateLiteral {
+				opts.Path = cleanPath(init.AsNoSubstitutionTemplateLiteral().Text)
+			}
+		case "version":
+			if init.Kind == ast.KindStringLiteral {
+				opts.Version = init.AsStringLiteral().Text
+			} else if init.Kind == ast.KindNoSubstitutionTemplateLiteral {
+				opts.Version = init.AsNoSubstitutionTemplateLiteral().Text
+			}
+		}
+	}
+	return opts
 }
 
 // analyzeParameter extracts parameter information from a decorated parameter.
@@ -1250,242 +1554,6 @@ func (a *ControllerAnalyzer) extractReturnsDecoratorType(info *DecoratorInfo) (r
 	return
 }
 
-// classJSDocInfo holds JSDoc metadata extracted from a controller class declaration.
-type classJSDocInfo struct {
-	// IgnoreOpenAPI is true when the controller should be excluded from OpenAPI generation.
-	IgnoreOpenAPI bool
-	// Tags are from @tag JSDoc — override the auto-derived controller tag.
-	Tags []string
-	// Security are from @security JSDoc — inherited by methods without their own @security.
-	Security []SecurityRequirement
-	// IsPublic is from @public JSDoc — marks all routes as public (no security).
-	IsPublic bool
-	// Description is from the JSDoc body text or @description tag.
-	Description string
-}
-
-// extractClassJSDoc parses class-level JSDoc for OpenAPI-relevant metadata.
-// Recognized annotations:
-//   - @tsgonest-ignore openapi — explicit OpenAPI exclusion
-//   - @hidden / @exclude — compatible with NestJS/Swagger convention
-//   - @tag <name> — override auto-derived tag for all routes in this controller
-//   - @security <scheme> [scopes...] — security requirement inherited by all methods
-//   - @public — marks all routes as public (no security requirement)
-//   - @description <text> — controller description (not currently used in OpenAPI)
-func extractClassJSDoc(classNode *ast.Node) classJSDocInfo {
-	var info classJSDocInfo
-	if classNode == nil {
-		return info
-	}
-	jsdocs := classNode.JSDoc(nil)
-	if len(jsdocs) == 0 {
-		return info
-	}
-	jsdoc := jsdocs[len(jsdocs)-1].AsJSDoc()
-
-	// Extract description from JSDoc body text
-	if jsdoc.Comment != nil {
-		info.Description = extractNodeListText(jsdoc.Comment)
-	}
-
-	if jsdoc.Tags == nil {
-		return info
-	}
-	for _, tagNode := range jsdoc.Tags.Nodes {
-		tagName, comment := extractJSDocTagInfo(tagNode)
-		switch strings.ToLower(tagName) {
-		case "hidden", "exclude":
-			info.IgnoreOpenAPI = true
-		case "tsgonest-ignore":
-			if strings.TrimSpace(strings.ToLower(comment)) == "openapi" {
-				info.IgnoreOpenAPI = true
-			}
-		case "tag":
-			t := strings.TrimSpace(comment)
-			if t != "" {
-				info.Tags = append(info.Tags, t)
-			}
-		case "security":
-			parts := strings.Fields(strings.TrimSpace(comment))
-			if len(parts) >= 1 {
-				sec := SecurityRequirement{Name: parts[0]}
-				if len(parts) > 1 {
-					sec.Scopes = parts[1:]
-				}
-				info.Security = append(info.Security, sec)
-			}
-		case "public":
-			info.IsPublic = true
-		case "description":
-			info.Description = strings.TrimSpace(comment)
-		}
-	}
-	return info
-}
-
-// extractMethodJSDoc extracts OpenAPI-relevant JSDoc tags from a method declaration.
-// Returns summary, description, deprecated, hidden, tags, security, error responses, content type,
-// operationID override, isPublic, paramDescriptions, extensions, and a set of ignored warning kinds.
-func extractMethodJSDoc(node *ast.Node) (summary string, description string, deprecated bool, hidden bool, tags []string, security []SecurityRequirement, errorResponses []ErrorResponse, contentType string, operationIDOverride string, isPublic bool, paramDescriptions map[string]string, extensions map[string]string, ignoreWarnings map[string]bool) {
-	if node == nil {
-		return
-	}
-
-	jsdocs := node.JSDoc(nil)
-	if len(jsdocs) == 0 {
-		return
-	}
-
-	jsdoc := jsdocs[len(jsdocs)-1].AsJSDoc()
-
-	// Extract description from JSDoc comment body
-	if jsdoc.Comment != nil {
-		description = extractNodeListText(jsdoc.Comment)
-	}
-
-	if jsdoc.Tags == nil {
-		return
-	}
-
-	for _, tagNode := range jsdoc.Tags.Nodes {
-		// Handle @param tags specially — they use KindJSDocParameterTag, not KindJSDocTag
-		if tagNode.Kind == ast.KindJSDocParameterTag {
-			paramTag := tagNode.AsJSDocParameterOrPropertyTag()
-			if paramTag != nil && paramTag.Name() != nil {
-				name := paramTag.Name().Text()
-				desc := ""
-				if paramTag.Comment != nil {
-					desc = strings.TrimSpace(extractNodeListText(paramTag.Comment))
-				}
-				if name != "" && desc != "" {
-					if paramDescriptions == nil {
-						paramDescriptions = make(map[string]string)
-					}
-					paramDescriptions[name] = desc
-				}
-			}
-			continue
-		}
-
-		tagName, comment := extractJSDocTagInfo(tagNode)
-		if tagName == "" {
-			continue
-		}
-
-		switch strings.ToLower(tagName) {
-		case "summary":
-			summary = strings.TrimSpace(comment)
-		case "description":
-			// Override body text if explicit @description tag present
-			description = strings.TrimSpace(comment)
-		case "deprecated":
-			deprecated = true
-		case "hidden", "exclude":
-			hidden = true
-		case "tag":
-			t := strings.TrimSpace(comment)
-			if t != "" {
-				tags = append(tags, t)
-			}
-		case "security":
-			parts := strings.Fields(strings.TrimSpace(comment))
-			if len(parts) >= 1 {
-				sec := SecurityRequirement{Name: parts[0]}
-				if len(parts) > 1 {
-					sec.Scopes = parts[1:]
-				}
-				security = append(security, sec)
-			}
-		case "operationid":
-			// Override the auto-generated operationId
-			operationIDOverride = strings.TrimSpace(comment)
-		case "throws":
-			// @throws {400} BadRequestError
-			// @throws {404} NotFoundError - The resource was not found
-			er := parseThrowsTag(comment)
-			if er != nil {
-				errorResponses = append(errorResponses, *er)
-			}
-		case "public":
-			isPublic = true
-		case "contenttype":
-			contentType = strings.TrimSpace(comment)
-		case "extension":
-			// @extension x-key value
-			parts := strings.SplitN(strings.TrimSpace(comment), " ", 2)
-			if len(parts) >= 1 && strings.HasPrefix(parts[0], "x-") {
-				if extensions == nil {
-					extensions = make(map[string]string)
-				}
-				value := ""
-				if len(parts) >= 2 {
-					value = strings.TrimSpace(parts[1])
-				}
-				extensions[parts[0]] = value
-			}
-		case "tsgonest-ignore":
-			// @tsgonest-ignore uses-raw-response
-			// Suppresses the specified warning kind.
-			kind := strings.TrimSpace(comment)
-			if kind != "" {
-				if ignoreWarnings == nil {
-					ignoreWarnings = make(map[string]bool)
-				}
-				ignoreWarnings[kind] = true
-			}
-		}
-	}
-
-	return
-}
-
-// parseThrowsTag parses a @throws tag comment. Supported formats:
-//
-//	@throws {400} BadRequestError
-//	@throws {404} NotFoundError - The resource was not found
-//
-// The description (after " - ") is optional. If present, it overrides the
-// default status description in the OpenAPI response.
-func parseThrowsTag(comment string) *ErrorResponse {
-	comment = strings.TrimSpace(comment)
-	if !strings.HasPrefix(comment, "{") {
-		return nil
-	}
-	closeBrace := strings.Index(comment, "}")
-	if closeBrace < 0 {
-		return nil
-	}
-
-	statusStr := comment[1:closeBrace]
-	statusCode, err := strconv.Atoi(strings.TrimSpace(statusStr))
-	if err != nil {
-		return nil
-	}
-
-	rest := strings.TrimSpace(comment[closeBrace+1:])
-	if rest == "" {
-		return nil
-	}
-
-	// Split on " - " to separate TypeName from description
-	typeName := rest
-	description := ""
-	if idx := strings.Index(rest, " - "); idx >= 0 {
-		typeName = strings.TrimSpace(rest[:idx])
-		description = strings.TrimSpace(rest[idx+3:])
-	}
-
-	if typeName == "" {
-		return nil
-	}
-
-	return &ErrorResponse{
-		StatusCode:  statusCode,
-		TypeName:    typeName,
-		Description: description,
-	}
-}
-
 // httpMethodForDecorator maps a decorator name to its HTTP method.
 func httpMethodForDecorator(name string) string {
 	switch name {
@@ -1525,90 +1593,6 @@ func deriveTag(className string) string {
 		return className[:len(className)-len("Controller")]
 	}
 	return className
-}
-
-// MatchesGlob checks if a file path matches any of the include patterns
-// and does not match any of the exclude patterns.
-func MatchesGlob(filePath string, includePatterns []string, excludePatterns []string) bool {
-	if len(includePatterns) == 0 {
-		return false
-	}
-
-	// Normalize path separators
-	filePath = filepath.ToSlash(filePath)
-
-	// Check exclude first
-	for _, pattern := range excludePatterns {
-		pattern = filepath.ToSlash(pattern)
-		if globMatch(filePath, pattern) {
-			return false
-		}
-	}
-
-	// Check include
-	for _, pattern := range includePatterns {
-		pattern = filepath.ToSlash(pattern)
-		if globMatch(filePath, pattern) {
-			return true
-		}
-	}
-
-	return false
-}
-
-// globMatch matches a path against a glob pattern with ** support.
-// The matching is done against suffixes of the path — if the pattern
-// is "src/**/*.controller.ts", it matches any file under a "src/" directory
-// whose name matches "*.controller.ts".
-func globMatch(filePath, pattern string) bool {
-	// Try exact match first
-	if matched, _ := filepath.Match(pattern, filePath); matched {
-		return true
-	}
-
-	// Handle ** glob patterns
-	if strings.Contains(pattern, "**") {
-		parts := strings.SplitN(pattern, "**", 2)
-		prefix := strings.TrimSuffix(parts[0], "/")
-		suffix := strings.TrimPrefix(parts[1], "/")
-
-		if prefix == "" {
-			// Pattern like **/*.controller.ts — match suffix against any file
-			if suffix == "" {
-				return true
-			}
-			fileName := filepath.Base(filePath)
-			if matched, _ := filepath.Match(suffix, fileName); matched {
-				return true
-			}
-		} else {
-			// Pattern like src/**/*.controller.ts — find prefix in path, then match suffix
-			searchStr := "/" + prefix + "/"
-			idx := strings.Index(filePath, searchStr)
-			if idx >= 0 {
-				remaining := filePath[idx+len(searchStr):]
-				if suffix == "" {
-					return true
-				}
-				fileName := filepath.Base(remaining)
-				if matched, _ := filepath.Match(suffix, fileName); matched {
-					return true
-				}
-				if matched, _ := filepath.Match(suffix, remaining); matched {
-					return true
-				}
-			}
-		}
-	} else {
-		// No ** — try matching just the basename
-		baseName := filepath.Base(filePath)
-		patternBase := filepath.Base(pattern)
-		if matched, _ := filepath.Match(patternBase, baseName); matched {
-			return true
-		}
-	}
-
-	return false
 }
 
 // parseNumericLiteral converts a numeric literal string to float64.

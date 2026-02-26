@@ -1225,6 +1225,222 @@ func TestIntegration_MultiControllerFullPipeline(t *testing.T) {
 	}
 }
 
+// ---- @Header() Response Headers in OpenAPI ----
+
+func TestIntegration_ResponseHeaders(t *testing.T) {
+	registry := metadata.NewTypeRegistry()
+	gen := NewGenerator(registry)
+
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name: "CacheController",
+			Path: "data",
+			Routes: []analyzer.Route{
+				{
+					Method:      "GET",
+					Path:        "/data",
+					OperationID: "getData",
+					ReturnType:  metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"},
+					StatusCode:  200,
+					Tags:        []string{"Data"},
+					ResponseHeaders: []analyzer.ResponseHeader{
+						{Name: "Cache-Control", Value: "no-cache"},
+						{Name: "X-Request-Id", Value: "abc123"},
+					},
+				},
+			},
+		},
+	}
+
+	doc := gen.GenerateWithOptions(controllers, nil)
+	data := requireValidDoc(t, doc)
+
+	raw := parseJSON(t, data)
+	paths := raw["paths"].(map[string]any)
+	pathItem := paths["/data"].(map[string]any)
+	getOp := pathItem["get"].(map[string]any)
+	responses := getOp["responses"].(map[string]any)
+	resp200 := responses["200"].(map[string]any)
+
+	headers, ok := resp200["headers"].(map[string]any)
+	if !ok {
+		t.Fatal("expected headers in 200 response")
+	}
+
+	if _, ok := headers["Cache-Control"]; !ok {
+		t.Error("expected Cache-Control header")
+	}
+	if _, ok := headers["X-Request-Id"]; !ok {
+		t.Error("expected X-Request-Id header")
+	}
+
+	// Verify header schema has enum with the static value
+	cacheHeader := headers["Cache-Control"].(map[string]any)
+	schema := cacheHeader["schema"].(map[string]any)
+	enumVal := schema["enum"].([]any)
+	if len(enumVal) != 1 || enumVal[0] != "no-cache" {
+		t.Errorf("expected enum=['no-cache'], got %v", enumVal)
+	}
+}
+
+// ---- @Redirect() in OpenAPI ----
+
+func TestIntegration_Redirect(t *testing.T) {
+	registry := metadata.NewTypeRegistry()
+	gen := NewGenerator(registry)
+
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name: "AuthController",
+			Path: "auth",
+			Routes: []analyzer.Route{
+				{
+					Method:      "GET",
+					Path:        "/auth/google",
+					OperationID: "googleLogin",
+					ReturnType:  metadata.Metadata{Kind: metadata.KindVoid},
+					StatusCode:  200,
+					Tags:        []string{"Auth"},
+					Redirect: &analyzer.RedirectInfo{
+						URL:        "https://accounts.google.com",
+						StatusCode: 301,
+					},
+				},
+			},
+		},
+	}
+
+	doc := gen.GenerateWithOptions(controllers, nil)
+	data := requireValidDoc(t, doc)
+
+	raw := parseJSON(t, data)
+	paths := raw["paths"].(map[string]any)
+	pathItem := paths["/auth/google"].(map[string]any)
+	getOp := pathItem["get"].(map[string]any)
+	responses := getOp["responses"].(map[string]any)
+
+	// Should have both 200 (void) and 301 (redirect) responses
+	resp301, ok := responses["301"].(map[string]any)
+	if !ok {
+		t.Fatal("expected 301 response for @Redirect")
+	}
+
+	if resp301["description"] != "Moved Permanently" {
+		t.Errorf("expected description='Moved Permanently', got %q", resp301["description"])
+	}
+
+	headers := resp301["headers"].(map[string]any)
+	location := headers["Location"].(map[string]any)
+	locSchema := location["schema"].(map[string]any)
+	enumVal := locSchema["enum"].([]any)
+	if len(enumVal) != 1 || enumVal[0] != "https://accounts.google.com" {
+		t.Errorf("expected Location enum=['https://accounts.google.com'], got %v", enumVal)
+	}
+}
+
+// ---- @Version() Array with URI Versioning in OpenAPI ----
+
+func TestIntegration_VersionArray_URI(t *testing.T) {
+	registry := metadata.NewTypeRegistry()
+	gen := NewGenerator(registry)
+
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name: "UserController",
+			Path: "users",
+			Routes: []analyzer.Route{
+				{
+					Method:      "GET",
+					Path:        "/users",
+					OperationID: "User_findAll",
+					ReturnType:  metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"},
+					StatusCode:  200,
+					Tags:        []string{"User"},
+					Version:     "1",
+					Versions:    []string{"1", "2"},
+				},
+			},
+		},
+	}
+
+	doc := gen.GenerateWithOptions(controllers, &GenerateOptions{
+		VersioningType: "URI",
+	})
+	data := requireValidDoc(t, doc)
+
+	raw := parseJSON(t, data)
+	paths := raw["paths"].(map[string]any)
+
+	// Should produce two versioned paths
+	if _, ok := paths["/v1/users"]; !ok {
+		t.Error("expected path /v1/users")
+	}
+	if _, ok := paths["/v2/users"]; !ok {
+		t.Error("expected path /v2/users")
+	}
+	if len(paths) != 2 {
+		t.Errorf("expected 2 paths, got %d: %v", len(paths), getKeys(paths))
+	}
+}
+
+func TestIntegration_VersionArray_Header(t *testing.T) {
+	registry := metadata.NewTypeRegistry()
+	gen := NewGenerator(registry)
+
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name: "UserController",
+			Path: "users",
+			Routes: []analyzer.Route{
+				{
+					Method:      "GET",
+					Path:        "/users",
+					OperationID: "User_findAll",
+					ReturnType:  metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"},
+					StatusCode:  200,
+					Tags:        []string{"User"},
+					Version:     "1",
+					Versions:    []string{"1", "2"},
+				},
+			},
+		},
+	}
+
+	doc := gen.GenerateWithOptions(controllers, &GenerateOptions{
+		VersioningType: "HEADER",
+	})
+	data := requireValidDoc(t, doc)
+
+	// For header versioning, the same path should be used
+	// but there should be version header parameters
+	assertJSONContains(t, data, `"X-API-Version"`)
+
+	// With HEADER versioning, multiple versions on the same path
+	// will use the same PathItem, so only 1 path
+	raw := parseJSON(t, data)
+	paths := raw["paths"].(map[string]any)
+	if _, ok := paths["/users"]; !ok {
+		t.Error("expected path /users")
+	}
+
+	// The last version in the iteration wins for the operation on the same PathItem.
+	// Verify the version parameter is present.
+	pathItem := paths["/users"].(map[string]any)
+	getOp := pathItem["get"].(map[string]any)
+	params := getOp["parameters"].([]any)
+	found := false
+	for _, p := range params {
+		pm := p.(map[string]any)
+		if pm["name"] == "X-API-Version" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected X-API-Version parameter in operation")
+	}
+}
+
 // ---- Helper ----
 
 func getKeys(m map[string]any) []string {

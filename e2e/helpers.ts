@@ -2,7 +2,7 @@ import { spawnSync } from "child_process";
 import { resolve } from "path";
 
 export const PROJECT_ROOT = resolve(__dirname, "..");
-export const TSGONEST_BIN = resolve(PROJECT_ROOT, "tsgonest");
+export const TSGONEST_BIN = resolve(PROJECT_ROOT, "packages", "core", "bin", "tsgonest");
 export const FIXTURES_DIR = resolve(PROJECT_ROOT, "testdata");
 
 export function runTsgonest(args: string[], opts?: { cwd?: string }) {
