@@ -550,6 +550,13 @@ func extractJSDocTagInfo(tagNode *ast.Node) (tagName string, comment string) {
 		return "deprecated", ""
 	}
 
+	// TypeScript parses @public as a known visibility tag (KindJSDocPublicTag),
+	// not as a custom KindJSDocTag. Handle it explicitly so that class-level
+	// @public JSDoc is recognized by extractClassJSDoc.
+	if tagNode.Kind == ast.KindJSDocPublicTag {
+		return "public", ""
+	}
+
 	// Handle @type tag — TypeScript recognizes it as KindJSDocTypeTag.
 	// We extract the type name text (e.g., "int32") from the type expression.
 	// When user writes `@type {int32}`, TS parses `int32` as a TypeReference inside JSDocTypeExpression.

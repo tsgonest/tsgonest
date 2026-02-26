@@ -112,7 +112,7 @@ func objectToInlineTS(node *SchemaNode, visited map[string]bool) string {
 		if requiredSet[name] {
 			opt = ""
 		}
-		fields = append(fields, fmt.Sprintf("%s%s: %s", name, opt, tsType))
+		fields = append(fields, fmt.Sprintf("%s%s: %s", tsPropertyKey(name), opt, tsType))
 	}
 
 	return "{ " + strings.Join(fields, "; ") + " }"
@@ -161,10 +161,31 @@ func GenerateInterface(name string, node *SchemaNode, visited map[string]bool) s
 		if prop.Description != "" {
 			sb.WriteString(buildPropertyJSDoc(prop.Description))
 		}
-		fmt.Fprintf(&sb, "  %s%s: %s;\n", propName, opt, tsType)
+		fmt.Fprintf(&sb, "  %s%s: %s;\n", tsPropertyKey(propName), opt, tsType)
 	}
 	sb.WriteString("}\n")
 	return sb.String()
+}
+
+// tsPropertyKey returns a properly quoted TypeScript property key.
+// Valid identifiers are returned as-is, while names containing spaces
+// or other non-identifier characters are double-quoted.
+func tsPropertyKey(name string) string {
+	if len(name) == 0 {
+		return `""`
+	}
+	for i, r := range name {
+		if i == 0 {
+			if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || r == '_' || r == '$') {
+				return `"` + name + `"`
+			}
+		} else {
+			if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '$') {
+				return `"` + name + `"`
+			}
+		}
+	}
+	return name
 }
 
 // buildSchemaJSDoc generates a JSDoc comment for a schema type or interface.
