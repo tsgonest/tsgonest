@@ -269,11 +269,11 @@ describe("SDK runtime verification", () => {
 
   it("standalone functions are exported and callable", async () => {
     const mod = await import(resolve(sdkDir, "orders/index.ts"));
-    // Standalone functions should be exported directly
-    expect(typeof mod.listOrders).toBe("function");
-    expect(typeof mod.createOrder).toBe("function");
-    expect(typeof mod.getOrder).toBe("function");
-    expect(typeof mod.deleteOrder).toBe("function");
+    // Standalone functions use qualified names (Controller_method) for global uniqueness
+    expect(typeof mod.Orders_listOrders).toBe("function");
+    expect(typeof mod.Orders_createOrder).toBe("function");
+    expect(typeof mod.Orders_getOrder).toBe("function");
+    expect(typeof mod.Orders_deleteOrder).toBe("function");
   });
 });
 
