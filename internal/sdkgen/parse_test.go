@@ -447,6 +447,381 @@ func TestExtractSSEEventType_InlineSchema(t *testing.T) {
 	}
 }
 
+// --- Fingerprint tests ---
+
+// TestRawPropFingerprint_InlineObjectsAreDifferent verifies that two inline
+// objects with different properties produce different fingerprints. This prevents
+// paginated response wrappers from collapsing to the same named type.
+func TestRawPropFingerprint_InlineObjectsAreDifferent(t *testing.T) {
+	obj1 := json.RawMessage(`{
+		"type": "object",
+		"properties": {
+			"id": {"type": "string"},
+			"name": {"type": "string"}
+		},
+		"required": ["id", "name"]
+	}`)
+	obj2 := json.RawMessage(`{
+		"type": "object",
+		"properties": {
+			"id": {"type": "string"},
+			"email": {"type": "string"},
+			"age": {"type": "number"}
+		},
+		"required": ["id", "email", "age"]
+	}`)
+
+	fp1 := rawPropFingerprint(obj1)
+	fp2 := rawPropFingerprint(obj2)
+
+	if fp1 == fp2 {
+		t.Errorf("inline objects with different properties should have different fingerprints\n  fp1: %s\n  fp2: %s", fp1, fp2)
+	}
+	// Both should contain "object{" indicating they recurse into properties
+	if fp1 == "object" {
+		t.Errorf("inline object fingerprint should recurse into properties, got bare 'object'")
+	}
+}
+
+// TestRawPropFingerprint_IdenticalInlineObjectsMatch verifies that two inline
+// objects with the same structure produce the same fingerprint.
+func TestRawPropFingerprint_IdenticalInlineObjectsMatch(t *testing.T) {
+	obj1 := json.RawMessage(`{
+		"type": "object",
+		"properties": {
+			"id": {"type": "string"},
+			"name": {"type": "string"}
+		},
+		"required": ["id", "name"]
+	}`)
+	obj2 := json.RawMessage(`{
+		"type": "object",
+		"properties": {
+			"name": {"type": "string"},
+			"id": {"type": "string"}
+		},
+		"required": ["name", "id"]
+	}`)
+
+	fp1 := rawPropFingerprint(obj1)
+	fp2 := rawPropFingerprint(obj2)
+
+	if fp1 != fp2 {
+		t.Errorf("identical inline objects (different key order) should have same fingerprint\n  fp1: %s\n  fp2: %s", fp1, fp2)
+	}
+}
+
+// TestRawPropFingerprint_ObjectWithoutProperties verifies that inline objects
+// without a "properties" key don't recurse (e.g., Record<string, unknown>).
+func TestRawPropFingerprint_ObjectWithoutProperties(t *testing.T) {
+	obj := json.RawMessage(`{
+		"type": "object",
+		"additionalProperties": {"type": "string"}
+	}`)
+
+	fp := rawPropFingerprint(obj)
+	if fp != "object" {
+		t.Errorf("object without properties should fingerprint as 'object', got %q", fp)
+	}
+}
+
+// TestRawSchemaFingerprint_PaginatedWithDifferentItems verifies the real-world
+// case: two paginated response schemas with identical wrapper properties but
+// different inline item types must produce different fingerprints.
+func TestRawSchemaFingerprint_PaginatedWithDifferentItems(t *testing.T) {
+	// PaginatedResponse wrapping Model items
+	paginatedModels := map[string]json.RawMessage{
+		"type": json.RawMessage(`"object"`),
+		"properties": json.RawMessage(`{
+			"items": {
+				"type": "array",
+				"items": {
+					"type": "object",
+					"properties": {
+						"id": {"type": "string"},
+						"name": {"type": "string"},
+						"apiKey": {"type": "string"}
+					},
+					"required": ["id", "name", "apiKey"]
+				}
+			},
+			"totalCount": {"type": "number"},
+			"currentPage": {"type": "number"}
+		}`),
+		"required": json.RawMessage(`["items", "totalCount", "currentPage"]`),
+	}
+	// PaginatedResponse wrapping Scenario items
+	paginatedScenarios := map[string]json.RawMessage{
+		"type": json.RawMessage(`"object"`),
+		"properties": json.RawMessage(`{
+			"items": {
+				"type": "array",
+				"items": {
+					"type": "object",
+					"properties": {
+						"id": {"type": "string"},
+						"category": {"type": "string"},
+						"datasetId": {"type": "string"}
+					},
+					"required": ["id", "category", "datasetId"]
+				}
+			},
+			"totalCount": {"type": "number"},
+			"currentPage": {"type": "number"}
+		}`),
+		"required": json.RawMessage(`["items", "totalCount", "currentPage"]`),
+	}
+
+	fp1 := rawSchemaFingerprint(paginatedModels)
+	fp2 := rawSchemaFingerprint(paginatedScenarios)
+
+	if fp1 == fp2 {
+		t.Errorf("paginated schemas with different inline item types should have different fingerprints\n  fp1: %s\n  fp2: %s", fp1, fp2)
+	}
+}
+
+// TestRawSchemaFingerprint_PaginatedWithRefItems verifies that paginated
+// schemas using $ref for items produce different fingerprints per ref target.
+func TestRawSchemaFingerprint_PaginatedWithRefItems(t *testing.T) {
+	paginatedUsers := map[string]json.RawMessage{
+		"type": json.RawMessage(`"object"`),
+		"properties": json.RawMessage(`{
+			"items": {
+				"type": "array",
+				"items": {"$ref": "#/components/schemas/UserResponse"}
+			},
+			"totalCount": {"type": "number"}
+		}`),
+		"required": json.RawMessage(`["items", "totalCount"]`),
+	}
+	paginatedOrders := map[string]json.RawMessage{
+		"type": json.RawMessage(`"object"`),
+		"properties": json.RawMessage(`{
+			"items": {
+				"type": "array",
+				"items": {"$ref": "#/components/schemas/OrderResponse"}
+			},
+			"totalCount": {"type": "number"}
+		}`),
+		"required": json.RawMessage(`["items", "totalCount"]`),
+	}
+
+	fp1 := rawSchemaFingerprint(paginatedUsers)
+	fp2 := rawSchemaFingerprint(paginatedOrders)
+
+	if fp1 == fp2 {
+		t.Errorf("paginated schemas with different $ref items should have different fingerprints\n  fp1: %s\n  fp2: %s", fp1, fp2)
+	}
+}
+
+// TestSchemaResolver_InlinePaginatedNotCollapsed verifies end-to-end that two
+// operations returning paginated responses with different inline item types
+// do NOT get collapsed to the same named type via fingerprint matching.
+func TestSchemaResolver_InlinePaginatedNotCollapsed(t *testing.T) {
+	// Register one named paginated type (ListModelsResponse) in component schemas
+	schemas := map[string]*SchemaNode{
+		"ListModelsResponse": {
+			Type: "object",
+			Properties: map[string]*SchemaNode{
+				"items": {
+					Type: "array",
+					Items: &SchemaNode{
+						Type: "object",
+						Properties: map[string]*SchemaNode{
+							"id":     {Type: "string"},
+							"name":   {Type: "string"},
+							"apiKey": {Type: "string"},
+						},
+						Required: []string{"id", "name", "apiKey"},
+					},
+				},
+				"totalCount":  {Type: "number"},
+				"currentPage": {Type: "number"},
+			},
+			Required: []string{"items", "totalCount", "currentPage"},
+		},
+	}
+
+	resolver := &schemaResolver{schemas: schemas}
+	resolver.initFingerprints()
+
+	// Inline schema that matches ListModelsResponse exactly
+	matchingInline := json.RawMessage(`{
+		"type": "object",
+		"properties": {
+			"items": {
+				"type": "array",
+				"items": {
+					"type": "object",
+					"properties": {
+						"id": {"type": "string"},
+						"name": {"type": "string"},
+						"apiKey": {"type": "string"}
+					},
+					"required": ["id", "name", "apiKey"]
+				}
+			},
+			"totalCount": {"type": "number"},
+			"currentPage": {"type": "number"}
+		},
+		"required": ["items", "totalCount", "currentPage"]
+	}`)
+
+	// Inline schema with different item properties (scenarios, not models)
+	differentInline := json.RawMessage(`{
+		"type": "object",
+		"properties": {
+			"items": {
+				"type": "array",
+				"items": {
+					"type": "object",
+					"properties": {
+						"id": {"type": "string"},
+						"category": {"type": "string"},
+						"datasetId": {"type": "string"}
+					},
+					"required": ["id", "category", "datasetId"]
+				}
+			},
+			"totalCount": {"type": "number"},
+			"currentPage": {"type": "number"}
+		},
+		"required": ["items", "totalCount", "currentPage"]
+	}`)
+
+	// The matching inline should resolve to ListModelsResponse
+	matchResult := resolver.schemaToTS(matchingInline)
+	if matchResult != "ListModelsResponse" {
+		t.Errorf("inline schema matching ListModelsResponse should resolve to it, got %q", matchResult)
+	}
+
+	// The different inline should NOT resolve to ListModelsResponse
+	diffResult := resolver.schemaToTS(differentInline)
+	if diffResult == "ListModelsResponse" {
+		t.Errorf("inline schema with different item types should NOT resolve to ListModelsResponse, but it did")
+	}
+	// It should be an inline object type (not a named ref)
+	if diffResult == "" || diffResult == "unknown" {
+		t.Errorf("expected inline object type, got %q", diffResult)
+	}
+}
+
+// TestRawPropFingerprint_SameNamesDifferentTypes verifies that two inline
+// objects sharing property names but with different types are distinguished.
+func TestRawPropFingerprint_SameNamesDifferentTypes(t *testing.T) {
+	obj1 := json.RawMessage(`{
+		"type": "object",
+		"properties": {
+			"value": {"type": "string"},
+			"count": {"type": "number"}
+		},
+		"required": ["value", "count"]
+	}`)
+	obj2 := json.RawMessage(`{
+		"type": "object",
+		"properties": {
+			"value": {"type": "number"},
+			"count": {"type": "string"}
+		},
+		"required": ["value", "count"]
+	}`)
+
+	fp1 := rawPropFingerprint(obj1)
+	fp2 := rawPropFingerprint(obj2)
+
+	if fp1 == fp2 {
+		t.Errorf("objects with same names but different types should differ\n  fp1: %s\n  fp2: %s", fp1, fp2)
+	}
+}
+
+// TestRawPropFingerprint_NestedInlineObjects verifies that deeply nested
+// inline objects are fingerprinted recursively.
+func TestRawPropFingerprint_NestedInlineObjects(t *testing.T) {
+	obj1 := json.RawMessage(`{
+		"type": "object",
+		"properties": {
+			"meta": {
+				"type": "object",
+				"properties": {
+					"key": {"type": "string"}
+				},
+				"required": ["key"]
+			}
+		},
+		"required": ["meta"]
+	}`)
+	obj2 := json.RawMessage(`{
+		"type": "object",
+		"properties": {
+			"meta": {
+				"type": "object",
+				"properties": {
+					"value": {"type": "number"}
+				},
+				"required": ["value"]
+			}
+		},
+		"required": ["meta"]
+	}`)
+
+	fp1 := rawPropFingerprint(obj1)
+	fp2 := rawPropFingerprint(obj2)
+
+	if fp1 == fp2 {
+		t.Errorf("nested objects with different inner properties should differ\n  fp1: %s\n  fp2: %s", fp1, fp2)
+	}
+}
+
+// TestRawPropFingerprint_RefVsInline verifies that a $ref property and an
+// inline object property produce different fingerprints.
+func TestRawPropFingerprint_RefVsInline(t *testing.T) {
+	ref := json.RawMessage(`{"$ref": "#/components/schemas/UserDto"}`)
+	inline := json.RawMessage(`{
+		"type": "object",
+		"properties": {
+			"id": {"type": "string"},
+			"name": {"type": "string"}
+		},
+		"required": ["id", "name"]
+	}`)
+
+	fpRef := rawPropFingerprint(ref)
+	fpInline := rawPropFingerprint(inline)
+
+	if fpRef == fpInline {
+		t.Errorf("$ref and inline object should have different fingerprints\n  ref: %s\n  inline: %s", fpRef, fpInline)
+	}
+	if fpRef != "$UserDto" {
+		t.Errorf("expected $ref fingerprint '$UserDto', got %q", fpRef)
+	}
+}
+
+// TestRawPropFingerprint_ArrayOfRefVsArrayOfInline verifies that array[Ref]
+// and array[inline object] produce different fingerprints.
+func TestRawPropFingerprint_ArrayOfRefVsArrayOfInline(t *testing.T) {
+	arrRef := json.RawMessage(`{
+		"type": "array",
+		"items": {"$ref": "#/components/schemas/Item"}
+	}`)
+	arrInline := json.RawMessage(`{
+		"type": "array",
+		"items": {
+			"type": "object",
+			"properties": {
+				"id": {"type": "string"}
+			},
+			"required": ["id"]
+		}
+	}`)
+
+	fp1 := rawPropFingerprint(arrRef)
+	fp2 := rawPropFingerprint(arrInline)
+
+	if fp1 == fp2 {
+		t.Errorf("array of $ref and array of inline object should differ\n  fp1: %s\n  fp2: %s", fp1, fp2)
+	}
+}
+
 func TestResolveMethodName_Synthesis(t *testing.T) {
 	// No operationId or x-tsgonest-method → synthesize from method+path
 	op := openAPIOperation{}

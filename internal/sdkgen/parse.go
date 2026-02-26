@@ -485,6 +485,14 @@ func propFingerprint(node *SchemaNode) string {
 		if node.Type == "array" && node.Items != nil {
 			return "[]" + propFingerprint(node.Items)
 		}
+		// Inline objects: recurse into properties so that structurally different
+		// inline objects produce distinct fingerprints instead of all matching as "object".
+		if node.Type == "object" && len(node.Properties) > 0 {
+			fp := schemaFingerprint(node)
+			if fp != "" {
+				return "object{" + fp + "}"
+			}
+		}
 		if node.Format != "" {
 			return node.Type + ":" + node.Format
 		}
@@ -564,6 +572,18 @@ func rawPropFingerprint(raw json.RawMessage) string {
 		if typeStr == "array" {
 			if items, ok := node["items"]; ok {
 				return "[]" + rawPropFingerprint(items)
+			}
+		}
+		// Inline objects: recurse into properties so that structurally different
+		// inline objects (e.g., paginated response wrappers with different item types)
+		// produce distinct fingerprints instead of all matching as "object".
+		if typeStr == "object" {
+			if propsRaw, ok := node["properties"]; ok {
+				fp := rawSchemaFingerprint(node)
+				if fp != "" {
+					return "object{" + fp + "}"
+				}
+				_ = propsRaw // used by rawSchemaFingerprint via node
 			}
 		}
 		var formatStr string

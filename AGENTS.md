@@ -255,6 +255,38 @@ pnpm --filter docs start   # Serve the static export locally
 3. Run `just shim` to regenerate
 4. Use it in Go code as `checker.Checker_getTypeOfExpression(recv, args...)`
 
+### Releasing a New Version
+
+Releases are **tag-driven**. Pushing a semver tag triggers the full CI pipeline
+(`.github/workflows/release.yml`):
+
+```bash
+# 1. Merge your PR to main
+# 2. Tag the release (patch/minor/major as appropriate)
+git checkout main && git pull
+git tag v0.7.1
+git push origin v0.7.1
+```
+
+The release workflow then:
+1. Runs the full test suite (unit + e2e) as a gate
+2. Generates changelog via git-cliff and commits it back to main
+3. Cross-compiles all 6 platform binaries (darwin/linux/windows × arm64/x64)
+4. Bumps `version` in every `packages/*/package.json`
+5. Builds TypeScript packages (runtime, types, migrate)
+6. Publishes all packages to npm via OIDC Trusted Publishing (no NPM_TOKEN needed)
+7. Creates a GitHub Release with binary assets and changelog body
+
+**Do NOT manually edit package.json versions** — the release workflow handles this.
+**Do NOT manually publish to npm** — OIDC Trusted Publishing handles auth.
+
+Monitor the release: `gh run list --limit 3` or check the Actions tab.
+
+After a release, install the new version in downstream projects:
+```bash
+pnpm add -D tsgonest@latest
+```
+
 ### Working with Type Metadata
 
 - Type analysis code lives in `internal/analyzer/`
@@ -294,15 +326,16 @@ pnpm --filter docs start   # Serve the static export locally
 
 ## Testing Strategy
 
-### Go Unit Tests (~560+ tests)
+### Go Unit Tests (~580+ tests)
 
 - Config parsing: `internal/config/config_test.go`
-- Type walker: `internal/analyzer/type_walker_test.go` (JSDoc, branded types, discriminants)
+- Type walker: `internal/analyzer/type_walker_test.go` (JSDoc, branded types, discriminants, generic instantiation naming, array aliases)
 - NestJS analyzer: `internal/analyzer/nestjs_test.go`
 - Code generation: `internal/codegen/codegen_test.go` (companions, constraints, formats, numerics)
 - Emitter: `internal/codegen/emitter_test.go`
 - OpenAPI schemas: `internal/openapi/schema_test.go`
 - OpenAPI generator: `internal/openapi/generator_test.go`
+- OpenAPI integration: `internal/openapi/integration_test.go` (end-to-end generic collapse, array double-nesting)
 - Build cache: `internal/buildcache/cache_test.go`
 - Each test uses fixtures from `testdata/`
 
@@ -344,3 +377,10 @@ pnpm --filter docs start   # Serve the static export locally
 19. **Coercion registry timing**: `@Query()`/`@Param()` DTO coercion must be enabled between Phase 1 (type walking) and Phase 2 (codegen) in `generateCompanionsInMemory`, because types aren't in the registry until after the walk phase.
 20. **Non-async methods with return transforms**: The controller rewriter auto-inserts `async` before methods that have return serialization transforms but aren't declared `async`. This ensures `await` correctly unwraps Promises before calling `stringify`.
 21. **Runtime-generated controllers and dynamic decorator paths are excluded from OpenAPI**: Non-top-level `@Controller()` classes and dynamic path args like `@Controller(prefix)` or `@Get(dynamicPath)` are intentionally unsupported by static analysis. tsgonest now warns and skips these controllers/routes instead of trying to infer runtime values.
+22. **Generic type instantiations get composite names**: `PaginatedResponse<UserDto>` registers as `PaginatedResponse_UserDto` in OpenAPI. The type walker's `buildGenericInstantiationName` builds these from base name + `deriveTypeArgName` per argument. This applies to both interfaces (via `ObjectFlagsReference`) and type aliases (via `Type_alias` recovery).
+23. **Anonymous type arguments are inlined, not named**: When a generic like `Wrapper<{ x: number }>` has arguments that can't be named, the type is inlined (not registered under `T{id}`) and a deduplicated warning is emitted. Never generate opaque `T{id}` fallback names in OpenAPI.
+24. **Named array type aliases must NOT be registered**: `type X = {...}[]` should remain `KindArray` and not become a named `$ref` schema. Registering them causes double-nesting when used as `X[]`. The `WalkNamedType` function intentionally excludes `KindArray` from registration.
+25. **Type alias generic instantiation vs pre-registered aliases**: If `type ProductResponse = PaginatedResponse<Product>` exists, the pre-registration pass registers it as `ProductResponse` (flat, all properties materialized). Later encounters of `PaginatedResponse<Product>` reuse this via `typeIdToName` cache. The user's chosen name wins over the composite `PaginatedResponse_Product`.
+26. **deriveTypeArgName resolution order**: typeIdToName cache → array element recursion → symbol name → Type_alias recovery → literal union members (≤4). Each step has specific guards for internal names (`__type`, `__object`, `\xfe` prefix).
+27. **Walker warnings are deduplicated**: `warnedGenericNames` map prevents flooding output. Each generic base name warns at most once. Warnings surface through `build.go` alongside controller analyzer warnings.
+28. **OpenAPI is deliberately flat — no generics**: OpenAPI 3.2 has no concept of generics. Do NOT add `x-` extensions to reconstruct generic types in SDK output. Flat schemas (`PaginatedResponse_UserDto`) work with all tooling (Swagger UI, Redocly, third-party generators). This is an intentional design decision.
