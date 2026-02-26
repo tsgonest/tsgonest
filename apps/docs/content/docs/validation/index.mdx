@@ -7,16 +7,16 @@ tsgonest generates **companion files** (`.tsgonest.js` / `.tsgonest.d.ts`) along
 
 ## Companion files
 
-When you run `tsgonest generate`, the CLI analyzes your TypeScript types and emits a companion file for each source file that contains validated types:
+Running `tsgonest build` analyzes your TypeScript types and emits one companion file per exported type:
 
 ```
-src/
-  user.dto.ts          ← your types
-  user.dto.tsgonest.js   ← generated validator + serializer
-  user.dto.tsgonest.d.ts ← generated type declarations
+dist/
+  user.dto.js                          ← tsgo output
+  user.dto.CreateUserDto.tsgonest.js   ← generated validator + serializer
+  user.dto.CreateUserDto.tsgonest.d.ts ← generated type declarations
 ```
 
-Each companion exports three functions per type:
+Each companion exports three functions:
 
 | Function    | Returns                          | On failure            |
 | ----------- | -------------------------------- | --------------------- |
@@ -29,9 +29,9 @@ Each companion exports three functions per type:
 `validate` returns a result object and **never throws**. Use it when you need to handle errors programmatically.
 
 ```ts title="usage-validate.ts"
-import { validate_CreateUserDto } from './user.dto.tsgonest.js';
+import { validateCreateUserDto } from './user.dto.CreateUserDto.tsgonest.js';
 
-const result = validate_CreateUserDto(input);
+const result = validateCreateUserDto(input);
 
 if (result.success) {
   // result.data is typed as CreateUserDto
@@ -39,7 +39,7 @@ if (result.success) {
 } else {
   // result.errors is ValidationErrorDetail[]
   for (const err of result.errors) {
-    console.log(`${err.path}: ${err.message}`);
+    console.log(`${err.path}: expected ${err.expected}, received ${err.received}`);
   }
 }
 ```
@@ -48,23 +48,21 @@ The `errors` array contains objects with the following shape:
 
 ```ts title="validation-error.ts"
 interface ValidationErrorDetail {
-  path: string;      // e.g. "address.zip"
-  message: string;   // human-readable message
-  code: string;      // machine-readable error code
-  expected?: string; // what was expected
-  received?: string; // what was received
+  path: string;     // e.g. "address.zip"
+  expected: string; // what was expected
+  received: string; // what was received
 }
 ```
 
 ## `assert` — throw on failure
 
-`assert` returns the validated data directly or throws a `TsgonestValidationError`. Use it in contexts where you want exceptions to propagate (e.g., inside NestJS pipes).
+`assert` returns the validated data directly or throws a `TsgonestValidationError`. Use it when you want exceptions to propagate.
 
 ```ts title="usage-assert.ts"
-import { assert_CreateUserDto } from './user.dto.tsgonest.js';
+import { assertCreateUserDto } from './user.dto.CreateUserDto.tsgonest.js';
 
 try {
-  const user = assert_CreateUserDto(input);
+  const user = assertCreateUserDto(input);
   // user is typed as CreateUserDto
 } catch (err) {
   // err is TsgonestValidationError
