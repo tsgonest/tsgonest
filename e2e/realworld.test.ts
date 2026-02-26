@@ -114,6 +114,33 @@ describe("realworld fixture", () => {
     expect(schemas).toContain("Comment");
   });
 
+  it("should use class-level @tag JSDoc for OpenAPI tags", () => {
+    runTsgonest([
+      "--project",
+      "testdata/realworld/tsconfig.json",
+      "--config",
+      "testdata/realworld/tsgonest.config.json",
+    ]);
+    const doc = JSON.parse(readFileSync(openapiFile, "utf-8"));
+
+    // The realworld fixtures use class-level @tag on controllers:
+    // auth.controller.ts:    @tag Auth
+    // user.controller.ts:    @tag Users
+    // article.controller.ts: @tag Articles
+    // payment.controller.ts: @tag Payments
+    // admin.controller.ts:   @tag Admin
+    const tagNames = (doc.tags ?? []).map((t: any) => t.name);
+    expect(tagNames).toContain("Auth");
+    expect(tagNames).toContain("Users");
+    expect(tagNames).toContain("Articles");
+    expect(tagNames).toContain("Payments");
+    expect(tagNames).toContain("Admin");
+
+    // Verify operations use the @tag value, not the auto-derived tag
+    const loginOp = doc.paths["/auth/login"]?.post;
+    expect(loginOp?.tags).toContain("Auth");
+  });
+
   it("should validate LoginDto at runtime", () => {
     runTsgonest([
       "--project",

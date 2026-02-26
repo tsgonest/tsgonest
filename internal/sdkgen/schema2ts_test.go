@@ -372,6 +372,76 @@ func TestSchemaToTS_ConstBool(t *testing.T) {
 	}
 }
 
+func TestGenerateInterface_PropertyWithSpaces(t *testing.T) {
+	node := &SchemaNode{
+		Type: "object",
+		Properties: map[string]*SchemaNode{
+			"first name":   {Type: "string"},
+			"phone number": {Type: "string"},
+			"email":        {Type: "string"},
+		},
+		Required: []string{"email"},
+	}
+	got := GenerateInterface("ContactInfo", node, nil)
+
+	// Property names with spaces must be quoted
+	if !contains(got, `  "first name"?: string;`) {
+		t.Errorf("expected quoted 'first name', got:\n%s", got)
+	}
+	if !contains(got, `  "phone number"?: string;`) {
+		t.Errorf("expected quoted 'phone number', got:\n%s", got)
+	}
+	// Normal identifiers should NOT be quoted
+	if !contains(got, "  email: string;") {
+		t.Errorf("expected unquoted 'email', got:\n%s", got)
+	}
+}
+
+func TestSchemaToTS_InlineObjectWithSpaces(t *testing.T) {
+	node := &SchemaNode{
+		Type: "object",
+		Properties: map[string]*SchemaNode{
+			"tax rate": {Type: "number"},
+			"currency": {Type: "string"},
+		},
+		Required: []string{"currency"},
+	}
+	got := SchemaToTS(node, nil)
+
+	if !contains(got, `"tax rate"?: number`) {
+		t.Errorf("expected quoted 'tax rate' in inline object, got %q", got)
+	}
+	if !contains(got, "currency: string") {
+		t.Errorf("expected unquoted 'currency' in inline object, got %q", got)
+	}
+}
+
+func TestTsPropertyKey(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"name", "name"},
+		{"$ref", "$ref"},
+		{"_private", "_private"},
+		{"first name", `"first name"`},
+		{"phone number", `"phone number"`},
+		{"tax rate", `"tax rate"`},
+		{"123start", `"123start"`},
+		{"has-dash", `"has-dash"`},
+		{"has.dot", `"has.dot"`},
+		{"", `""`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := tsPropertyKey(tt.input)
+			if got != tt.want {
+				t.Errorf("tsPropertyKey(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsHelper(s, substr))
 }

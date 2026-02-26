@@ -715,6 +715,232 @@ func TestControllerAnalyzer_JSDocTags(t *testing.T) {
 	}
 }
 
+func TestControllerAnalyzer_ClassLevelTag(t *testing.T) {
+	t.Run("basic", func(t *testing.T) {
+		env := setupWalker(t, `
+			function Controller(path: string): ClassDecorator { return (target) => target; }
+			function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+
+			/**
+			 * @tag Authentication
+			 */
+			@Controller("auth")
+			export class AuthController {
+				@Get("login")
+				login(): string { return ""; }
+
+				@Get("register")
+				register(): string { return ""; }
+			}
+		`)
+		defer env.release()
+
+		ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+		defer caRelease()
+
+		controllers := ca.AnalyzeSourceFile(env.sourceFile)
+		if len(controllers) != 1 {
+			t.Fatalf("expected 1 controller, got %d", len(controllers))
+		}
+		if len(controllers[0].Routes) != 2 {
+			t.Fatalf("expected 2 routes, got %d", len(controllers[0].Routes))
+		}
+
+		// Both routes should inherit the class-level @tag, NOT the auto-derived "Auth" tag
+		for _, route := range controllers[0].Routes {
+			if len(route.Tags) != 1 {
+				t.Fatalf("expected 1 tag on route %s, got %d: %v", route.Path, len(route.Tags), route.Tags)
+			}
+			if route.Tags[0] != "Authentication" {
+				t.Errorf("expected tag 'Authentication' on route %s, got %q", route.Path, route.Tags[0])
+			}
+		}
+	})
+
+	t.Run("with_security_and_description", func(t *testing.T) {
+		// Matches the user's reported scenario: @tag + @security in class JSDoc
+		env := setupWalker(t, `
+			function Controller(path: string): ClassDecorator { return (target) => target; }
+			function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+
+			/**
+			 * Authentication controller
+			 * @tag Authentication
+			 * @security bearer
+			 */
+			@Controller("/auth")
+			export class AuthController {
+				@Get("login")
+				login(): string { return ""; }
+			}
+		`)
+		defer env.release()
+
+		ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+		defer caRelease()
+
+		controllers := ca.AnalyzeSourceFile(env.sourceFile)
+		if len(controllers) != 1 {
+			t.Fatalf("expected 1 controller, got %d", len(controllers))
+		}
+		if len(controllers[0].Routes) != 1 {
+			t.Fatalf("expected 1 route, got %d", len(controllers[0].Routes))
+		}
+
+		route := controllers[0].Routes[0]
+		if len(route.Tags) != 1 || route.Tags[0] != "Authentication" {
+			t.Errorf("expected tags ['Authentication'], got %v", route.Tags)
+		}
+		if len(route.Security) != 1 || route.Security[0].Name != "bearer" {
+			t.Errorf("expected security [{bearer}], got %v", route.Security)
+		}
+	})
+
+	t.Run("method_overrides_class", func(t *testing.T) {
+		env := setupWalker(t, `
+			function Controller(path: string): ClassDecorator { return (target) => target; }
+			function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+
+			/**
+			 * @tag Authentication
+			 */
+			@Controller("auth")
+			export class AuthController {
+				@Get("login")
+				login(): string { return ""; }
+
+				/**
+				 * @tag Custom
+				 */
+				@Get("special")
+				special(): string { return ""; }
+			}
+		`)
+		defer env.release()
+
+		ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+		defer caRelease()
+
+		controllers := ca.AnalyzeSourceFile(env.sourceFile)
+		if len(controllers) != 1 || len(controllers[0].Routes) != 2 {
+			t.Fatalf("expected 1 controller with 2 routes")
+		}
+
+		for _, route := range controllers[0].Routes {
+			if route.OperationID == "Auth_login" {
+				if len(route.Tags) != 1 || route.Tags[0] != "Authentication" {
+					t.Errorf("login should inherit class tag 'Authentication', got %v", route.Tags)
+				}
+			} else {
+				if len(route.Tags) != 1 || route.Tags[0] != "Custom" {
+					t.Errorf("special should have method tag 'Custom', got %v", route.Tags)
+				}
+			}
+		}
+	})
+}
+
+func TestControllerAnalyzer_ClassLevelSecurity(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+
+		/**
+		 * @security bearer
+		 */
+		@Controller("users")
+		export class UserController {
+			@Get()
+			list(): string { return ""; }
+
+			@Get(":id")
+			findOne(): string { return ""; }
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 || len(controllers[0].Routes) != 2 {
+		t.Fatalf("expected 1 controller with 2 routes, got %d controllers", len(controllers))
+	}
+
+	// Both routes should inherit class-level @security
+	for _, route := range controllers[0].Routes {
+		if len(route.Security) != 1 {
+			t.Fatalf("expected 1 security on route %s, got %d", route.Path, len(route.Security))
+		}
+		if route.Security[0].Name != "bearer" {
+			t.Errorf("expected security 'bearer' on route %s, got %q", route.Path, route.Security[0].Name)
+		}
+	}
+}
+
+func TestControllerAnalyzer_ClassLevelHidden(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+
+		/**
+		 * @hidden
+		 */
+		@Controller("internal")
+		export class InternalController {
+			@Get()
+			health(): string { return "ok"; }
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 {
+		t.Fatalf("expected 1 controller, got %d", len(controllers))
+	}
+	if !controllers[0].IgnoreOpenAPI {
+		t.Error("expected controller with @hidden to have IgnoreOpenAPI=true")
+	}
+}
+
+func TestControllerAnalyzer_ClassLevelPublic(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+
+		/**
+		 * @public
+		 */
+		@Controller("public")
+		export class PublicController {
+			@Get()
+			list(): string { return ""; }
+
+			@Get(":id")
+			findOne(): string { return ""; }
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 || len(controllers[0].Routes) != 2 {
+		t.Fatalf("expected 1 controller with 2 routes")
+	}
+
+	// Both routes should inherit class-level @public
+	for _, route := range controllers[0].Routes {
+		if !route.IsPublic {
+			t.Errorf("expected IsPublic=true on route %s", route.Path)
+		}
+	}
+}
+
 func TestControllerAnalyzer_JSDocSecurity(t *testing.T) {
 	env := setupWalker(t, `
 		function Controller(path: string): ClassDecorator { return (target) => target; }
