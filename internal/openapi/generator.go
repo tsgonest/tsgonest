@@ -3,6 +3,7 @@ package openapi
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -227,7 +228,7 @@ func (g *Generator) buildOperation(route analyzer.Route, controllerName string) 
 		Deprecated:          route.Deprecated,
 		Responses:           make(Responses),
 		XTsgonestController: controllerName,
-		XTsgonestMethod:     route.OperationID,
+		XTsgonestMethod:     route.MethodName,
 	}
 
 	// Map vendor extensions from @extension JSDoc
@@ -636,6 +637,13 @@ func (g *Generator) GenerateWithOptions(controllers []analyzer.ControllerInfo, o
 			// Create operation
 			op := g.buildOperation(route, ctrl.Name)
 
+			// Synthesize missing path parameters.
+			// Controller-level params (e.g., @Controller(':workspaceID')) appear in
+			// the URL template but may not have explicit @Param() decorators on the
+			// method.  OpenAPI requires every {param} in the path to have a
+			// corresponding parameter entry.
+			ensurePathParams(op, openapiPath)
+
 			// For HEADER versioning, add a version header parameter
 			if opts != nil && opts.VersioningType == "HEADER" {
 				version := route.Version
@@ -706,6 +714,44 @@ func convertPath(path string) string {
 		}
 	}
 	return strings.Join(parts, "/")
+}
+
+// pathParamRe matches OpenAPI-style path parameters like {id} or {workspaceID}.
+var pathParamRe = regexp.MustCompile(`\{([^}]+)\}`)
+
+// ensurePathParams guarantees that every {param} placeholder in the OpenAPI
+// path has a corresponding entry in op.Parameters with "in":"path".
+// Controller-level route params (e.g. @Controller(':workspaceID')) produce
+// {workspaceID} in the path but may lack an explicit @Param() decorator on
+// the method; this function synthesises the missing parameter entries so the
+// OpenAPI document is spec-compliant and the SDK generator can produce correct
+// code.
+func ensurePathParams(op *Operation, openapiPath string) {
+	matches := pathParamRe.FindAllStringSubmatch(openapiPath, -1)
+	if len(matches) == 0 {
+		return
+	}
+
+	// Build a set of already-declared path param names.
+	declared := make(map[string]bool, len(op.Parameters))
+	for _, p := range op.Parameters {
+		if p.In == "path" {
+			declared[p.Name] = true
+		}
+	}
+
+	for _, m := range matches {
+		name := m[1]
+		if declared[name] {
+			continue
+		}
+		op.Parameters = append(op.Parameters, Parameter{
+			Name:     name,
+			In:       "path",
+			Required: true,
+			Schema:   &Schema{Type: "string"},
+		})
+	}
 }
 
 // statusCodeString converts an integer status code to a string.

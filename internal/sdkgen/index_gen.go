@@ -35,10 +35,10 @@ func generateIndex(versions []VersionGroup) string {
 			factoryName := controllerFactoryName(ctrl.Name)
 			ifaceName := controllerInterfaceName(ctrl.Name)
 
-			// Re-export standalone functions
+			// Re-export standalone functions (with qualified names for uniqueness)
 			var fnNames []string
 			for _, method := range ctrl.Methods {
-				fnNames = append(fnNames, method.Name)
+				fnNames = append(fnNames, qualifiedMethodName(ctrl.Name, method.Name))
 			}
 			if len(fnNames) > 0 {
 				sb.WriteString(fmt.Sprintf("export { %s } from './%s';\n", strings.Join(fnNames, ", "), dirPath))

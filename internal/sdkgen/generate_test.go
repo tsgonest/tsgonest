@@ -64,14 +64,14 @@ func TestGenerate_BasicFixture(t *testing.T) {
 	ordersContent := readFile(t, filepath.Join(outputDir, "orders/index.ts"))
 	assertContains(t, ordersContent, "export interface OrdersController", "should have OrdersController interface")
 	assertContains(t, ordersContent, "export function createOrdersController", "should have factory")
-	// Verify standalone exported functions
-	assertContains(t, ordersContent, "export async function listOrders(", "should have standalone listOrders")
-	assertContains(t, ordersContent, "export async function createOrder(", "should have standalone createOrder")
-	assertContains(t, ordersContent, "export async function getOrder(", "should have standalone getOrder")
-	assertContains(t, ordersContent, "export async function deleteOrder(", "should have standalone deleteOrder")
-	// Verify factory delegates to standalone functions
+	// Verify standalone exported functions (qualified with controller name)
+	assertContains(t, ordersContent, "export async function Orders_listOrders(", "should have standalone Orders_listOrders")
+	assertContains(t, ordersContent, "export async function Orders_createOrder(", "should have standalone Orders_createOrder")
+	assertContains(t, ordersContent, "export async function Orders_getOrder(", "should have standalone Orders_getOrder")
+	assertContains(t, ordersContent, "export async function Orders_deleteOrder(", "should have standalone Orders_deleteOrder")
+	// Verify factory delegates to standalone functions with short keys
 	assertContains(t, ordersContent, "listOrders: (options", "factory should delegate listOrders")
-	assertContains(t, ordersContent, "=> listOrders(request", "factory should call standalone listOrders")
+	assertContains(t, ordersContent, "=> Orders_listOrders(request", "factory should call standalone Orders_listOrders")
 	assertContains(t, ordersContent, "import type {", "should import types")
 	assertContains(t, ordersContent, "../types", "should reference ../types")
 	assertContains(t, ordersContent, "../client", "should reference ../client")
@@ -84,8 +84,8 @@ func TestGenerate_BasicFixture(t *testing.T) {
 	assertContains(t, indexContent, "createClient", "index.ts should export createClient")
 	assertContains(t, indexContent, "createOrdersController", "index.ts should export orders factory")
 	assertContains(t, indexContent, "createProductsController", "index.ts should export products factory")
-	// Verify standalone functions are re-exported
-	assertContains(t, indexContent, "listOrders", "index.ts should re-export standalone listOrders")
+	// Verify standalone functions are re-exported with qualified names
+	assertContains(t, indexContent, "Orders_listOrders", "index.ts should re-export standalone Orders_listOrders")
 }
 
 func TestGenerate_VersionedFixture(t *testing.T) {

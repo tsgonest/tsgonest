@@ -45,6 +45,7 @@ func buildSimpleControllerDoc() *Document {
 					Method:      "GET",
 					Path:        "/users",
 					OperationID: "findAll",
+					MethodName:  "findAll",
 					ReturnType:  metadata.Metadata{Kind: metadata.KindArray, ElementType: &metadata.Metadata{Kind: metadata.KindRef, Ref: "UserResponse"}},
 					StatusCode:  200,
 					Tags:        []string{"User"},
@@ -53,6 +54,7 @@ func buildSimpleControllerDoc() *Document {
 					Method:      "GET",
 					Path:        "/users/:id",
 					OperationID: "findOne",
+					MethodName:  "findOne",
 					Parameters: []analyzer.RouteParameter{
 						{Category: "param", Name: "id", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
 					},
@@ -64,6 +66,7 @@ func buildSimpleControllerDoc() *Document {
 					Method:      "POST",
 					Path:        "/users",
 					OperationID: "create",
+					MethodName:  "create",
 					Parameters: []analyzer.RouteParameter{
 						{Category: "body", Name: "", Type: metadata.Metadata{Kind: metadata.KindRef, Ref: "CreateUserDto"}, Required: true},
 					},
@@ -75,6 +78,7 @@ func buildSimpleControllerDoc() *Document {
 					Method:      "DELETE",
 					Path:        "/users/:id",
 					OperationID: "remove",
+					MethodName:  "remove",
 					Parameters: []analyzer.RouteParameter{
 						{Category: "param", Name: "id", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
 					},

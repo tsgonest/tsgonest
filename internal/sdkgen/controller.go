@@ -5,6 +5,17 @@ import (
 	"strings"
 )
 
+// qualifiedMethodName returns a globally unique function name by prefixing
+// the controller base name. e.g., ("ContactsController", "findAll") → "Contacts_findAll".
+// This is used for standalone exported functions to avoid name collisions across controllers.
+func qualifiedMethodName(ctrlName, methodName string) string {
+	baseName := strings.TrimSuffix(ctrlName, "Controller")
+	if baseName == "" {
+		return methodName
+	}
+	return baseName + "_" + methodName
+}
+
 // generateController generates the index.ts file for a single controller.
 // version is "" for unversioned, "v1" etc. for versioned (affects relative import paths).
 //
@@ -57,7 +68,7 @@ func generateController(ctrl ControllerGroup, doc *SDKDocument, version string) 
 	// ── Standalone exported functions (tree-shakeable) ──────────────────
 
 	for _, method := range ctrl.Methods {
-		sb.WriteString(generateStandaloneFunction(method))
+		sb.WriteString(generateStandaloneFunction(ctrl.Name, method))
 		sb.WriteString("\n")
 	}
 
@@ -97,11 +108,12 @@ func generateController(ctrl ControllerGroup, doc *SDKDocument, version string) 
 	sb.WriteString(fmt.Sprintf("export function %s(request: RequestFn): %s {\n", factoryName, ifaceName))
 	sb.WriteString("  return {\n")
 	for _, method := range ctrl.Methods {
+		qName := qualifiedMethodName(ctrl.Name, method.Name)
 		optionsType := buildOptionsType(method)
 		if optionsType == "" {
-			sb.WriteString(fmt.Sprintf("    %s: (options?) => %s(request, options),\n", method.Name, method.Name))
+			sb.WriteString(fmt.Sprintf("    %s: (options?) => %s(request, options),\n", method.Name, qName))
 		} else {
-			sb.WriteString(fmt.Sprintf("    %s: (options) => %s(request, options),\n", method.Name, method.Name))
+			sb.WriteString(fmt.Sprintf("    %s: (options) => %s(request, options),\n", method.Name, qName))
 		}
 	}
 	sb.WriteString("  };\n")
@@ -112,8 +124,10 @@ func generateController(ctrl ControllerGroup, doc *SDKDocument, version string) 
 
 // generateStandaloneFunction generates a single top-level exported async function for an endpoint.
 // These are independently importable and tree-shakeable.
-func generateStandaloneFunction(method SDKMethod) string {
+// ctrlName is used to create a qualified function name (e.g., "Contacts_findAll") to avoid collisions.
+func generateStandaloneFunction(ctrlName string, method SDKMethod) string {
 	var sb strings.Builder
+	qName := qualifiedMethodName(ctrlName, method.Name)
 
 	// JSDoc
 	jsdoc := buildMethodJSDoc(method)
@@ -128,9 +142,9 @@ func generateStandaloneFunction(method SDKMethod) string {
 	optionsType := buildOptionsType(method)
 	responseType := buildResponseType(method)
 	if optionsType == "" {
-		sb.WriteString(fmt.Sprintf("export async function %s(\n  request: RequestFn,\n  options?: { signal?: AbortSignal; headers?: Record<string, string> },\n): Promise<SDKResult<%s>> {\n", method.Name, responseType))
+		sb.WriteString(fmt.Sprintf("export async function %s(\n  request: RequestFn,\n  options?: { signal?: AbortSignal; headers?: Record<string, string> },\n): Promise<SDKResult<%s>> {\n", qName, responseType))
 	} else {
-		sb.WriteString(fmt.Sprintf("export async function %s(\n  request: RequestFn,\n  options: %s,\n): Promise<SDKResult<%s>> {\n", method.Name, optionsType, responseType))
+		sb.WriteString(fmt.Sprintf("export async function %s(\n  request: RequestFn,\n  options: %s,\n): Promise<SDKResult<%s>> {\n", qName, optionsType, responseType))
 	}
 
 	// Build params object for path interpolation
