@@ -661,7 +661,7 @@ func (r *schemaResolver) inlineObjectToTS(node map[string]json.RawMessage) strin
 		if requiredSet[name] {
 			opt = ""
 		}
-		fields = append(fields, fmt.Sprintf("%s%s: %s", name, opt, tsType))
+		fields = append(fields, fmt.Sprintf("%s%s: %s", tsPropertyKey(name), opt, tsType))
 	}
 
 	return "{ " + strings.Join(fields, "; ") + " }"

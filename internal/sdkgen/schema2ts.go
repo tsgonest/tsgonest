@@ -167,25 +167,81 @@ func GenerateInterface(name string, node *SchemaNode, visited map[string]bool) s
 	return sb.String()
 }
 
-// tsPropertyKey returns a properly quoted TypeScript property key.
-// Valid identifiers are returned as-is, while names containing spaces
-// or other non-identifier characters are double-quoted.
-func tsPropertyKey(name string) string {
+// isJSIdentifier reports whether name is a valid JavaScript/TypeScript identifier
+// (ASCII subset: [a-zA-Z_$] followed by [a-zA-Z0-9_$]).
+func isJSIdentifier(name string) bool {
 	if len(name) == 0 {
-		return `""`
+		return false
 	}
 	for i, r := range name {
 		if i == 0 {
 			if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || r == '_' || r == '$') {
-				return `"` + name + `"`
+				return false
 			}
 		} else {
 			if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '$') {
-				return `"` + name + `"`
+				return false
 			}
 		}
 	}
-	return name
+	return true
+}
+
+// escapeJSString escapes a string for safe embedding inside a JS double-quoted
+// string literal. Handles backslashes, double quotes, and control characters.
+func escapeJSString(s string) string {
+	var buf strings.Builder
+	buf.Grow(len(s))
+	for _, r := range s {
+		switch r {
+		case '\\':
+			buf.WriteString(`\\`)
+		case '"':
+			buf.WriteString(`\"`)
+		case '\n':
+			buf.WriteString(`\n`)
+		case '\r':
+			buf.WriteString(`\r`)
+		case '\t':
+			buf.WriteString(`\t`)
+		default:
+			if r < 0x20 {
+				buf.WriteString(fmt.Sprintf(`\x%02x`, r))
+			} else {
+				buf.WriteRune(r)
+			}
+		}
+	}
+	return buf.String()
+}
+
+// tsPropertyKey returns a properly quoted TypeScript property key.
+// Valid identifiers are returned as-is, while names containing spaces
+// or other non-identifier characters are double-quoted and escaped.
+func tsPropertyKey(name string) string {
+	if isJSIdentifier(name) {
+		return name
+	}
+	return `"` + escapeJSString(name) + `"`
+}
+
+// tsPropAccess returns a TypeScript property access expression.
+// Valid identifiers use dot notation (obj.name), non-identifiers
+// use bracket notation (obj["first.name"]).
+func tsPropAccess(accessor, name string) string {
+	if isJSIdentifier(name) {
+		return accessor + "." + name
+	}
+	return accessor + `["` + escapeJSString(name) + `"]`
+}
+
+// tsOptionalAccess returns a TypeScript optional chaining property access.
+// Valid identifiers use obj?.name, non-identifiers use obj?.["first.name"].
+func tsOptionalAccess(accessor, name string) string {
+	if isJSIdentifier(name) {
+		return accessor + "?." + name
+	}
+	return accessor + `?.["` + escapeJSString(name) + `"]`
 }
 
 // buildSchemaJSDoc generates a JSDoc comment for a schema type or interface.
