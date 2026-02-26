@@ -1441,6 +1441,239 @@ func TestIntegration_VersionArray_Header(t *testing.T) {
 	}
 }
 
+// --- Bug 1: PaginatedResponse<T> Generic Collapse in OpenAPI ---
+
+// TestIntegration_GenericPaginatedResponse_DistinctSchemas verifies that
+// when two controllers return PaginatedResponse<T> with different T, the
+// OpenAPI document contains distinct response schemas with correct items types.
+func TestIntegration_GenericPaginatedResponse_DistinctSchemas(t *testing.T) {
+	registry := metadata.NewTypeRegistry()
+
+	// Register the two concrete inner types
+	registry.Register("CampaignResponse", &metadata.Metadata{
+		Kind: metadata.KindObject, Name: "CampaignResponse",
+		Properties: []metadata.Property{
+			{Name: "id", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+			{Name: "name", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+			{Name: "budget", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "number"}, Required: true},
+		},
+	})
+	registry.Register("AdSetResponse", &metadata.Metadata{
+		Kind: metadata.KindObject, Name: "AdSetResponse",
+		Properties: []metadata.Property{
+			{Name: "id", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+			{Name: "targeting", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+			{Name: "status", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+		},
+	})
+
+	// Register two distinct paginated schemas (what the fix should produce)
+	registry.Register("PaginatedResponse_CampaignResponse", &metadata.Metadata{
+		Kind: metadata.KindObject, Name: "PaginatedResponse_CampaignResponse",
+		Properties: []metadata.Property{
+			{Name: "items", Type: metadata.Metadata{Kind: metadata.KindArray, ElementType: &metadata.Metadata{Kind: metadata.KindRef, Ref: "CampaignResponse"}}, Required: true},
+			{Name: "totalCount", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "number"}, Required: true},
+			{Name: "currentPage", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "number"}, Required: true},
+		},
+	})
+	registry.Register("PaginatedResponse_AdSetResponse", &metadata.Metadata{
+		Kind: metadata.KindObject, Name: "PaginatedResponse_AdSetResponse",
+		Properties: []metadata.Property{
+			{Name: "items", Type: metadata.Metadata{Kind: metadata.KindArray, ElementType: &metadata.Metadata{Kind: metadata.KindRef, Ref: "AdSetResponse"}}, Required: true},
+			{Name: "totalCount", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "number"}, Required: true},
+			{Name: "currentPage", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "number"}, Required: true},
+		},
+	})
+
+	gen := NewGenerator(registry)
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name: "FacebookAdsController",
+			Path: "facebook-ads",
+			Routes: []analyzer.Route{
+				{
+					Method:      "GET",
+					Path:        "/facebook-ads/campaigns",
+					OperationID: "listCampaigns",
+					ReturnType:  metadata.Metadata{Kind: metadata.KindRef, Ref: "PaginatedResponse_CampaignResponse"},
+					StatusCode:  200,
+					Tags:        []string{"FacebookAds"},
+				},
+				{
+					Method:      "GET",
+					Path:        "/facebook-ads/ad-sets",
+					OperationID: "listAdSets",
+					ReturnType:  metadata.Metadata{Kind: metadata.KindRef, Ref: "PaginatedResponse_AdSetResponse"},
+					StatusCode:  200,
+					Tags:        []string{"FacebookAds"},
+				},
+			},
+		},
+	}
+
+	doc := gen.Generate(controllers)
+	data := requireValidDoc(t, doc)
+	raw := parseJSON(t, data)
+
+	// Both paginated schemas should exist in components/schemas
+	components := raw["components"].(map[string]any)
+	schemas := components["schemas"].(map[string]any)
+
+	campaignSchema, hasCampaign := schemas["PaginatedResponse_CampaignResponse"]
+	adSetSchema, hasAdSet := schemas["PaginatedResponse_AdSetResponse"]
+
+	if !hasCampaign {
+		t.Error("expected PaginatedResponse_CampaignResponse schema")
+	}
+	if !hasAdSet {
+		t.Error("expected PaginatedResponse_AdSetResponse schema")
+	}
+
+	if hasCampaign && hasAdSet {
+		// Verify their items properties reference different types
+		campaignProps := campaignSchema.(map[string]any)["properties"].(map[string]any)
+		adSetProps := adSetSchema.(map[string]any)["properties"].(map[string]any)
+
+		campaignItems := campaignProps["items"].(map[string]any)
+		adSetItems := adSetProps["items"].(map[string]any)
+
+		campaignItemsRef := campaignItems["items"].(map[string]any)["$ref"].(string)
+		adSetItemsRef := adSetItems["items"].(map[string]any)["$ref"].(string)
+
+		if campaignItemsRef == adSetItemsRef {
+			t.Errorf("GENERIC COLLAPSE: both paginated schemas reference the same items type %q", campaignItemsRef)
+		}
+
+		if !strings.Contains(campaignItemsRef, "CampaignResponse") {
+			t.Errorf("campaign items should reference CampaignResponse, got %q", campaignItemsRef)
+		}
+		if !strings.Contains(adSetItemsRef, "AdSetResponse") {
+			t.Errorf("ad set items should reference AdSetResponse, got %q", adSetItemsRef)
+		}
+	}
+
+	// Verify routes reference different schemas
+	paths := raw["paths"].(map[string]any)
+	campaignsPath := paths["/facebook-ads/campaigns"].(map[string]any)
+	adSetsPath := paths["/facebook-ads/ad-sets"].(map[string]any)
+
+	campaignRef := extractResponseSchemaRef(t, campaignsPath["get"].(map[string]any))
+	adSetRef := extractResponseSchemaRef(t, adSetsPath["get"].(map[string]any))
+
+	if campaignRef == adSetRef {
+		t.Errorf("GENERIC COLLAPSE: both routes reference the same response schema %q", campaignRef)
+	}
+}
+
+// TestIntegration_NamedArrayType_NoDoubleNesting verifies that when a named type
+// resolves to an array of objects, the OpenAPI schema for that type is the inner
+// object, not an array wrapper.
+func TestIntegration_NamedArrayType_NoDoubleNesting(t *testing.T) {
+	registry := metadata.NewTypeRegistry()
+
+	// Register ShipmentItemSnapshot as an OBJECT (unwrapped from its array alias)
+	// This is what the type walker fix should produce
+	registry.Register("ShipmentItemSnapshot", &metadata.Metadata{
+		Kind: metadata.KindObject, Name: "ShipmentItemSnapshot",
+		Properties: []metadata.Property{
+			{Name: "variantId", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+			{Name: "productId", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+			{Name: "quantity", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "number"}, Required: true},
+			{Name: "price", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "number"}, Required: true},
+		},
+	})
+
+	registry.Register("ShipmentResponse", &metadata.Metadata{
+		Kind: metadata.KindObject, Name: "ShipmentResponse",
+		Properties: []metadata.Property{
+			{Name: "id", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+			{Name: "items", Type: metadata.Metadata{
+				Kind:        metadata.KindArray,
+				ElementType: &metadata.Metadata{Kind: metadata.KindRef, Ref: "ShipmentItemSnapshot"},
+			}, Required: true},
+		},
+	})
+
+	gen := NewGenerator(registry)
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name: "ShippingController",
+			Path: "shipping",
+			Routes: []analyzer.Route{
+				{
+					Method:      "GET",
+					Path:        "/shipping/shipments/{id}",
+					OperationID: "getShipment",
+					ReturnType:  metadata.Metadata{Kind: metadata.KindRef, Ref: "ShipmentResponse"},
+					StatusCode:  200,
+					Tags:        []string{"Shipping"},
+					Parameters:  []analyzer.RouteParameter{{Category: "path", Name: "id", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true}},
+				},
+			},
+		},
+	}
+
+	doc := gen.Generate(controllers)
+	data := requireValidDoc(t, doc)
+	raw := parseJSON(t, data)
+
+	components := raw["components"].(map[string]any)
+	schemas := components["schemas"].(map[string]any)
+
+	// ShipmentItemSnapshot should be an OBJECT schema, not an array
+	snapshotSchema, ok := schemas["ShipmentItemSnapshot"].(map[string]any)
+	if !ok {
+		t.Fatal("expected ShipmentItemSnapshot schema")
+	}
+	if snapshotSchema["type"] != "object" {
+		t.Errorf("DOUBLE-NESTING BUG: ShipmentItemSnapshot schema type should be 'object', got %v", snapshotSchema["type"])
+	}
+
+	// ShipmentResponse.items should be array of $ref ShipmentItemSnapshot
+	shipmentSchema := schemas["ShipmentResponse"].(map[string]any)
+	shipmentProps := shipmentSchema["properties"].(map[string]any)
+	itemsProp := shipmentProps["items"].(map[string]any)
+	if itemsProp["type"] != "array" {
+		t.Errorf("items should be type=array, got %v", itemsProp["type"])
+	}
+	itemsItems := itemsProp["items"].(map[string]any)
+	if ref, ok := itemsItems["$ref"].(string); !ok || !strings.Contains(ref, "ShipmentItemSnapshot") {
+		t.Errorf("items.items should $ref ShipmentItemSnapshot, got %v", itemsItems)
+	}
+}
+
+// extractResponseSchemaRef extracts the $ref from an operation's 200 response content.
+func extractResponseSchemaRef(t *testing.T, operation map[string]any) string {
+	t.Helper()
+	responses, ok := operation["responses"].(map[string]any)
+	if !ok {
+		t.Fatal("no responses in operation")
+		return ""
+	}
+	resp200, ok := responses["200"].(map[string]any)
+	if !ok {
+		t.Fatal("no 200 response")
+		return ""
+	}
+	content, ok := resp200["content"].(map[string]any)
+	if !ok {
+		t.Fatal("no content in 200 response")
+		return ""
+	}
+	jsonContent, ok := content["application/json"].(map[string]any)
+	if !ok {
+		t.Fatal("no application/json content")
+		return ""
+	}
+	schema, ok := jsonContent["schema"].(map[string]any)
+	if !ok {
+		t.Fatal("no schema in response")
+		return ""
+	}
+	ref, _ := schema["$ref"].(string)
+	return ref
+}
+
 // ---- Helper ----
 
 func getKeys(m map[string]any) []string {

@@ -588,6 +588,13 @@ func runBuild(args []string) int {
 		fmt.Fprintf(os.Stderr, "warning: %s\n", w.Message)
 	}
 
+	// Print type walker warnings (e.g., generic types with anonymous type arguments).
+	if sharedWalker != nil {
+		for _, msg := range sharedWalker.Warnings() {
+			fmt.Fprintf(os.Stderr, "warning: %s\n", msg)
+		}
+	}
+
 	// Generate OpenAPI document (using pre-analyzed controllers)
 	openapiStart := time.Now()
 	if cfg != nil && cfg.OpenAPI.Output != "" && len(controllers) > 0 {

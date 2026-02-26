@@ -39,15 +39,22 @@ type TypeWalker struct {
 	// exactOptionalPropertyTypes mirrors the tsconfig flag of the same name.
 	// When true, optional properties cannot have explicit undefined values.
 	exactOptionalPropertyTypes bool
+	// warnings collects actionable diagnostics emitted during type walking
+	// (e.g., generic types with anonymous type arguments that can't be named).
+	warnings []string
+	// warnedGenericNames tracks generic type base names that have already emitted
+	// a warning, to avoid flooding the output with duplicate messages.
+	warnedGenericNames map[string]bool
 }
 
 // NewTypeWalker creates a new TypeWalker.
 func NewTypeWalker(checker *shimchecker.Checker) *TypeWalker {
 	return &TypeWalker{
-		checker:      checker,
-		registry:     metadata.NewTypeRegistry(),
-		visiting:     make(map[shimchecker.TypeId]bool),
-		typeIdToName: make(map[shimchecker.TypeId]string),
+		checker:            checker,
+		registry:           metadata.NewTypeRegistry(),
+		visiting:           make(map[shimchecker.TypeId]bool),
+		typeIdToName:       make(map[shimchecker.TypeId]string),
+		warnedGenericNames: make(map[string]bool),
 	}
 }
 
@@ -60,6 +67,24 @@ func (w *TypeWalker) SetExactOptionalPropertyTypes(v bool) {
 // Registry returns the type registry with all discovered named types.
 func (w *TypeWalker) Registry() *metadata.TypeRegistry {
 	return w.registry
+}
+
+// Warnings returns actionable diagnostics collected during type walking.
+func (w *TypeWalker) Warnings() []string {
+	return w.warnings
+}
+
+// warnAnonymousTypeArgs emits a deduplicated warning about a generic type
+// whose type arguments cannot be named for OpenAPI schema registration.
+func (w *TypeWalker) warnAnonymousTypeArgs(baseName string) {
+	if w.warnedGenericNames[baseName] {
+		return
+	}
+	w.warnedGenericNames[baseName] = true
+	w.warnings = append(w.warnings, fmt.Sprintf(
+		"generic type %s has anonymous type arguments that cannot be named in OpenAPI — consider creating a named type alias (e.g., type My%s = %s<...>)",
+		baseName, baseName, baseName,
+	))
 }
 
 // TotalTypesWalked returns the total number of types walked so far.
@@ -92,8 +117,12 @@ func (w *TypeWalker) WalkNamedType(name string, t *shimchecker.Type) metadata.Me
 
 	// If the result is unnamed, promote it to a named ref so that companion
 	// files are generated for the alias name. This handles type aliases to
-	// objects, unions, intersections, arrays, etc.
-	if m.Name == "" && (m.Kind == metadata.KindObject || m.Kind == metadata.KindUnion || m.Kind == metadata.KindIntersection || m.Kind == metadata.KindArray) {
+	// objects, unions, intersections, etc.
+	// KindArray is intentionally excluded: named array type aliases (e.g.,
+	// type ShipmentItemSnapshot = {...}[]) should NOT become named $ref schemas
+	// in OpenAPI. Registering them causes double-nesting: when a property uses
+	// SomeArrayType[], the client generator sees an array-of-arrays.
+	if m.Name == "" && (m.Kind == metadata.KindObject || m.Kind == metadata.KindUnion || m.Kind == metadata.KindIntersection) {
 		// Don't register phantom objects (branded type building blocks like
 		// tags.Format<"email"> or tags.Email). They must remain inlinable
 		// so that tryDetectBranded can detect `string & { __tsgonest_format: "email" }`.
@@ -347,19 +376,31 @@ func (w *TypeWalker) walkUnion(t *shimchecker.Type) metadata.Metadata {
 	// If the union has a type alias name (depth > 1), register it as a named type
 	// so it becomes a $ref instead of being inlined. This catches named union aliases
 	// used as sub-fields (e.g., `status: OrderStatus` where OrderStatus = 'a' | 'b').
+	// For generic instantiations, build a composite name to avoid collisions.
 	if w.depth > 1 {
 		alias := shimchecker.Type_alias(t)
-		if alias != nil && len(alias.TypeArguments()) == 0 {
+		if alias != nil {
 			if aliasSym := alias.Symbol(); aliasSym != nil {
 				aliasName := aliasSym.Name
 				if aliasName != "" && aliasName != "__type" && aliasName != "__object" && (len(aliasName) == 0 || aliasName[0] != '\xfe') {
-					if w.registry.Has(aliasName) {
-						return metadata.Metadata{Kind: metadata.KindRef, Ref: aliasName, Nullable: nullable, Optional: optional}
+					registrationName := aliasName
+					aliasTypeArgs := alias.TypeArguments()
+					if len(aliasTypeArgs) > 0 {
+						if compositeName, ok := w.buildGenericInstantiationName(aliasName, aliasTypeArgs); ok {
+							registrationName = compositeName
+						} else {
+							// Anonymous type args — skip registration, inline, and warn
+							w.warnAnonymousTypeArgs(aliasName)
+							return result
+						}
 					}
-					result.Name = aliasName
-					w.registry.Register(aliasName, &result)
-					w.typeIdToName[t.Id()] = aliasName
-					return metadata.Metadata{Kind: metadata.KindRef, Ref: aliasName, Nullable: nullable, Optional: optional}
+					if w.registry.Has(registrationName) {
+						return metadata.Metadata{Kind: metadata.KindRef, Ref: registrationName, Nullable: nullable, Optional: optional}
+					}
+					result.Name = registrationName
+					w.registry.Register(registrationName, &result)
+					w.typeIdToName[t.Id()] = registrationName
+					return metadata.Metadata{Kind: metadata.KindRef, Ref: registrationName, Nullable: nullable, Optional: optional}
 				}
 			}
 		}
@@ -504,21 +545,32 @@ func (w *TypeWalker) walkIntersection(t *shimchecker.Type) metadata.Metadata {
 
 	// If the intersection has a type alias name (e.g., type ShippingAddress = Address & { ... }),
 	// register the flattened result so it becomes a $ref instead of being inlined.
-	// Only for sub-field types (depth > 1) and non-generic aliases.
+	// Only for sub-field types (depth > 1). For generic aliases, build composite names.
 	if w.depth > 1 && result.Kind == metadata.KindObject {
 		alias := shimchecker.Type_alias(t)
-		if alias != nil && len(alias.TypeArguments()) == 0 && !w.visiting[t.Id()] {
+		if alias != nil && !w.visiting[t.Id()] {
 			if aliasSym := alias.Symbol(); aliasSym != nil {
 				aliasName := aliasSym.Name
 				if aliasName != "" && aliasName != "__type" && aliasName != "__object" && (len(aliasName) == 0 || aliasName[0] != '\xfe') {
-					if w.registry.Has(aliasName) {
-						return metadata.Metadata{Kind: metadata.KindRef, Ref: aliasName}
+					registrationName := aliasName
+					aliasTypeArgs := alias.TypeArguments()
+					if len(aliasTypeArgs) > 0 {
+						if compositeName, ok := w.buildGenericInstantiationName(aliasName, aliasTypeArgs); ok {
+							registrationName = compositeName
+						} else {
+							// Anonymous type args — skip registration, inline, and warn
+							w.warnAnonymousTypeArgs(aliasName)
+							return result
+						}
+					}
+					if w.registry.Has(registrationName) {
+						return metadata.Metadata{Kind: metadata.KindRef, Ref: registrationName}
 					}
 					if !isPhantomObject(&result) {
-						result.Name = aliasName
-						w.registry.Register(aliasName, &result)
-						w.typeIdToName[t.Id()] = aliasName
-						return metadata.Metadata{Kind: metadata.KindRef, Ref: aliasName}
+						result.Name = registrationName
+						w.registry.Register(registrationName, &result)
+						w.typeIdToName[t.Id()] = registrationName
+						return metadata.Metadata{Kind: metadata.KindRef, Ref: registrationName}
 					}
 				}
 			}
@@ -660,6 +712,25 @@ func (w *TypeWalker) walkObjectType(t *shimchecker.Type) metadata.Metadata {
 	// Named object type — check for recursion
 	typeName := w.getTypeName(t)
 	if typeName != "" {
+		// Check if this is a generic type instantiation (e.g., PaginatedResponse<UserDto>).
+		// Different instantiations share the same symbol name but have different type arguments.
+		// Generate a unique composite name per instantiation to prevent the first one from
+		// "winning" and all others incorrectly referencing it.
+		// Only check type arguments on Reference types (generic instantiations have ObjectFlagsReference).
+		objFlags := shimchecker.Type_objectFlags(t)
+		if objFlags&shimchecker.ObjectFlagsReference != 0 {
+			typeArgs := shimchecker.Checker_getTypeArguments(w.checker, t)
+			if len(typeArgs) > 0 {
+				if compositeName, ok := w.buildGenericInstantiationName(typeName, typeArgs); ok {
+					typeName = compositeName
+				} else {
+					// Type arguments are anonymous/unnameable — inline the type and warn
+					w.warnAnonymousTypeArgs(typeName)
+					return w.analyzeObjectProperties(t, "")
+				}
+			}
+		}
+
 		if w.visiting[t.Id()] {
 			// Recursive type — return a $ref
 			return metadata.Metadata{Kind: metadata.KindRef, Ref: typeName}
@@ -697,35 +768,42 @@ func (w *TypeWalker) walkObjectType(t *shimchecker.Type) metadata.Metadata {
 	if w.depth > 1 {
 		alias := shimchecker.Type_alias(t)
 		if alias != nil && !w.visiting[t.Id()] {
-			// Skip generic instantiations (e.g., Omit<Product, 'x'>, Pick<T, K>).
-			// Different instantiations share the same alias symbol name but resolve
-			// to completely different types. Registering by bare name causes the
-			// first instantiation to "win" and all others to incorrectly reference it.
-			if len(alias.TypeArguments()) > 0 {
-				goto skipAlias
-			}
 			if aliasSym := alias.Symbol(); aliasSym != nil {
 				aliasName := aliasSym.Name
 				if aliasName != "" && aliasName != "__type" && aliasName != "__object" && (len(aliasName) == 0 || aliasName[0] != '\xfe') {
-					if w.registry.Has(aliasName) {
-						return metadata.Metadata{Kind: metadata.KindRef, Ref: aliasName}
+					// For generic instantiations (e.g., PaginatedResponse<User>, Omit<Product, 'x'>),
+					// build a composite name so each instantiation gets its own schema.
+					// For non-generic aliases, use the bare alias name.
+					registrationName := aliasName
+					aliasTypeArgs := alias.TypeArguments()
+					if len(aliasTypeArgs) > 0 {
+						if compositeName, ok := w.buildGenericInstantiationName(aliasName, aliasTypeArgs); ok {
+							registrationName = compositeName
+						} else {
+							// Anonymous type args — skip registration, inline, and warn
+							w.warnAnonymousTypeArgs(aliasName)
+							return w.analyzeObjectProperties(t, "")
+						}
+					}
+
+					if w.registry.Has(registrationName) {
+						return metadata.Metadata{Kind: metadata.KindRef, Ref: registrationName}
 					}
 					// Analyze properties first to check if it's a phantom object
 					w.visiting[t.Id()] = true
-					result := w.analyzeObjectProperties(t, aliasName)
+					result := w.analyzeObjectProperties(t, registrationName)
 					delete(w.visiting, t.Id())
 					if isPhantomObject(&result) {
 						// Don't register phantom objects — they're branded type building blocks
 						return result
 					}
-					w.registry.Register(aliasName, &result)
-					w.typeIdToName[t.Id()] = aliasName
-					return metadata.Metadata{Kind: metadata.KindRef, Ref: aliasName}
+					w.registry.Register(registrationName, &result)
+					w.typeIdToName[t.Id()] = registrationName
+					return metadata.Metadata{Kind: metadata.KindRef, Ref: registrationName}
 				}
 			}
 		}
 	}
-skipAlias:
 
 	// Anonymous object type — inline the properties
 	return w.analyzeObjectProperties(t, "")
@@ -981,4 +1059,177 @@ func (w *TypeWalker) extractTemplateLiteralPattern(t *shimchecker.Type) string {
 
 	pattern.WriteString("$")
 	return pattern.String()
+}
+
+// buildGenericInstantiationName creates a unique schema name for a generic type
+// instantiation by appending type argument names to the base name.
+// e.g., PaginatedResponse<UserDto> → ("PaginatedResponse_UserDto", true)
+// Returns ("", false) when any type argument is anonymous/unnameable — callers
+// should inline the type rather than register it under an opaque generated name.
+func (w *TypeWalker) buildGenericInstantiationName(baseName string, typeArgs []*shimchecker.Type) (string, bool) {
+	var sb strings.Builder
+	sb.WriteString(baseName)
+	for _, arg := range typeArgs {
+		argName, ok := w.deriveTypeArgName(arg)
+		if !ok {
+			return "", false
+		}
+		sb.WriteString("_")
+		sb.WriteString(argName)
+	}
+	return sb.String(), true
+}
+
+// deriveTypeArgName returns a human-readable name for a type, for use in
+// composite generic instantiation names. Returns ("", false) when the type
+// is anonymous and no name can be derived — the caller should inline instead.
+func (w *TypeWalker) deriveTypeArgName(t *shimchecker.Type) (string, bool) {
+	if t == nil {
+		return "", false
+	}
+	flags := t.Flags()
+
+	// Primitives
+	if flags&shimchecker.TypeFlagsString != 0 {
+		return "String", true
+	}
+	if flags&shimchecker.TypeFlagsNumber != 0 {
+		return "Number", true
+	}
+	if flags&shimchecker.TypeFlagsBoolean != 0 {
+		return "Boolean", true
+	}
+	if flags&shimchecker.TypeFlagsVoid != 0 {
+		return "Void", true
+	}
+	if flags&shimchecker.TypeFlagsNull != 0 {
+		return "Null", true
+	}
+	if flags&shimchecker.TypeFlagsUndefined != 0 {
+		return "Undefined", true
+	}
+	if flags&shimchecker.TypeFlagsAny != 0 {
+		return "Any", true
+	}
+	if flags&shimchecker.TypeFlagsNever != 0 {
+		return "Never", true
+	}
+
+	// String literal
+	if flags&shimchecker.TypeFlagsStringLiteral != 0 {
+		lit := t.AsLiteralType()
+		if lit != nil {
+			if s, ok := lit.Value().(string); ok && s != "" {
+				return strings.ToUpper(s[:1]) + s[1:], true
+			}
+		}
+		return "", false
+	}
+
+	// Number literal
+	if flags&shimchecker.TypeFlagsNumberLiteral != 0 {
+		return fmt.Sprintf("N%v", t.AsLiteralType().Value()), true
+	}
+
+	// Object types (interfaces, classes, arrays)
+	if flags&shimchecker.TypeFlagsObject != 0 {
+		// Check the typeIdToName cache first — the pre-registration pass maps
+		// type alias TypeIds to their declared names. This is the most reliable
+		// way to recover names for type alias targets (anonymous objects) that
+		// appear as type arguments in generic instantiations.
+		if cachedName, ok := w.typeIdToName[t.Id()]; ok {
+			return cachedName, true
+		}
+
+		// Arrays: derive from element type
+		if shimchecker.Checker_isArrayType(w.checker, t) {
+			elemArgs := shimchecker.Checker_getTypeArguments(w.checker, t)
+			if len(elemArgs) > 0 {
+				if elemName, ok := w.deriveTypeArgName(elemArgs[0]); ok {
+					return elemName + "Array", true
+				}
+			}
+			return "", false
+		}
+
+		// Named type — use symbol name
+		sym := t.Symbol()
+		if sym != nil && sym.Name != "" && sym.Name != "__type" && sym.Name != "__object" {
+			name := sym.Name
+			if len(name) > 0 && name[0] == '\xfe' {
+				return "", false
+			}
+			// For nested generic instantiations, recurse (only Reference types have type args)
+			objFlags := shimchecker.Type_objectFlags(t)
+			if objFlags&shimchecker.ObjectFlagsReference != 0 {
+				innerArgs := shimchecker.Checker_getTypeArguments(w.checker, t)
+				if len(innerArgs) > 0 {
+					return w.buildGenericInstantiationName(name, innerArgs)
+				}
+			}
+			return name, true
+		}
+
+		// Anonymous object — check for type alias name
+		alias := shimchecker.Type_alias(t)
+		if alias != nil {
+			if aliasSym := alias.Symbol(); aliasSym != nil && aliasSym.Name != "" {
+				name := aliasSym.Name
+				if name != "__type" && name != "__object" && (len(name) == 0 || name[0] != '\xfe') {
+					aliasArgs := alias.TypeArguments()
+					if len(aliasArgs) > 0 {
+						return w.buildGenericInstantiationName(name, aliasArgs)
+					}
+					return name, true
+				}
+			}
+		}
+
+		return "", false
+	}
+
+	// Union types
+	if flags&shimchecker.TypeFlagsUnion != 0 {
+		// Named union alias (e.g., type Status = 'active' | 'inactive')
+		alias := shimchecker.Type_alias(t)
+		if alias != nil {
+			if aliasSym := alias.Symbol(); aliasSym != nil && aliasSym.Name != "" {
+				return aliasSym.Name, true
+			}
+		}
+		// Try to build a name from literal union members (common in Pick<T, 'a' | 'b'>).
+		// Only attempt for small unions to avoid absurdly long names.
+		unionType := t.AsUnionType()
+		if unionType != nil {
+			members := unionType.Types()
+			if len(members) > 0 && len(members) <= 4 {
+				var parts []string
+				allLiterals := true
+				for _, m := range members {
+					mf := m.Flags()
+					if mf&shimchecker.TypeFlagsStringLiteral != 0 {
+						lit := m.AsLiteralType()
+						if lit != nil {
+							if s, ok := lit.Value().(string); ok && s != "" {
+								parts = append(parts, strings.ToUpper(s[:1])+s[1:])
+								continue
+							}
+						}
+					}
+					if mf&shimchecker.TypeFlagsNumberLiteral != 0 {
+						parts = append(parts, fmt.Sprintf("N%v", m.AsLiteralType().Value()))
+						continue
+					}
+					allLiterals = false
+					break
+				}
+				if allLiterals && len(parts) > 0 {
+					return strings.Join(parts, ""), true
+				}
+			}
+		}
+		return "", false
+	}
+
+	return "", false
 }
