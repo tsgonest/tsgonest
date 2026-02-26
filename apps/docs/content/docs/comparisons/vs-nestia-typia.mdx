@@ -60,19 +60,18 @@ dist/
   user.dto.js                             # tsgo output
   user.dto.CreateUserDto.tsgonest.js      # validate + assert + serialize + schema
   user.dto.CreateUserDto.tsgonest.d.ts    # type declarations
-  __tsgonest_manifest.json                # manifest for runtime discovery
   openapi.json                            # OpenAPI 3.2 document
 ```
 
-The companion files are loaded on demand at runtime via the manifest — your application code doesn't need to import them directly.
+The companion files are imported automatically — tsgonest's controller rewriter injects the correct `import` and function calls into the compiled controller JS at build time. Your source code doesn't need to reference them directly.
 
 ### What this means in practice
 
 | Aspect | Typia (plugin) | tsgonest (codegen) |
 | --- | --- | --- |
-| Explicit calls needed | Yes — `typia.assert<T>()` at every use site | No — discovered via manifest |
+| Explicit calls needed | Yes — `typia.assert<T>()` at every use site | No — injected at compile time |
 | Bundle size impact | Inline code at every call site | Single companion per type |
-| NestJS integration | `@nestia/core` decorators replace NestJS ones | Drop-in pipe/interceptor, keep standard decorators |
+| NestJS integration | `@nestia/core` decorators replace NestJS ones | Zero-config, keep standard decorators |
 | Build tooling | Requires ts-patch, plugin config in tsconfig | Single `tsgonest build` command |
 | Build speed | tsc speed (with plugin overhead) | tsgo speed (~4x faster full pipeline, ~10x raw compilation) |
 | Incremental builds | Via tsc incremental | Built-in caching |
@@ -130,22 +129,30 @@ export class UserController {
 ```
 
 ```ts
-// tsgonest — automatic via pipe
-import { TsgonestValidationPipe } from '@tsgonest/runtime';
-
-// In main.ts — one line, applies to all routes:
-app.useGlobalPipes(new TsgonestValidationPipe({ distDir: 'dist' }));
-
-// Controller — no validation code needed:
+// tsgonest — automatic via compile-time injection
+// Source controller (what you write):
 @Controller('users')
 export class UserController {
   @Post()
   create(@Body() dto: CreateUserDto) {
-    // dto is already validated
     return this.userService.create(dto);
   }
 }
 ```
+
+```js
+// Compiled output (what tsgonest generates):
+import { assertCreateUserDto } from './user.dto.CreateUserDto.tsgonest.js';
+
+class UserController {
+  create(dto) {
+    dto = assertCreateUserDto(dto); // injected at compile time
+    return this.userService.create(dto);
+  }
+}
+```
+
+No pipes, no runtime setup. The controller rewriter injects `assert` calls directly into the compiled JS.
 
 ### Nestia vs standard NestJS decorators
 
@@ -245,17 +252,25 @@ findAll(): UserResponse[] {
 ### tsgonest
 
 ```ts
-// Automatic via interceptor — one line in main.ts
-app.useGlobalInterceptors(new TsgonestFastInterceptor({ distDir: 'dist' }));
-
-// Controller — no serialization code needed
+// Source controller (what you write):
 @Get()
 findAll(): UserResponse[] {
   return this.userService.findAll();
 }
 ```
 
-Both approaches generate fast string-concatenation-based serializers. The difference is that tsgonest wires serialization automatically via the manifest route map, while typia/nestia requires explicit calls or Nestia-specific decorators.
+```js
+// Compiled output (what tsgonest generates):
+import { serializeUserResponseArray } from './user.dto.UserResponse.tsgonest.js';
+
+class UserController {
+  async findAll() {
+    return serializeUserResponseArray(await this.userService.findAll()); // injected at compile time
+  }
+}
+```
+
+Both approaches generate fast string-concatenation-based serializers. The difference is that tsgonest injects serialization calls directly into the compiled controller JS at build time, while typia/nestia requires explicit calls or Nestia-specific decorators.
 
 ---
 
@@ -310,8 +325,8 @@ That's it. No patches. No plugins. No tsconfig modifications. tsgonest uses its 
 
 | Feature | Typia | Nestia | tsgonest |
 | --- | --- | --- | --- |
-| Validation | `typia.assert<T>()` | Via `@TypedBody()` | Generated companions |
-| Serialization | `typia.json.stringify<T>()` | Via `@TypedRoute` | Generated companions |
+| Validation | `typia.assert<T>()` | Via `@TypedBody()` | Compile-time injection |
+| Serialization | `typia.json.stringify<T>()` | Via `@TypedRoute` | Compile-time injection |
 | OpenAPI | N/A | `@nestia/sdk` (runtime) | Static analysis (build time) |
 | Interfaces support | Yes | Yes | Yes |
 | Type aliases support | Yes | Yes | Yes |
@@ -424,7 +439,7 @@ Your existing typia branded types are auto-detected. But for better DX, you can 
 -   create(@Body() input: CreateUserDto) {
 -     const dto = typia.assert<CreateUserDto>(input);
 +   create(@Body() dto: CreateUserDto) {
-+     // Validated automatically by TsgonestValidationPipe
++     // Validated automatically at compile time
       return this.userService.create(dto);
     }
   }

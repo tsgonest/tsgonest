@@ -1,0 +1,151 @@
+---
+title: Rules & Limitations
+description: What tsgonest can and cannot analyze at compile time, and how to work around the boundaries.
+---
+
+tsgonest is a compile-time tool. It uses static analysis of your TypeScript source code to generate validators, serializers, and OpenAPI schemas. It does not run your application, cannot evaluate runtime expressions, cannot look inside factory functions, and cannot resolve dynamic values. This page documents the boundaries and the escape hatches available to you.
+
+## Static Analysis Only
+
+tsgonest reads your source code at build time. It does **not** start your NestJS application, instantiate any classes, or execute any of your code.
+
+This means it cannot:
+
+- Resolve runtime-computed values — variables, function return values, environment variables
+- See through factory functions that return NestJS decorators
+- Analyze dynamically constructed controller classes
+- Evaluate conditional logic that determines types or routes at runtime
+
+If tsgonest can't see it in the source text, it doesn't exist.
+
+## Factory Decorators Are Opaque
+
+tsgonest introspects a fixed set of core NestJS decorators:
+
+- **Parameter decorators**: `@Body`, `@Query`, `@Param`, `@Headers`
+- **Route decorators**: `@Get`, `@Post`, `@Put`, `@Delete`, `@Patch`, `@Sse`
+- **Class/method decorators**: `@Controller`, `@HttpCode`, `@Version`
+
+If you wrap **any** of these in a factory function, tsgonest cannot detect them:
+
+```ts
+// This breaks — tsgonest sees `@ValidatedBody()`, not `@Body()`
+function ValidatedBody() {
+  return Body();
+}
+
+@Post()
+create(@ValidatedBody() dto: CreateUserDto) { ... }
+```
+
+tsgonest resolves decorator identity through the type checker's symbol resolution. It asks "what symbol does this decorator reference?" and checks if that symbol is one of the known NestJS decorators. A factory function returns a **new** function — the link to `Body` is severed.
+
+**Import aliases ARE supported.** This works because tsgonest resolves the original symbol:
+
+```ts
+import { Body as NestBody } from '@nestjs/common';
+
+@Post()
+create(@NestBody() dto: CreateUserDto) { ... } // works
+```
+
+**Custom parameter decorators** are also supported if you annotate them with `@in` JSDoc to tell tsgonest where the parameter comes from. See the [parameters documentation](/docs/parameters) for details.
+
+## Dynamic Paths Are Not Supported
+
+Controller paths and route paths must be **string literals** or **arrays of string literals**.
+
+```ts
+// works
+@Controller('users')
+
+// works
+@Controller(['v1/users', 'v2/users'])
+
+// skipped with a warning — tsgonest cannot evaluate variables
+const prefix = 'users';
+@Controller(prefix)
+
+// skipped with a warning
+@Get(computedPath)
+```
+
+When tsgonest encounters a dynamic path, it emits a warning and skips that controller or route entirely. No OpenAPI entry is generated for it.
+
+## Controller Classes Must Be Top-Level
+
+Controllers must be declared at the top level of a module. Classes declared inside factory functions, conditionally defined, or dynamically generated are skipped:
+
+```ts
+// works
+@Controller('users')
+export class UsersController { ... }
+
+// skipped — not a top-level declaration
+function createController(prefix: string) {
+  @Controller(prefix)
+  class DynamicController { ... }
+  return DynamicController;
+}
+```
+
+This is intentional. An OpenAPI document is a **static contract** — it describes a fixed set of endpoints. If your controller's existence depends on runtime conditions, it cannot be represented in a static schema.
+
+## Generic Types in OpenAPI
+
+OpenAPI 3.2 has no concept of generics. tsgonest flattens every generic instantiation into a concrete schema.
+
+`PaginatedResponse<UserDto>` becomes a flat schema named **`PaginatedResponse_UserDto`** with all properties materialized — no `x-` extensions, no type parameter reconstruction. This is deliberate: flat schemas work with every OpenAPI tool (Swagger UI, Redocly, third-party SDK generators).
+
+**Unnamed type arguments are inlined.** If a generic type argument can't be named — for example `Wrapper<{ x: number }>` — the schema is inlined directly and a warning is emitted telling you to create a named type alias. tsgonest will **never** generate opaque names like `T12345`. If it can't name a type cleanly, it inlines it.
+
+**Pre-registered type aliases win.** If you write:
+
+```ts
+type ProductResponse = PaginatedResponse<Product>;
+```
+
+tsgonest uses `ProductResponse` as the schema name, not `PaginatedResponse_Product`. Your chosen name takes priority.
+
+## @tsgonest-ignore
+
+You can suppress companion file generation for specific types with the `@tsgonest-ignore` JSDoc tag:
+
+```ts
+/** @tsgonest-ignore */
+interface InternalConfig {
+  dbHost: string;
+  dbPort: number;
+  // no .tsgonest.js companion generated for this type
+}
+```
+
+This is useful for types that are only used internally and don't need validation, serialization, or OpenAPI schema generation.
+
+## @Res() Routes Skip Serialization
+
+If a route handler uses `@Res()` or `@Response()`, tsgonest does **not** inject serialization. You are manually controlling the response — tsgonest respects that.
+
+```ts
+@Get(':id')
+@Returns<UserDto>() // used for OpenAPI only — no runtime serialization
+async findOne(@Param('id') id: string, @Res() res: Response) {
+  const user = await this.usersService.findOne(id);
+  res.json(user); // you handle serialization
+}
+```
+
+`@Returns<T>()` on `@Res()` routes is purely for OpenAPI documentation. It tells tsgonest what the response schema looks like, but generates no runtime code for that route's return value.
+
+## What IS Supported
+
+tsgonest handles the full breadth of TypeScript's type system at compile time:
+
+- **All TypeScript types**: interfaces, type aliases, classes, enums, unions, intersections, tuples, mapped types, template literal types, recursive types
+- **JSDoc tags AND branded phantom types** from `@tsgonest/types` — can be mixed freely on the same type
+- **Standard NestJS decorators** with full import alias support via symbol resolution
+- **Custom parameter decorators** annotated with `@in` JSDoc
+- **Generic type instantiation** with automatic composite naming (`PaginatedResponse_UserDto`) and type alias priority
+- **Incremental builds** and post-processing cache — unchanged files are not re-analyzed
+- **Array paths** on controllers and routes
+- **`@HttpCode`**, **`@Version`**, and **`@Sse`** decorator extraction for OpenAPI
