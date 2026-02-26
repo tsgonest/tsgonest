@@ -302,6 +302,21 @@ func (g *SchemaGenerator) convertUnion(m *metadata.Metadata) *Schema {
 		return &Schema{Enum: enumValues}
 	}
 
+	// Named complex union (e.g., type Result = SuccessDto | ErrorDto) → register as $ref
+	if m.Name != "" {
+		if _, exists := g.schemas[m.Name]; !exists {
+			g.schemas[m.Name] = &Schema{} // placeholder for recursion
+			schema := g.buildUnionSchema(m)
+			g.schemas[m.Name] = schema
+		}
+		return &Schema{Ref: "#/components/schemas/" + m.Name}
+	}
+
+	return g.buildUnionSchema(m)
+}
+
+// buildUnionSchema builds the actual schema for a union type (discriminated or general).
+func (g *SchemaGenerator) buildUnionSchema(m *metadata.Metadata) *Schema {
 	// Check for discriminated union
 	if m.Discriminant != nil && m.Discriminant.Property != "" {
 		var schemas []*Schema
@@ -346,11 +361,26 @@ func (g *SchemaGenerator) convertUnion(m *metadata.Metadata) *Schema {
 }
 
 // convertIntersection converts an intersection type using allOf.
+// Named intersections are registered as components/schemas and referenced via $ref.
 func (g *SchemaGenerator) convertIntersection(m *metadata.Metadata) *Schema {
 	if len(m.IntersectionMembers) == 0 {
 		return &Schema{}
 	}
 
+	// Named intersection → register and return $ref
+	if m.Name != "" {
+		if _, exists := g.schemas[m.Name]; !exists {
+			g.schemas[m.Name] = &Schema{} // placeholder for recursion
+			var schemas []*Schema
+			for _, member := range m.IntersectionMembers {
+				schemas = append(schemas, g.MetadataToSchema(&member))
+			}
+			g.schemas[m.Name] = &Schema{AllOf: schemas}
+		}
+		return &Schema{Ref: "#/components/schemas/" + m.Name}
+	}
+
+	// Anonymous intersection
 	var schemas []*Schema
 	for _, member := range m.IntersectionMembers {
 		schemas = append(schemas, g.MetadataToSchema(&member))
@@ -429,12 +459,46 @@ func (g *SchemaGenerator) convertRef(m *metadata.Metadata) *Schema {
 		if _, exists := g.schemas[refName]; !exists {
 			// Register placeholder for recursion protection
 			g.schemas[refName] = &Schema{}
-			schema := g.buildObjectSchema(regType)
+			// Build the schema based on the registered type's Kind.
+			// We call buildRefSchema instead of convertType to avoid
+			// re-entering convertObject/convertUnion/convertIntersection
+			// which would see the placeholder and short-circuit.
+			schema := g.buildRefSchema(regType)
 			g.schemas[refName] = schema
 		}
 	}
 
 	return &Schema{Ref: "#/components/schemas/" + refName}
+}
+
+// buildRefSchema builds a schema for a registry type, dispatching by Kind.
+// Unlike convertType, this does not re-enter the named-type registration logic.
+func (g *SchemaGenerator) buildRefSchema(m *metadata.Metadata) *Schema {
+	switch m.Kind {
+	case metadata.KindObject:
+		return g.buildObjectSchema(m)
+	case metadata.KindUnion:
+		return g.buildUnionSchema(m)
+	case metadata.KindIntersection:
+		if len(m.IntersectionMembers) == 0 {
+			return &Schema{}
+		}
+		var schemas []*Schema
+		for _, member := range m.IntersectionMembers {
+			schemas = append(schemas, g.MetadataToSchema(&member))
+		}
+		return &Schema{AllOf: schemas}
+	case metadata.KindArray:
+		return g.convertArray(m)
+	case metadata.KindEnum:
+		var values []any
+		for _, ev := range m.EnumValues {
+			values = append(values, ev.Value)
+		}
+		return &Schema{Enum: values}
+	default:
+		return g.convertType(m)
+	}
 }
 
 // applyConstraints applies JSDoc constraints to a property schema.

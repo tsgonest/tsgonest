@@ -5,6 +5,49 @@ import (
 	"strings"
 )
 
+// tsBuiltinTypes is the set of TypeScript built-in type names that must not
+// be shadowed by generated schema types. If a schema has one of these names,
+// it is suffixed with "_" to avoid collisions (e.g., Record → Record_).
+var tsBuiltinTypes = map[string]bool{
+	"Array":          true,
+	"ArrayBuffer":    true,
+	"BigInt":         true,
+	"Boolean":        true,
+	"Date":           true,
+	"Error":          true,
+	"Exclude":        true,
+	"Extract":        true,
+	"Function":       true,
+	"Map":            true,
+	"NonNullable":    true,
+	"Number":         true,
+	"Object":         true,
+	"Omit":           true,
+	"Partial":        true,
+	"Pick":           true,
+	"Promise":        true,
+	"Readonly":       true,
+	"ReadonlyArray":  true,
+	"Record":         true,
+	"Required":       true,
+	"ReturnType":     true,
+	"Set":            true,
+	"String":         true,
+	"Symbol":         true,
+	"Uint8Array":     true,
+	"WeakMap":        true,
+	"WeakSet":        true,
+}
+
+// safeTSName returns a type name that doesn't shadow TypeScript built-ins.
+// If name collides with a built-in, it is suffixed with "_".
+func safeTSName(name string) string {
+	if tsBuiltinTypes[name] {
+		return name + "_"
+	}
+	return name
+}
+
 // generateSharedTypes generates the types.ts file with all component schemas.
 func generateSharedTypes(schemas map[string]*SchemaNode) string {
 	if len(schemas) == 0 {
@@ -30,4 +73,128 @@ func generateSharedTypes(schemas map[string]*SchemaNode) string {
 	}
 
 	return sb.String()
+}
+
+// renameBuiltinCollisions renames schemas whose names collide with TypeScript
+// built-in types. Applied to the entire SDKDocument before code generation.
+func renameBuiltinCollisions(doc *SDKDocument) {
+	renames := make(map[string]string)
+	for name := range doc.Schemas {
+		safe := safeTSName(name)
+		if safe != name {
+			renames[name] = safe
+		}
+	}
+	if len(renames) == 0 {
+		return
+	}
+
+	// Rename schema map keys
+	for oldName, newName := range renames {
+		doc.Schemas[newName] = doc.Schemas[oldName]
+		delete(doc.Schemas, oldName)
+	}
+
+	// Update $ref references inside all schema nodes
+	for _, node := range doc.Schemas {
+		renameSchemaRefs(node, renames)
+	}
+
+	// Update type references in controller methods
+	for _, ver := range doc.Versions {
+		for _, ctrl := range ver.Controllers {
+			for i := range ctrl.Methods {
+				m := &ctrl.Methods[i]
+				m.ResponseType = renameTypeString(m.ResponseType, renames)
+				if m.Body != nil {
+					m.Body.TSType = renameTypeString(m.Body.TSType, renames)
+				}
+				for j := range m.PathParams {
+					m.PathParams[j].TSType = renameTypeString(m.PathParams[j].TSType, renames)
+				}
+				for j := range m.QueryParams {
+					m.QueryParams[j].TSType = renameTypeString(m.QueryParams[j].TSType, renames)
+				}
+				if m.SSEEventType != "" {
+					m.SSEEventType = renameTypeString(m.SSEEventType, renames)
+				}
+			}
+		}
+	}
+}
+
+// renameTypeString replaces schema name references in a TypeScript type string.
+// Only replaces exact matches (bare names from $ref resolution), not generic
+// usages like Record<string, X> (which reference the TypeScript built-in).
+func renameTypeString(ts string, renames map[string]string) string {
+	for oldName, newName := range renames {
+		// Replace bare name occurrences, not followed by '<' (generic usage)
+		ts = replaceBareName(ts, oldName, newName)
+	}
+	return ts
+}
+
+// replaceBareName replaces occurrences of oldName in ts that are NOT immediately
+// followed by '<' (which indicates built-in generic usage like Record<K,V>).
+func replaceBareName(ts, oldName, newName string) string {
+	result := ts
+	idx := 0
+	for {
+		pos := strings.Index(result[idx:], oldName)
+		if pos < 0 {
+			break
+		}
+		absPos := idx + pos
+		endPos := absPos + len(oldName)
+
+		// Check character before: must be a non-identifier char or start of string
+		if absPos > 0 {
+			prev := result[absPos-1]
+			if isIdentChar(prev) {
+				idx = endPos
+				continue
+			}
+		}
+
+		// Check character after: must NOT be '<' (generic) or identifier char
+		if endPos < len(result) {
+			next := result[endPos]
+			if next == '<' || isIdentChar(next) {
+				idx = endPos
+				continue
+			}
+		}
+
+		result = result[:absPos] + newName + result[endPos:]
+		idx = absPos + len(newName)
+	}
+	return result
+}
+
+func isIdentChar(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b == '_' || b == '$'
+}
+
+// renameSchemaRefs recursively updates $ref names in a schema node tree.
+func renameSchemaRefs(node *SchemaNode, renames map[string]string) {
+	if node == nil {
+		return
+	}
+	if newName, ok := renames[node.Ref]; ok {
+		node.Ref = newName
+	}
+	for _, child := range node.Properties {
+		renameSchemaRefs(child, renames)
+	}
+	renameSchemaRefs(node.Items, renames)
+	renameSchemaRefs(node.AdditionalProperties, renames)
+	for _, child := range node.AllOf {
+		renameSchemaRefs(child, renames)
+	}
+	for _, child := range node.AnyOf {
+		renameSchemaRefs(child, renames)
+	}
+	for _, child := range node.OneOf {
+		renameSchemaRefs(child, renames)
+	}
 }

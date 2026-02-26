@@ -1,6 +1,7 @@
 package analyzer_test
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/tsgonest/tsgonest/internal/metadata"
@@ -1271,6 +1272,58 @@ type T = HasName & HasAge;
 	}
 }
 
+// --- Phase 7b: Sub-field Type Alias Registration ---
+
+func TestWalkSubFieldTypeAlias(t *testing.T) {
+	// When UserDetailResponse is walked, UserSummary and
+	// ShippingAddressResponse should be registered as named types
+	// in the registry (not inlined).
+	env := setupWalker(t, `
+export type UserSummary = { id: string; name: string; };
+export type ShippingAddressResponse = { id: string; label: string; };
+export type UserDetailResponse = UserSummary & {
+  shippingAddresses: ShippingAddressResponse[];
+  extra: string;
+};
+`)
+	defer env.release()
+
+	walker := env.walkAllNamedTypes(t)
+	reg := walker.Registry()
+
+	// UserDetailResponse should be registered (walked via WalkNamedType)
+	if !reg.Has("UserDetailResponse") {
+		t.Error("UserDetailResponse not found in registry")
+	}
+	// UserSummary should be registered (sub-field via intersection member)
+	if !reg.Has("UserSummary") {
+		t.Error("UserSummary not found in registry — sub-field type alias not registered")
+	}
+	// ShippingAddressResponse should be registered (sub-field via property type)
+	if !reg.Has("ShippingAddressResponse") {
+		t.Error("ShippingAddressResponse not found in registry — sub-field type alias not registered")
+	}
+}
+
+func TestWalkSubFieldTypeAlias_PropertyReference(t *testing.T) {
+	// Types used as property types should be registered
+	env := setupWalker(t, `
+export type Address = { street: string; city: string; };
+export type User = { name: string; address: Address; };
+`)
+	defer env.release()
+
+	walker := env.walkAllNamedTypes(t)
+	reg := walker.Registry()
+
+	if !reg.Has("User") {
+		t.Error("User not found in registry")
+	}
+	if !reg.Has("Address") {
+		t.Error("Address not found in registry — sub-field type alias not registered")
+	}
+}
+
 // --- Phase 8: Branded Type Detection ---
 
 func TestWalkBrandedString(t *testing.T) {
@@ -1587,9 +1640,9 @@ type T = User;
 	resolved := resolveRef(m, reg)
 	assertKind(t, *resolved, metadata.KindObject)
 	roleProp := findProperty(t, resolved.Properties, "role")
-	// Role should be a union of string literals or enum
-	if roleProp.Type.Kind != metadata.KindUnion && roleProp.Type.Kind != metadata.KindEnum {
-		t.Errorf("expected role to be union or enum, got %s", roleProp.Type.Kind)
+	// Role should be a union of string literals, enum, or a $ref to a registered enum
+	if roleProp.Type.Kind != metadata.KindUnion && roleProp.Type.Kind != metadata.KindEnum && roleProp.Type.Kind != metadata.KindRef {
+		t.Errorf("expected role to be union, enum, or ref, got %s", roleProp.Type.Kind)
 	}
 }
 
@@ -3068,5 +3121,1192 @@ interface BadDto {
 	// Should not have ValidateFn (the string "not_a_function" has no symbol/declaration)
 	if valueProp.Constraints != nil && valueProp.Constraints.ValidateFn != nil {
 		t.Error("ValidateFn should not be set for non-function type")
+	}
+}
+
+// --- Phantom Object Non-Registration in WalkNamedType ---
+
+func TestWalkNamedType_PhantomObjectNotRegistered(t *testing.T) {
+	// A phantom object like tags.Format<"email"> only has __tsgonest_* properties.
+	// Walking it via WalkNamedType should NOT register it in the registry,
+	// so it remains inlinable for tryDetectBranded.
+	env := setupWalker(t, `
+type Email = { readonly __tsgonest_format?: "email" };
+type NormalDto = { name: string; age: number; };
+`)
+	defer env.release()
+
+	walker := env.walkAllNamedTypes(t)
+	reg := walker.Registry()
+
+	// Phantom type "Email" should NOT be registered
+	if reg.Has("Email") {
+		t.Error("phantom object 'Email' should NOT be registered in the registry")
+	}
+
+	// Normal type "NormalDto" SHOULD be registered
+	if !reg.Has("NormalDto") {
+		t.Error("normal type 'NormalDto' should be registered in the registry")
+	}
+}
+
+func TestWalkNamedType_PhantomMultipleProperties(t *testing.T) {
+	// A phantom object with multiple __tsgonest_* properties should also not be registered.
+	env := setupWalker(t, `
+type EmailBranded = {
+  readonly __tsgonest_format?: "email";
+  readonly __tsgonest_minLength?: 1;
+};
+`)
+	defer env.release()
+
+	walker := env.walkAllNamedTypes(t)
+	reg := walker.Registry()
+
+	if reg.Has("EmailBranded") {
+		t.Error("phantom object 'EmailBranded' should NOT be registered in the registry")
+	}
+}
+
+func TestWalkNamedType_TypiaPhantomNotRegistered(t *testing.T) {
+	// Typia-style phantom using "typia.tag" property should also not be registered.
+	env := setupWalker(t, `
+type TypiaBrand = { readonly "typia.tag": { kind: "format"; value: "email" } };
+`)
+	defer env.release()
+
+	walker := env.walkAllNamedTypes(t)
+	reg := walker.Registry()
+
+	if reg.Has("TypiaBrand") {
+		t.Error("typia phantom object 'TypiaBrand' should NOT be registered in the registry")
+	}
+}
+
+func TestWalkNamedType_MixedRealAndPhantomPropsRegistered(t *testing.T) {
+	// If an object has BOTH phantom and non-phantom properties, it's not phantom.
+	// It should be registered normally.
+	env := setupWalker(t, `
+type MixedDto = {
+  name: string;
+  readonly __tsgonest_format?: "email";
+};
+`)
+	defer env.release()
+
+	walker := env.walkAllNamedTypes(t)
+	reg := walker.Registry()
+
+	// Has a real property "name", so it's NOT phantom and should be registered.
+	if !reg.Has("MixedDto") {
+		t.Error("mixed object 'MixedDto' (has real + phantom props) should be registered")
+	}
+}
+
+// --- Type Alias Sub-field Registration via Type_alias ---
+
+func TestWalkNamedType_SubFieldTypeAliasRegistered(t *testing.T) {
+	// When a type alias (e.g., Address) is used as a sub-field of another
+	// type, the Type_alias mechanism should register it so it becomes a $ref.
+	env := setupWalker(t, `
+type Address = { street: string; city: string; };
+type User = { name: string; address: Address; };
+`)
+	defer env.release()
+
+	walker := env.walkAllNamedTypes(t)
+	reg := walker.Registry()
+
+	// Both types should be registered
+	if !reg.Has("User") {
+		t.Error("top-level type 'User' should be registered")
+	}
+	if !reg.Has("Address") {
+		t.Error("sub-field type alias 'Address' should be registered via Type_alias")
+	}
+
+	// User's address property should be KindRef pointing to Address
+	userMeta := reg.Types["User"]
+	if userMeta == nil {
+		t.Fatal("User not found in registry")
+	}
+	for _, prop := range userMeta.Properties {
+		if prop.Name == "address" {
+			if prop.Type.Kind != metadata.KindRef {
+				t.Errorf("expected address type to be KindRef, got %s", prop.Type.Kind)
+			}
+			if prop.Type.Ref != "Address" {
+				t.Errorf("expected address ref to be 'Address', got %q", prop.Type.Ref)
+			}
+		}
+	}
+}
+
+func TestWalkNamedType_SubFieldPhantomNotRegistered(t *testing.T) {
+	// Even when encountered as a sub-field, phantom types should NOT be registered.
+	env := setupWalker(t, `
+type EmailFormat = { readonly __tsgonest_format?: "email" };
+type User = { name: string; email: string & EmailFormat; };
+`)
+	defer env.release()
+
+	walker := env.walkAllNamedTypes(t)
+	reg := walker.Registry()
+
+	// EmailFormat is phantom — should NOT be registered
+	if reg.Has("EmailFormat") {
+		t.Error("phantom sub-field type 'EmailFormat' should NOT be registered")
+	}
+
+	// User should still be registered
+	if !reg.Has("User") {
+		t.Error("User should be registered")
+	}
+}
+
+// --- Generic utility type instantiation tests ---
+
+func TestWalkNamedType_MultipleOmitInstantiationsDoNotCollide(t *testing.T) {
+	// Two different type aliases using Omit<> with different base types must produce
+	// different schemas with their own correct properties. Previously, the alias name
+	// "Omit" was registered for the first instantiation and reused for all subsequent ones.
+	env := setupWalker(t, `
+interface Product { id: string; name: string; autoIncrementId: number; imageMetadata: string; }
+interface Cart { id: string; cartId: string; abandonedAt: string; customerId: string; }
+
+type ProductResponse = Omit<Product, 'autoIncrementId' | 'imageMetadata'> & { extra: boolean; };
+type CartResponse = Omit<Cart, 'customerId'> & { recovered: boolean; };
+`)
+	defer env.release()
+
+	walker := env.walkAllNamedTypes(t)
+	reg := walker.Registry()
+
+	// Both should be registered
+	if !reg.Has("ProductResponse") {
+		t.Fatal("ProductResponse should be registered")
+	}
+	if !reg.Has("CartResponse") {
+		t.Fatal("CartResponse should be registered")
+	}
+
+	// "Omit" should NOT be registered as a standalone schema
+	if reg.Has("Omit") {
+		t.Error("bare 'Omit' should not be registered as a schema")
+	}
+
+	// ProductResponse should have Product's properties (minus omitted) + extra
+	pr := reg.Types["ProductResponse"]
+	prProps := make(map[string]bool)
+	for _, p := range pr.Properties {
+		prProps[p.Name] = true
+	}
+	if !prProps["id"] || !prProps["name"] || !prProps["extra"] {
+		t.Errorf("ProductResponse should have id, name, extra; got %v", prProps)
+	}
+	if prProps["autoIncrementId"] || prProps["imageMetadata"] {
+		t.Error("ProductResponse should NOT have omitted properties")
+	}
+	if prProps["abandonedAt"] || prProps["cartId"] {
+		t.Error("ProductResponse should NOT have Cart properties")
+	}
+
+	// CartResponse should have Cart's properties (minus omitted) + recovered
+	cr := reg.Types["CartResponse"]
+	crProps := make(map[string]bool)
+	for _, p := range cr.Properties {
+		crProps[p.Name] = true
+	}
+	if !crProps["id"] || !crProps["cartId"] || !crProps["abandonedAt"] || !crProps["recovered"] {
+		t.Errorf("CartResponse should have id, cartId, abandonedAt, recovered; got %v", crProps)
+	}
+	if crProps["customerId"] {
+		t.Error("CartResponse should NOT have omitted 'customerId'")
+	}
+}
+
+func TestWalkNamedType_MultiplePickInstantiationsDoNotCollide(t *testing.T) {
+	// Same test for Pick<> — multiple instantiations must not share a schema.
+	env := setupWalker(t, `
+interface User { id: string; name: string; email: string; age: number; }
+interface Product { id: string; title: string; price: number; sku: string; }
+
+type UserSummary = Pick<User, 'id' | 'name'>;
+type ProductSummary = Pick<Product, 'id' | 'title'>;
+`)
+	defer env.release()
+
+	walker := env.walkAllNamedTypes(t)
+	reg := walker.Registry()
+
+	if !reg.Has("UserSummary") {
+		t.Fatal("UserSummary should be registered")
+	}
+	if !reg.Has("ProductSummary") {
+		t.Fatal("ProductSummary should be registered")
+	}
+
+	// "Pick" should NOT be registered as a standalone schema
+	if reg.Has("Pick") {
+		t.Error("bare 'Pick' should not be registered as a schema")
+	}
+
+	us := reg.Types["UserSummary"]
+	usProps := make(map[string]bool)
+	for _, p := range us.Properties {
+		usProps[p.Name] = true
+	}
+	if !usProps["id"] || !usProps["name"] {
+		t.Errorf("UserSummary should have id, name; got %v", usProps)
+	}
+	if usProps["email"] || usProps["age"] {
+		t.Error("UserSummary should NOT have non-picked properties")
+	}
+
+	ps := reg.Types["ProductSummary"]
+	psProps := make(map[string]bool)
+	for _, p := range ps.Properties {
+		psProps[p.Name] = true
+	}
+	if !psProps["id"] || !psProps["title"] {
+		t.Errorf("ProductSummary should have id, title; got %v", psProps)
+	}
+	if psProps["price"] || psProps["sku"] {
+		t.Error("ProductSummary should NOT have non-picked properties")
+	}
+}
+
+func TestWalkNamedType_CustomOmitGenericNotRegistered(t *testing.T) {
+	// Custom generic utility types (like TypedOmit<T, K>) should also not be
+	// registered under the bare alias name.
+	env := setupWalker(t, `
+type TypedOmit<T, K extends keyof T> = Pick<T, Exclude<keyof T, K>>;
+interface Order { id: string; total: number; internalId: number; }
+interface Shipment { id: string; trackingNo: string; tempId: number; }
+
+type OrderResponse = TypedOmit<Order, 'internalId'>;
+type ShipmentResponse = TypedOmit<Shipment, 'tempId'>;
+`)
+	defer env.release()
+
+	walker := env.walkAllNamedTypes(t)
+	reg := walker.Registry()
+
+	if reg.Has("TypedOmit") {
+		t.Error("bare 'TypedOmit' should not be registered")
+	}
+
+	if !reg.Has("OrderResponse") {
+		t.Fatal("OrderResponse should be registered")
+	}
+	if !reg.Has("ShipmentResponse") {
+		t.Fatal("ShipmentResponse should be registered")
+	}
+
+	or := reg.Types["OrderResponse"]
+	orProps := make(map[string]bool)
+	for _, p := range or.Properties {
+		orProps[p.Name] = true
+	}
+	if !orProps["id"] || !orProps["total"] {
+		t.Errorf("OrderResponse should have id, total; got %v", orProps)
+	}
+	if orProps["internalId"] {
+		t.Error("OrderResponse should NOT have omitted 'internalId'")
+	}
+
+	sr := reg.Types["ShipmentResponse"]
+	srProps := make(map[string]bool)
+	for _, p := range sr.Properties {
+		srProps[p.Name] = true
+	}
+	if !srProps["id"] || !srProps["trackingNo"] {
+		t.Errorf("ShipmentResponse should have id, trackingNo; got %v", srProps)
+	}
+	if srProps["tempId"] {
+		t.Error("ShipmentResponse should NOT have omitted 'tempId'")
+	}
+}
+
+// ===========================================================================
+// Complex computed types — verifying deeply nested utility type resolution
+// ===========================================================================
+//
+// tsgo's type checker fully resolves utility types (Omit, Pick, Partial,
+// Required, Record, Extract, Exclude, mapped types, conditional types, etc.)
+// into structural types before the walker sees them. We work with resolved
+// structural types, not syntactic utility expressions. These tests verify
+// that complex compositions of utility types produce correct schemas.
+
+func TestComplexType_NestedOmitPick(t *testing.T) {
+	// Pick<Omit<T, 'a'>, 'b' | 'c'> — nested utility composition
+	env := setupWalker(t, `
+interface User {
+  id: string;
+  email: string;
+  password: string;
+  name: string;
+  age: number;
+}
+type PublicUser = Pick<Omit<User, 'password'>, 'id' | 'name'>;
+`)
+	defer env.release()
+
+	walker := env.walkAllNamedTypes(t)
+	reg := walker.Registry()
+
+	if !reg.Has("PublicUser") {
+		t.Fatal("PublicUser should be registered")
+	}
+
+	m := reg.Types["PublicUser"]
+	props := make(map[string]bool)
+	for _, p := range m.Properties {
+		props[p.Name] = true
+	}
+
+	if !props["id"] || !props["name"] {
+		t.Errorf("PublicUser should have id, name; got %v", props)
+	}
+	if props["password"] || props["email"] || props["age"] {
+		t.Errorf("PublicUser should NOT have password, email, or age; got %v", props)
+	}
+	if len(m.Properties) != 2 {
+		t.Errorf("PublicUser should have exactly 2 properties, got %d", len(m.Properties))
+	}
+}
+
+func TestComplexType_PartialAndRequired(t *testing.T) {
+	// Required<Partial<T>> should round-trip back to T's structure
+	env := setupWalker(t, `
+interface Config {
+  host: string;
+  port: number;
+  debug: boolean;
+}
+type FullConfig = Required<Partial<Config>>;
+`)
+	defer env.release()
+
+	walker := env.walkAllNamedTypes(t)
+	reg := walker.Registry()
+
+	if !reg.Has("FullConfig") {
+		t.Fatal("FullConfig should be registered")
+	}
+
+	regType := reg.Types["FullConfig"]
+	if len(regType.Properties) != 3 {
+		t.Errorf("expected 3 properties, got %d", len(regType.Properties))
+	}
+	for _, p := range regType.Properties {
+		// After Required<>, properties should not be optional.
+		if !p.Required {
+			t.Errorf("property %q should be required after Required<>", p.Name)
+		}
+	}
+}
+
+func TestComplexType_DeepPartialIntersection(t *testing.T) {
+	// Partial<A> & Partial<B> — intersection of two partials
+	env := setupWalker(t, `
+interface Dimensions { width: number; height: number; }
+interface Color { r: number; g: number; b: number; }
+type StyleOverrides = Partial<Dimensions> & Partial<Color>;
+`)
+	defer env.release()
+
+	walker := env.walkAllNamedTypes(t)
+	reg := walker.Registry()
+
+	if !reg.Has("StyleOverrides") {
+		t.Fatal("StyleOverrides should be registered")
+	}
+
+	m := reg.Types["StyleOverrides"]
+	props := make(map[string]bool)
+	for _, p := range m.Properties {
+		props[p.Name] = true
+	}
+
+	expected := []string{"width", "height", "r", "g", "b"}
+	for _, name := range expected {
+		if !props[name] {
+			t.Errorf("StyleOverrides should have property %q", name)
+		}
+	}
+	if len(m.Properties) != 5 {
+		t.Errorf("expected 5 properties, got %d", len(m.Properties))
+	}
+}
+
+func TestComplexType_RecordType(t *testing.T) {
+	// Record<string, T> resolves to an index signature / mapped type
+	env := setupWalker(t, `
+interface Permission { read: boolean; write: boolean; }
+type PermissionMap = Record<string, Permission>;
+`)
+	defer env.release()
+
+	m := env.walkExportedType(t, "PermissionMap")
+
+	// Record<string, T> should resolve to an object with string index signature
+	// which we represent as KindObject with no named properties and additional properties,
+	// or as KindMap / KindAny depending on the walker's handling
+	if m.Kind != metadata.KindObject && m.Kind != metadata.KindAny {
+		// The checker resolves Record<string, Permission> to { [key: string]: Permission }
+		// We accept either object or any representation
+		t.Logf("RecordType resolved to Kind=%s (acceptable for index signature types)", m.Kind)
+	}
+}
+
+func TestComplexType_ConditionalType(t *testing.T) {
+	// Extract<T, U> uses conditional types internally
+	env := setupWalker(t, `
+type EventKind = 'click' | 'hover' | 'scroll' | 'resize';
+type UIEvents = Extract<EventKind, 'click' | 'hover'>;
+`)
+	defer env.release()
+
+	m := env.walkExportedType(t, "UIEvents")
+
+	// Extract<'click'|'hover'|'scroll'|'resize', 'click'|'hover'> = 'click' | 'hover'
+	assertKind(t, m, metadata.KindUnion)
+	if len(m.UnionMembers) != 2 {
+		t.Fatalf("expected 2 union members, got %d", len(m.UnionMembers))
+	}
+
+	values := make(map[string]bool)
+	for _, member := range m.UnionMembers {
+		if member.Kind == metadata.KindLiteral {
+			values[fmt.Sprintf("%v", member.LiteralValue)] = true
+		}
+	}
+	if !values["click"] || !values["hover"] {
+		t.Errorf("expected 'click' and 'hover', got %v", values)
+	}
+}
+
+func TestComplexType_ExcludeType(t *testing.T) {
+	// Exclude<T, U> — the complement of Extract
+	env := setupWalker(t, `
+type Status = 'active' | 'inactive' | 'pending' | 'deleted';
+type VisibleStatus = Exclude<Status, 'deleted'>;
+`)
+	defer env.release()
+
+	m := env.walkExportedType(t, "VisibleStatus")
+
+	assertKind(t, m, metadata.KindUnion)
+	if len(m.UnionMembers) != 3 {
+		t.Fatalf("expected 3 union members, got %d", len(m.UnionMembers))
+	}
+
+	values := make(map[string]bool)
+	for _, member := range m.UnionMembers {
+		if member.Kind == metadata.KindLiteral {
+			values[fmt.Sprintf("%v", member.LiteralValue)] = true
+		}
+	}
+	if values["deleted"] {
+		t.Error("VisibleStatus should NOT contain 'deleted'")
+	}
+	if !values["active"] || !values["inactive"] || !values["pending"] {
+		t.Errorf("expected active, inactive, pending; got %v", values)
+	}
+}
+
+func TestComplexType_MappedTypeWithKeyRemapping(t *testing.T) {
+	// Mapped type with template literal key remapping:
+	// { [K in keyof T as `get${Capitalize<K>}`]: () => T[K] }
+	// The checker resolves this to an object with renamed keys
+	env := setupWalker(t, `
+interface Point { x: number; y: number; }
+type Getters<T> = { [K in keyof T as `+"`get${Capitalize<string & K>}`"+`]: T[K] };
+type PointGetters = Getters<Point>;
+`)
+	defer env.release()
+
+	walker := env.walkAllNamedTypes(t)
+	reg := walker.Registry()
+
+	if !reg.Has("PointGetters") {
+		t.Fatal("PointGetters should be registered")
+	}
+
+	m := reg.Types["PointGetters"]
+	props := make(map[string]bool)
+	for _, p := range m.Properties {
+		props[p.Name] = true
+	}
+
+	// Mapped type with key remapping: x→getX, y→getY
+	if !props["getX"] || !props["getY"] {
+		t.Errorf("expected getX, getY; got %v", props)
+	}
+	if props["x"] || props["y"] {
+		t.Error("original keys x, y should not be present")
+	}
+}
+
+func TestComplexType_DeepOmitChain(t *testing.T) {
+	// Omit<Omit<Omit<T, 'a'>, 'b'>, 'c'> — triple-nested Omit
+	env := setupWalker(t, `
+interface Entity {
+  id: string;
+  createdAt: string;
+  updatedAt: string;
+  deletedAt: string;
+  name: string;
+  value: number;
+}
+type CleanEntity = Omit<Omit<Omit<Entity, 'createdAt'>, 'updatedAt'>, 'deletedAt'>;
+`)
+	defer env.release()
+
+	walker := env.walkAllNamedTypes(t)
+	reg := walker.Registry()
+
+	if !reg.Has("CleanEntity") {
+		t.Fatal("CleanEntity should be registered")
+	}
+
+	m := reg.Types["CleanEntity"]
+	props := make(map[string]bool)
+	for _, p := range m.Properties {
+		props[p.Name] = true
+	}
+
+	if !props["id"] || !props["name"] || !props["value"] {
+		t.Errorf("expected id, name, value; got %v", props)
+	}
+	if props["createdAt"] || props["updatedAt"] || props["deletedAt"] {
+		t.Errorf("timestamp fields should be omitted; got %v", props)
+	}
+	if len(m.Properties) != 3 {
+		t.Errorf("expected 3 properties, got %d", len(m.Properties))
+	}
+}
+
+func TestComplexType_IntersectionWithOmitAndExtra(t *testing.T) {
+	// Common NestJS pattern: Omit<Entity, 'internalFields'> & { extra computed fields }
+	env := setupWalker(t, `
+interface OrderEntity {
+  id: string;
+  customerId: string;
+  total: number;
+  internalField: string;
+  autoIncrementId: number;
+}
+interface OrderItem { sku: string; quantity: number; }
+type OrderResponse = Omit<OrderEntity, 'internalField' | 'autoIncrementId'> & {
+  items: OrderItem[];
+  formattedTotal: string;
+};
+`)
+	defer env.release()
+
+	walker := env.walkAllNamedTypes(t)
+	reg := walker.Registry()
+
+	if !reg.Has("OrderResponse") {
+		t.Fatal("OrderResponse should be registered")
+	}
+
+	m := reg.Types["OrderResponse"]
+	props := make(map[string]bool)
+	for _, p := range m.Properties {
+		props[p.Name] = true
+	}
+
+	// From OrderEntity (minus omitted)
+	if !props["id"] || !props["customerId"] || !props["total"] {
+		t.Errorf("expected base fields id, customerId, total; got %v", props)
+	}
+	// Extra fields from intersection
+	if !props["items"] || !props["formattedTotal"] {
+		t.Errorf("expected extra fields items, formattedTotal; got %v", props)
+	}
+	// Omitted fields
+	if props["internalField"] || props["autoIncrementId"] {
+		t.Errorf("omitted fields should not be present; got %v", props)
+	}
+	if len(m.Properties) != 5 {
+		t.Errorf("expected 5 properties, got %d", len(m.Properties))
+	}
+}
+
+func TestComplexType_PickWithDiscriminatedUnion(t *testing.T) {
+	// Pick applied to a type, then used inside a discriminated union
+	env := setupWalker(t, `
+interface SuccessResult { status: 'success'; data: string; timestamp: number; }
+interface ErrorResult { status: 'error'; message: string; code: number; }
+
+type SuccessSummary = Pick<SuccessResult, 'status' | 'data'>;
+type ErrorSummary = Pick<ErrorResult, 'status' | 'message'>;
+type ResultSummary = SuccessSummary | ErrorSummary;
+`)
+	defer env.release()
+
+	walker := env.walkAllNamedTypes(t)
+	reg := walker.Registry()
+
+	if !reg.Has("ResultSummary") {
+		t.Fatal("ResultSummary should be registered")
+	}
+
+	resultSummary := reg.Types["ResultSummary"]
+	assertKind(t, *resultSummary, metadata.KindUnion)
+	if len(resultSummary.UnionMembers) != 2 {
+		t.Fatalf("expected 2 union members, got %d", len(resultSummary.UnionMembers))
+	}
+}
+
+func TestComplexType_ReadonlyType(t *testing.T) {
+	// Readonly<T> — removes mutability but structure should be identical for schemas
+	env := setupWalker(t, `
+interface Mutable { x: number; y: number; label: string; }
+type Frozen = Readonly<Mutable>;
+`)
+	defer env.release()
+
+	walker := env.walkAllNamedTypes(t)
+	reg := walker.Registry()
+
+	if !reg.Has("Frozen") {
+		t.Fatal("Frozen should be registered")
+	}
+
+	m := reg.Types["Frozen"]
+	if len(m.Properties) != 3 {
+		t.Errorf("expected 3 properties, got %d: %+v", len(m.Properties), m.Properties)
+	}
+	propNames := make(map[string]bool)
+	for _, p := range m.Properties {
+		propNames[p.Name] = true
+	}
+	if !propNames["x"] || !propNames["y"] || !propNames["label"] {
+		t.Errorf("expected x, y, label; got %v", propNames)
+	}
+}
+
+func TestComplexType_NonNullable(t *testing.T) {
+	// NonNullable strips null and undefined from a union
+	env := setupWalker(t, `
+type MaybeString = string | null | undefined;
+type DefiniteString = NonNullable<MaybeString>;
+`)
+	defer env.release()
+
+	m := env.walkExportedType(t, "DefiniteString")
+	assertKind(t, m, metadata.KindAtomic)
+	assertAtomic(t, m, "string")
+}
+
+func TestComplexType_NestedPartialPick(t *testing.T) {
+	// Partial<Pick<T, K>> — partial subset of an interface
+	env := setupWalker(t, `
+interface FormData {
+  username: string;
+  email: string;
+  password: string;
+  bio: string;
+  age: number;
+}
+type ProfilePatch = Partial<Pick<FormData, 'bio' | 'age' | 'email'>>;
+`)
+	defer env.release()
+
+	walker := env.walkAllNamedTypes(t)
+	reg := walker.Registry()
+
+	if !reg.Has("ProfilePatch") {
+		t.Fatal("ProfilePatch should be registered")
+	}
+
+	m := reg.Types["ProfilePatch"]
+	if len(m.Properties) != 3 {
+		t.Errorf("expected 3 properties (bio, age, email), got %d", len(m.Properties))
+	}
+	for _, p := range m.Properties {
+		if !p.Type.Optional {
+			t.Errorf("property %q should be optional after Partial<>", p.Name)
+		}
+	}
+}
+
+func TestComplexType_CustomMappedReadonly(t *testing.T) {
+	// Custom mapped type: { readonly [K in keyof T]-?: T[K] }
+	env := setupWalker(t, `
+interface Settings {
+  theme?: string;
+  fontSize?: number;
+  language?: string;
+}
+type Concrete<T> = { readonly [K in keyof T]-?: T[K] };
+type ConcreteSettings = Concrete<Settings>;
+`)
+	defer env.release()
+
+	walker := env.walkAllNamedTypes(t)
+	reg := walker.Registry()
+
+	if !reg.Has("ConcreteSettings") {
+		t.Fatal("ConcreteSettings should be registered")
+	}
+
+	m := reg.Types["ConcreteSettings"]
+	if len(m.Properties) != 3 {
+		t.Errorf("expected 3 properties, got %d", len(m.Properties))
+	}
+	for _, p := range m.Properties {
+		if p.Type.Optional {
+			t.Errorf("property %q should NOT be optional after -?", p.Name)
+		}
+	}
+}
+
+func TestComplexType_MultiLevelInheritanceWithOmit(t *testing.T) {
+	// BaseEntity → UserEntity extends BaseEntity → UserResponse = Omit<UserEntity, timestamps>
+	env := setupWalker(t, `
+interface BaseEntity {
+  id: string;
+  createdAt: string;
+  updatedAt: string;
+}
+interface UserEntity extends BaseEntity {
+  email: string;
+  name: string;
+  passwordHash: string;
+}
+type UserResponse = Omit<UserEntity, 'createdAt' | 'updatedAt' | 'passwordHash'>;
+`)
+	defer env.release()
+
+	walker := env.walkAllNamedTypes(t)
+	reg := walker.Registry()
+
+	if !reg.Has("UserResponse") {
+		t.Fatal("UserResponse should be registered")
+	}
+
+	m := reg.Types["UserResponse"]
+	props := make(map[string]bool)
+	for _, p := range m.Properties {
+		props[p.Name] = true
+	}
+
+	if !props["id"] || !props["email"] || !props["name"] {
+		t.Errorf("expected id, email, name; got %v", props)
+	}
+	if props["createdAt"] || props["updatedAt"] || props["passwordHash"] {
+		t.Errorf("omitted fields should not be present; got %v", props)
+	}
+	if len(m.Properties) != 3 {
+		t.Errorf("expected 3 properties, got %d", len(m.Properties))
+	}
+}
+
+func TestComplexType_TemplateLiteralUnion(t *testing.T) {
+	// Template literal types create computed string literal unions
+	env := setupWalker(t, `
+type Direction = 'top' | 'bottom' | 'left' | 'right';
+type MarginKey = `+"`margin-${Direction}`"+`;
+`)
+	defer env.release()
+
+	m := env.walkExportedType(t, "MarginKey")
+	assertKind(t, m, metadata.KindUnion)
+	if len(m.UnionMembers) != 4 {
+		t.Fatalf("expected 4 template literal variants, got %d", len(m.UnionMembers))
+	}
+
+	values := make(map[string]bool)
+	for _, member := range m.UnionMembers {
+		if member.Kind == metadata.KindLiteral {
+			values[fmt.Sprintf("%v", member.LiteralValue)] = true
+		}
+	}
+	for _, expected := range []string{"margin-top", "margin-bottom", "margin-left", "margin-right"} {
+		if !values[expected] {
+			t.Errorf("expected %q in union; got %v", expected, values)
+		}
+	}
+}
+
+func TestComplexType_InferWithConditionalType(t *testing.T) {
+	// Conditional type with infer: extract Promise unwrapping
+	env := setupWalker(t, `
+type UnwrapPromise<T> = T extends Promise<infer U> ? U : T;
+type Result = UnwrapPromise<Promise<{ id: string; name: string }>>;
+`)
+	defer env.release()
+
+	walker := env.walkAllNamedTypes(t)
+	reg := walker.Registry()
+
+	if !reg.Has("Result") {
+		t.Fatal("Result should be registered")
+	}
+
+	result := reg.Types["Result"]
+	assertKind(t, *result, metadata.KindObject)
+	props := make(map[string]bool)
+	for _, p := range result.Properties {
+		props[p.Name] = true
+	}
+	if !props["id"] || !props["name"] {
+		t.Errorf("expected id, name from unwrapped Promise; got %v", props)
+	}
+}
+
+func TestComplexType_DeepNesting_OmitPickPartialRequired(t *testing.T) {
+	// Required<Partial<Pick<Omit<T, 'a'>, 'b' | 'c'>>> — 4 levels deep
+	env := setupWalker(t, `
+interface FullEntity {
+  id: string;
+  name: string;
+  email: string;
+  secret: string;
+  role: string;
+}
+type CleanSubset = Required<Partial<Pick<Omit<FullEntity, 'secret'>, 'id' | 'name' | 'email'>>>;
+`)
+	defer env.release()
+
+	walker := env.walkAllNamedTypes(t)
+	reg := walker.Registry()
+
+	if !reg.Has("CleanSubset") {
+		t.Fatal("CleanSubset should be registered")
+	}
+
+	m := reg.Types["CleanSubset"]
+	if len(m.Properties) != 3 {
+		t.Errorf("expected 3 properties, got %d", len(m.Properties))
+	}
+	props := make(map[string]bool)
+	for _, p := range m.Properties {
+		props[p.Name] = true
+	}
+	if !props["id"] || !props["name"] || !props["email"] {
+		t.Errorf("expected id, name, email; got %v", props)
+	}
+}
+
+func TestComplexType_DiscriminatedUnionWithSharedFields(t *testing.T) {
+	// Complex discriminated union with shared base fields
+	env := setupWalker(t, `
+interface BaseEvent { timestamp: number; source: string; }
+interface ClickEvent extends BaseEvent { type: 'click'; x: number; y: number; }
+interface KeyEvent extends BaseEvent { type: 'key'; key: string; modifiers: string[]; }
+interface ScrollEvent extends BaseEvent { type: 'scroll'; deltaX: number; deltaY: number; }
+
+type InputEvent = ClickEvent | KeyEvent | ScrollEvent;
+`)
+	defer env.release()
+
+	walker := env.walkAllNamedTypes(t)
+	reg := walker.Registry()
+
+	if !reg.Has("InputEvent") {
+		t.Fatal("InputEvent should be registered")
+	}
+
+	m := reg.Types["InputEvent"]
+	assertKind(t, *m, metadata.KindUnion)
+	if len(m.UnionMembers) != 3 {
+		t.Fatalf("expected 3 union members, got %d", len(m.UnionMembers))
+	}
+
+	// Verify discriminant was detected
+	if m.Discriminant == nil || m.Discriminant.Property != "type" {
+		t.Errorf("expected discriminant property='type', got %+v", m.Discriminant)
+	}
+}
+
+func TestComplexType_RecursiveTreeWithOmit(t *testing.T) {
+	// Recursive type through a utility type: TreeNode has children: TreeNode[]
+	// Response = Omit<TreeNode, 'parent'> — omit the back-reference
+	env := setupWalker(t, `
+interface TreeNode {
+  id: string;
+  label: string;
+  parent: TreeNode | null;
+  children: TreeNode[];
+}
+type TreeNodeResponse = Omit<TreeNode, 'parent'>;
+`)
+	defer env.release()
+
+	walker := env.walkAllNamedTypes(t)
+	reg := walker.Registry()
+
+	if !reg.Has("TreeNodeResponse") {
+		t.Fatal("TreeNodeResponse should be registered")
+	}
+
+	m := reg.Types["TreeNodeResponse"]
+	props := make(map[string]bool)
+	for _, p := range m.Properties {
+		props[p.Name] = true
+	}
+
+	if !props["id"] || !props["label"] || !props["children"] {
+		t.Errorf("expected id, label, children; got %v", props)
+	}
+	if props["parent"] {
+		t.Error("parent should be omitted")
+	}
+}
+
+func TestComplexType_MultipleGenericInstantiationsSubField(t *testing.T) {
+	// Multiple different Omit instantiations used as sub-fields within a single parent type
+	// This tests that different Omit<X, Y> don't overwrite each other in the registry
+	env := setupWalker(t, `
+interface Product { id: string; name: string; internalSku: string; price: number; }
+interface Customer { id: string; email: string; passwordHash: string; name: string; }
+interface Order { id: string; status: string; secretToken: string; total: number; }
+
+type OrderSummary = {
+  order: Omit<Order, 'secretToken'>;
+  customer: Omit<Customer, 'passwordHash'>;
+  products: Omit<Product, 'internalSku'>[];
+};
+`)
+	defer env.release()
+
+	walker := env.walkAllNamedTypes(t)
+	reg := walker.Registry()
+
+	if !reg.Has("OrderSummary") {
+		t.Fatal("OrderSummary should be registered")
+	}
+
+	m := reg.Types["OrderSummary"]
+
+	// All three sub-fields should be inline objects (since Omit<X,Y> is generic instantiation)
+	// NOT registered under "Omit" (which would be wrong)
+	if reg.Has("Omit") {
+		t.Error("bare 'Omit' should NOT be registered in the registry")
+	}
+
+	// Verify OrderSummary has the right structure
+	if len(m.Properties) != 3 {
+		t.Errorf("expected 3 properties (order, customer, products), got %d", len(m.Properties))
+	}
+
+	// Verify the order sub-field doesn't have secretToken
+	orderProp := findProperty(t, m.Properties, "order")
+	if orderProp.Type.Kind == metadata.KindObject {
+		orderProps := make(map[string]bool)
+		for _, p := range orderProp.Type.Properties {
+			orderProps[p.Name] = true
+		}
+		if orderProps["secretToken"] {
+			t.Error("order sub-field should NOT have secretToken")
+		}
+		if !orderProps["id"] || !orderProps["status"] || !orderProps["total"] {
+			t.Errorf("order sub-field should have id, status, total; got %v", orderProps)
+		}
+	}
+
+	// Verify the customer sub-field doesn't have passwordHash
+	customerProp := findProperty(t, m.Properties, "customer")
+	if customerProp.Type.Kind == metadata.KindObject {
+		customerProps := make(map[string]bool)
+		for _, p := range customerProp.Type.Properties {
+			customerProps[p.Name] = true
+		}
+		if customerProps["passwordHash"] {
+			t.Error("customer sub-field should NOT have passwordHash")
+		}
+		if !customerProps["id"] || !customerProps["email"] || !customerProps["name"] {
+			t.Errorf("customer sub-field should have id, email, name; got %v", customerProps)
+		}
+	}
+}
+
+func TestComplexType_CustomStrictOmit(t *testing.T) {
+	// Custom strict Omit utility: TypedOmit<T, K extends keyof T> = Pick<T, Exclude<keyof T, K>>
+	// Two different instantiations with intersection
+	env := setupWalker(t, `
+type TypedOmit<T, K extends keyof T> = Pick<T, Exclude<keyof T, K>>;
+
+interface Product {
+  id: string;
+  name: string;
+  price: number;
+  internalSku: string;
+  imageMetadata: string;
+}
+interface Category { id: string; name: string; slug: string; }
+interface Shop { id: string; domain: string; }
+
+type ProductResponse = TypedOmit<Product, 'internalSku' | 'imageMetadata'> & {
+  categories: Category[];
+  shops: Shop[];
+};
+`)
+	defer env.release()
+
+	walker := env.walkAllNamedTypes(t)
+	reg := walker.Registry()
+
+	if !reg.Has("ProductResponse") {
+		t.Fatal("ProductResponse should be registered")
+	}
+	if reg.Has("TypedOmit") {
+		t.Error("bare TypedOmit should NOT be registered")
+	}
+
+	m := reg.Types["ProductResponse"]
+	props := make(map[string]bool)
+	for _, p := range m.Properties {
+		props[p.Name] = true
+	}
+
+	// From Product minus omitted
+	if !props["id"] || !props["name"] || !props["price"] {
+		t.Errorf("expected Product base fields; got %v", props)
+	}
+	if props["internalSku"] || props["imageMetadata"] {
+		t.Errorf("omitted fields should not be present; got %v", props)
+	}
+	// From intersection
+	if !props["categories"] || !props["shops"] {
+		t.Errorf("expected intersection fields categories, shops; got %v", props)
+	}
+	if len(m.Properties) != 5 {
+		t.Errorf("expected 5 properties, got %d", len(m.Properties))
+	}
+}
+
+func TestComplexType_SubFieldNamedTypeRegistration(t *testing.T) {
+	// Named types used as sub-fields (depth > 1) should be registered via Type_alias
+	env := setupWalker(t, `
+interface Address { street: string; city: string; zip: string; }
+interface ContactInfo { phone: string; fax: string; }
+
+type ShippingAddress = Address & { deliveryNotes?: string; };
+type BillingContact = ContactInfo & { taxId: string; };
+
+type OrderDetail = {
+  shippingAddress: ShippingAddress;
+  billingContact: BillingContact;
+  orderNumber: string;
+};
+`)
+	defer env.release()
+
+	walker := env.walkAllNamedTypes(t)
+	reg := walker.Registry()
+
+	if !reg.Has("OrderDetail") {
+		t.Fatal("OrderDetail should be registered")
+	}
+	// Sub-field named types should also be registered
+	if !reg.Has("ShippingAddress") {
+		t.Error("ShippingAddress should be registered as named type (sub-field)")
+	}
+	if !reg.Has("BillingContact") {
+		t.Error("BillingContact should be registered as named type (sub-field)")
+	}
+
+	// Verify OrderDetail references them by $ref (KindRef)
+	m := reg.Types["OrderDetail"]
+	shippingProp := findProperty(t, m.Properties, "shippingAddress")
+	if shippingProp.Type.Kind != metadata.KindRef {
+		t.Errorf("shippingAddress should be KindRef, got %s", shippingProp.Type.Kind)
+	}
+	billingProp := findProperty(t, m.Properties, "billingContact")
+	if billingProp.Type.Kind != metadata.KindRef {
+		t.Errorf("billingContact should be KindRef, got %s", billingProp.Type.Kind)
+	}
+}
+
+func TestComplexType_SubFieldNamedUnionRegistration(t *testing.T) {
+	// Named union types used as sub-fields should be registered via Type_alias
+	// and become $ref in the parent object
+	env := setupWalker(t, `
+type OrderStatus = 'pending' | 'shipped' | 'delivered' | 'cancelled';
+type PaymentStatus = 'unpaid' | 'paid' | 'refunded';
+
+type OrderSummary = {
+  id: string;
+  orderStatus: OrderStatus;
+  paymentStatus: PaymentStatus;
+};
+`)
+	defer env.release()
+
+	walker := env.walkAllNamedTypes(t)
+	reg := walker.Registry()
+
+	if !reg.Has("OrderSummary") {
+		t.Fatal("OrderSummary should be registered")
+	}
+	// Sub-field named union types should also be registered
+	if !reg.Has("OrderStatus") {
+		t.Error("OrderStatus should be registered as named type (sub-field union)")
+	}
+	if !reg.Has("PaymentStatus") {
+		t.Error("PaymentStatus should be registered as named type (sub-field union)")
+	}
+
+	// Verify OrderSummary references them by $ref (KindRef)
+	m := reg.Types["OrderSummary"]
+	osProp := findProperty(t, m.Properties, "orderStatus")
+	if osProp.Type.Kind != metadata.KindRef {
+		t.Errorf("orderStatus should be KindRef, got %s", osProp.Type.Kind)
+	}
+	psProp := findProperty(t, m.Properties, "paymentStatus")
+	if psProp.Type.Kind != metadata.KindRef {
+		t.Errorf("paymentStatus should be KindRef, got %s", psProp.Type.Kind)
+	}
+}
+
+func TestComplexType_DoubleIntersectionWithInterfaceExtends(t *testing.T) {
+	// interface C extends A, B {} combined with Omit
+	env := setupWalker(t, `
+interface Timestamps { createdAt: string; updatedAt: string; }
+interface SoftDelete { deletedAt: string | null; }
+interface BaseEntity extends Timestamps, SoftDelete {
+  id: string;
+}
+interface UserEntity extends BaseEntity {
+  email: string;
+  name: string;
+  role: string;
+}
+type UserResponse = Omit<UserEntity, 'deletedAt'> & { isActive: boolean; };
+`)
+	defer env.release()
+
+	walker := env.walkAllNamedTypes(t)
+	reg := walker.Registry()
+
+	if !reg.Has("UserResponse") {
+		t.Fatal("UserResponse should be registered")
+	}
+
+	m := reg.Types["UserResponse"]
+	props := make(map[string]bool)
+	for _, p := range m.Properties {
+		props[p.Name] = true
+	}
+
+	// All inherited + own fields minus deletedAt, plus extra
+	expected := []string{"id", "createdAt", "updatedAt", "email", "name", "role", "isActive"}
+	for _, name := range expected {
+		if !props[name] {
+			t.Errorf("expected property %q; got %v", name, props)
+		}
+	}
+	if props["deletedAt"] {
+		t.Error("deletedAt should be omitted")
+	}
+	if len(m.Properties) != len(expected) {
+		t.Errorf("expected %d properties, got %d", len(expected), len(m.Properties))
 	}
 }

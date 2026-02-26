@@ -151,8 +151,15 @@ type Responses map[string]*Response
 
 // Response represents an OpenAPI response.
 type Response struct {
-	Description string               `json:"description"`
-	Content     map[string]MediaType `json:"content,omitempty"`
+	Description string                   `json:"description"`
+	Headers     map[string]*HeaderObject `json:"headers,omitempty"`
+	Content     map[string]MediaType     `json:"content,omitempty"`
+}
+
+// HeaderObject represents an OpenAPI Header Object.
+type HeaderObject struct {
+	Description string  `json:"description,omitempty"`
+	Schema      *Schema `json:"schema"`
 }
 
 // Components holds reusable schemas.
@@ -429,6 +436,40 @@ func (g *Generator) buildOperation(route analyzer.Route, controllerName string) 
 		}
 	}
 
+	// Add @Header() response headers to the primary success response
+	if len(route.ResponseHeaders) > 0 {
+		resp := op.Responses[statusStr]
+		if resp != nil {
+			if resp.Headers == nil {
+				resp.Headers = make(map[string]*HeaderObject)
+			}
+			for _, h := range route.ResponseHeaders {
+				resp.Headers[h.Name] = &HeaderObject{
+					Schema: &Schema{Type: "string", Enum: []interface{}{h.Value}},
+				}
+			}
+		}
+	}
+
+	// Add @Redirect() response — adds a 3xx response with Location header
+	if route.Redirect != nil {
+		redirectStatus := fmt.Sprintf("%d", route.Redirect.StatusCode)
+		redirectDesc := statusDescription(route.Redirect.StatusCode)
+		headers := map[string]*HeaderObject{
+			"Location": {
+				Description: "Redirect target URL",
+				Schema:      &Schema{Type: "string"},
+			},
+		}
+		if route.Redirect.URL != "" {
+			headers["Location"].Schema.Enum = []interface{}{route.Redirect.URL}
+		}
+		op.Responses[redirectStatus] = &Response{
+			Description: redirectDesc,
+			Headers:     headers,
+		}
+	}
+
 	return op
 }
 
@@ -604,83 +645,92 @@ func (g *Generator) GenerateWithOptions(controllers []analyzer.ControllerInfo, o
 			continue
 		}
 		for _, route := range ctrl.Routes {
-			// Convert NestJS-style path params (:id) to OpenAPI-style ({id})
-			openapiPath := convertPath(route.Path)
+			// Determine the set of versions to iterate.
+			// @Version(['1', '2']) produces multiple versioned paths.
+			routeVersions := route.Versions
+			if len(routeVersions) == 0 {
+				routeVersions = []string{route.Version}
+			}
 
-			// Apply URI versioning
-			if opts != nil && opts.VersioningType == "URI" {
-				version := route.Version
-				if version == "" {
-					version = opts.DefaultVersion
-				}
-				if version != "" {
-					vPrefix := opts.VersionPrefix
-					if vPrefix == "" {
-						vPrefix = "v"
+			for _, version := range routeVersions {
+				// Convert NestJS-style path params (:id) to OpenAPI-style ({id})
+				openapiPath := convertPath(route.Path)
+
+				// Apply URI versioning
+				if opts != nil && opts.VersioningType == "URI" {
+					v := version
+					if v == "" {
+						v = opts.DefaultVersion
 					}
-					openapiPath = "/" + vPrefix + version + openapiPath
+					if v != "" {
+						vPrefix := opts.VersionPrefix
+						if vPrefix == "" {
+							vPrefix = "v"
+						}
+						openapiPath = "/" + vPrefix + v + openapiPath
+					}
 				}
-			}
 
-			// Apply global prefix
-			if opts != nil && opts.GlobalPrefix != "" {
-				prefix := "/" + strings.Trim(opts.GlobalPrefix, "/")
-				openapiPath = prefix + openapiPath
-			}
-
-			pathItem, exists := doc.Paths[openapiPath]
-			if !exists {
-				pathItem = &PathItem{}
-				doc.Paths[openapiPath] = pathItem
-			}
-
-			// Create operation
-			op := g.buildOperation(route, ctrl.Name)
-
-			// Synthesize missing path parameters.
-			// Controller-level params (e.g., @Controller(':workspaceID')) appear in
-			// the URL template but may not have explicit @Param() decorators on the
-			// method.  OpenAPI requires every {param} in the path to have a
-			// corresponding parameter entry.
-			ensurePathParams(op, openapiPath)
-
-			// For HEADER versioning, add a version header parameter
-			if opts != nil && opts.VersioningType == "HEADER" {
-				version := route.Version
-				if version == "" {
-					version = opts.DefaultVersion
+				// Apply global prefix
+				if opts != nil && opts.GlobalPrefix != "" {
+					prefix := "/" + strings.Trim(opts.GlobalPrefix, "/")
+					openapiPath = prefix + openapiPath
 				}
-				if version != "" {
-					op.Parameters = append(op.Parameters, Parameter{
-						Name:     "X-API-Version",
-						In:       "header",
-						Required: true,
-						Schema:   &Schema{Type: "string", Const: version},
-					})
+
+				pathItem, exists := doc.Paths[openapiPath]
+				if !exists {
+					pathItem = &PathItem{}
+					doc.Paths[openapiPath] = pathItem
 				}
-			}
 
-			// Set operation on the correct method
-			switch route.Method {
-			case "GET":
-				pathItem.Get = op
-			case "POST":
-				pathItem.Post = op
-			case "PUT":
-				pathItem.Put = op
-			case "DELETE":
-				pathItem.Delete = op
-			case "PATCH":
-				pathItem.Patch = op
-			case "HEAD":
-				pathItem.Head = op
-			case "OPTIONS":
-				pathItem.Options = op
-			}
+				// Create operation
+				op := g.buildOperation(route, ctrl.Name)
 
-			// Collect tags
-			for _, tag := range route.Tags {
-				tagSet[tag] = true
+				// Synthesize missing path parameters.
+				// Controller-level params (e.g., @Controller(':workspaceID')) appear in
+				// the URL template but may not have explicit @Param() decorators on the
+				// method.  OpenAPI requires every {param} in the path to have a
+				// corresponding parameter entry.
+				ensurePathParams(op, openapiPath)
+
+				// For HEADER versioning, add a version header parameter
+				if opts != nil && opts.VersioningType == "HEADER" {
+					v := version
+					if v == "" {
+						v = opts.DefaultVersion
+					}
+					if v != "" {
+						op.Parameters = append(op.Parameters, Parameter{
+							Name:     "X-API-Version",
+							In:       "header",
+							Required: true,
+							Schema:   &Schema{Type: "string", Const: v},
+						})
+					}
+				}
+
+				// Set operation on the correct method
+				switch route.Method {
+				case "GET":
+					pathItem.Get = op
+				case "POST":
+					pathItem.Post = op
+				case "PUT":
+					pathItem.Put = op
+				case "DELETE":
+					pathItem.Delete = op
+				case "PATCH":
+					pathItem.Patch = op
+				case "HEAD":
+					pathItem.Head = op
+				case "OPTIONS":
+					pathItem.Options = op
+				}
+
+				// Collect tags
+				for _, tag := range route.Tags {
+					tagSet[tag] = true
+				}
 			}
 		}
 	}
@@ -771,6 +821,16 @@ func statusDescription(code int) string {
 		return "Created"
 	case 204:
 		return "No Content"
+	case 301:
+		return "Moved Permanently"
+	case 302:
+		return "Found"
+	case 303:
+		return "See Other"
+	case 307:
+		return "Temporary Redirect"
+	case 308:
+		return "Permanent Redirect"
 	case 400:
 		return "Bad Request"
 	case 401:

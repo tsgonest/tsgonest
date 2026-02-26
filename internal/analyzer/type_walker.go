@@ -94,17 +94,17 @@ func (w *TypeWalker) WalkNamedType(name string, t *shimchecker.Type) metadata.Me
 	// files are generated for the alias name. This handles type aliases to
 	// objects, unions, intersections, arrays, etc.
 	if m.Name == "" && (m.Kind == metadata.KindObject || m.Kind == metadata.KindUnion || m.Kind == metadata.KindIntersection || m.Kind == metadata.KindArray) {
+		// Don't register phantom objects (branded type building blocks like
+		// tags.Format<"email"> or tags.Email). They must remain inlinable
+		// so that tryDetectBranded can detect `string & { __tsgonest_format: "email" }`.
+		// Registering them would cause sub-field branded types to see KindRef
+		// instead of the inline phantom properties.
+		if isPhantomObject(&m) {
+			return m
+		}
 		m.Name = name
 		w.registry.Register(name, &m)
-		// Cache the TypeId → name so that subsequent WalkType calls on the same
-		// anonymous type (e.g., from controller return type analysis) can
-		// short-circuit to KindRef without re-walking.
-		// BUT: don't cache phantom objects (branded type building blocks like
-		// tags.Format<"email">) — they must remain inlinable so that
-		// tryDetectBranded can detect `string & { __tsgonest_format: "email" }`.
-		if !isPhantomObject(&m) {
-			w.typeIdToName[t.Id()] = name
-		}
+		w.typeIdToName[t.Id()] = name
 		return metadata.Metadata{Kind: metadata.KindRef, Ref: name}
 	}
 
@@ -344,6 +344,27 @@ func (w *TypeWalker) walkUnion(t *shimchecker.Type) metadata.Metadata {
 		result.Discriminant = disc
 	}
 
+	// If the union has a type alias name (depth > 1), register it as a named type
+	// so it becomes a $ref instead of being inlined. This catches named union aliases
+	// used as sub-fields (e.g., `status: OrderStatus` where OrderStatus = 'a' | 'b').
+	if w.depth > 1 {
+		alias := shimchecker.Type_alias(t)
+		if alias != nil && len(alias.TypeArguments()) == 0 {
+			if aliasSym := alias.Symbol(); aliasSym != nil {
+				aliasName := aliasSym.Name
+				if aliasName != "" && aliasName != "__type" && aliasName != "__object" && (len(aliasName) == 0 || aliasName[0] != '\xfe') {
+					if w.registry.Has(aliasName) {
+						return metadata.Metadata{Kind: metadata.KindRef, Ref: aliasName, Nullable: nullable, Optional: optional}
+					}
+					result.Name = aliasName
+					w.registry.Register(aliasName, &result)
+					w.typeIdToName[t.Id()] = aliasName
+					return metadata.Metadata{Kind: metadata.KindRef, Ref: aliasName, Nullable: nullable, Optional: optional}
+				}
+			}
+		}
+	}
+
 	return result
 }
 
@@ -479,7 +500,32 @@ func (w *TypeWalker) walkIntersection(t *shimchecker.Type) metadata.Metadata {
 	}
 
 	// Try to flatten: if all members resolve to objects, merge properties.
-	return w.tryFlattenIntersection(members)
+	result := w.tryFlattenIntersection(members)
+
+	// If the intersection has a type alias name (e.g., type ShippingAddress = Address & { ... }),
+	// register the flattened result so it becomes a $ref instead of being inlined.
+	// Only for sub-field types (depth > 1) and non-generic aliases.
+	if w.depth > 1 && result.Kind == metadata.KindObject {
+		alias := shimchecker.Type_alias(t)
+		if alias != nil && len(alias.TypeArguments()) == 0 && !w.visiting[t.Id()] {
+			if aliasSym := alias.Symbol(); aliasSym != nil {
+				aliasName := aliasSym.Name
+				if aliasName != "" && aliasName != "__type" && aliasName != "__object" && (len(aliasName) == 0 || aliasName[0] != '\xfe') {
+					if w.registry.Has(aliasName) {
+						return metadata.Metadata{Kind: metadata.KindRef, Ref: aliasName}
+					}
+					if !isPhantomObject(&result) {
+						result.Name = aliasName
+						w.registry.Register(aliasName, &result)
+						w.typeIdToName[t.Id()] = aliasName
+						return metadata.Metadata{Kind: metadata.KindRef, Ref: aliasName}
+					}
+				}
+			}
+		}
+	}
+
+	return result
 }
 
 // tryFlattenIntersection checks if all intersection members resolve to objects
@@ -637,6 +683,49 @@ func (w *TypeWalker) walkObjectType(t *shimchecker.Type) metadata.Metadata {
 	if cachedName, ok := w.typeIdToName[t.Id()]; ok {
 		return metadata.Metadata{Kind: metadata.KindRef, Ref: cachedName}
 	}
+
+	// Type alias encountered as sub-field — derive name from alias symbol.
+	// Type aliases resolve to anonymous types (ObjectFlagsAnonymous), so
+	// getTypeName returns "". But Type_alias preserves the alias declaration,
+	// letting us recover the original name (e.g., CustomerShippingAddressResponse)
+	// and register it for $ref extraction in OpenAPI.
+	// Only use Type_alias for sub-field types (depth > 1), not the top-level
+	// type being walked. WalkNamedType handles registration for top-level types.
+	// Also skip when visiting (recursion guard).
+	// Skip phantom objects (branded type building blocks like tags.Format<"email">)
+	// — they must remain inlinable so tryDetectBranded can detect them.
+	if w.depth > 1 {
+		alias := shimchecker.Type_alias(t)
+		if alias != nil && !w.visiting[t.Id()] {
+			// Skip generic instantiations (e.g., Omit<Product, 'x'>, Pick<T, K>).
+			// Different instantiations share the same alias symbol name but resolve
+			// to completely different types. Registering by bare name causes the
+			// first instantiation to "win" and all others to incorrectly reference it.
+			if len(alias.TypeArguments()) > 0 {
+				goto skipAlias
+			}
+			if aliasSym := alias.Symbol(); aliasSym != nil {
+				aliasName := aliasSym.Name
+				if aliasName != "" && aliasName != "__type" && aliasName != "__object" && (len(aliasName) == 0 || aliasName[0] != '\xfe') {
+					if w.registry.Has(aliasName) {
+						return metadata.Metadata{Kind: metadata.KindRef, Ref: aliasName}
+					}
+					// Analyze properties first to check if it's a phantom object
+					w.visiting[t.Id()] = true
+					result := w.analyzeObjectProperties(t, aliasName)
+					delete(w.visiting, t.Id())
+					if isPhantomObject(&result) {
+						// Don't register phantom objects — they're branded type building blocks
+						return result
+					}
+					w.registry.Register(aliasName, &result)
+					w.typeIdToName[t.Id()] = aliasName
+					return metadata.Metadata{Kind: metadata.KindRef, Ref: aliasName}
+				}
+			}
+		}
+	}
+skipAlias:
 
 	// Anonymous object type — inline the properties
 	return w.analyzeObjectProperties(t, "")

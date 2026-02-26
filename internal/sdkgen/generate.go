@@ -22,6 +22,13 @@ func Generate(inputPath, outputDir string) error {
 		return fmt.Errorf("creating output directory: %w", err)
 	}
 
+	// Rename schema names that collide with TypeScript built-in types.
+	// e.g., "Record" → "Record_" to avoid shadowing Record<K,V>.
+	renameBuiltinCollisions(doc)
+
+	// Remove stale controller directories that are no longer in the spec.
+	cleanStaleControllerDirs(outputDir, doc)
+
 	// Generate shared types
 	typesCode := generateSharedTypes(doc.Schemas)
 	if err := writeFile(filepath.Join(outputDir, "types.ts"), typesCode); err != nil {
@@ -176,6 +183,77 @@ func detectFormatter(outputDir string) formatterInfo {
 		dir = parent
 	}
 	return formatterInfo{}
+}
+
+// cleanStaleControllerDirs removes controller directories that no longer
+// correspond to any controller in the OpenAPI spec. This prevents stale SDK
+// files from lingering after controllers are removed or excluded.
+func cleanStaleControllerDirs(outputDir string, doc *SDKDocument) {
+	// Collect all controller directory names that will be generated
+	activeCtrlDirs := make(map[string]bool)
+	for _, ver := range doc.Versions {
+		for _, ctrl := range ver.Controllers {
+			dir := controllerOutputDir(outputDir, ver.Version, ctrl.Name)
+			activeCtrlDirs[dir] = true
+		}
+	}
+
+	// Known top-level generated files (not controller directories)
+	knownFiles := map[string]bool{
+		"types.ts":    true,
+		"client.ts":   true,
+		"sse.ts":      true,
+		"form-data.ts": true,
+		"index.ts":    true,
+	}
+
+	// Scan the output directory for subdirectories
+	entries, err := os.ReadDir(outputDir)
+	if err != nil {
+		return // directory may not exist yet
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		dirPath := filepath.Join(outputDir, entry.Name())
+		if knownFiles[entry.Name()] {
+			continue
+		}
+		// Check if this directory (or its subdirectories) is active
+		if activeCtrlDirs[dirPath] {
+			continue
+		}
+		// For versioned layouts (e.g., sdk/v1/orders/), check subdirectories
+		isVersionDir := false
+		subEntries, err := os.ReadDir(dirPath)
+		if err == nil {
+			for _, sub := range subEntries {
+				if sub.IsDir() {
+					subPath := filepath.Join(dirPath, sub.Name())
+					if activeCtrlDirs[subPath] {
+						isVersionDir = true
+					}
+				}
+			}
+		}
+		if isVersionDir {
+			// Clean stale subdirectories within version directories
+			for _, sub := range subEntries {
+				if sub.IsDir() {
+					subPath := filepath.Join(dirPath, sub.Name())
+					if !activeCtrlDirs[subPath] {
+						os.RemoveAll(subPath)
+					}
+				}
+			}
+			continue
+		}
+		// Not an active controller directory — remove it
+		if !activeCtrlDirs[dirPath] {
+			os.RemoveAll(dirPath)
+		}
+	}
 }
 
 func writeFile(path, content string) error {
