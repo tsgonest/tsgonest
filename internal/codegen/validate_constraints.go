@@ -34,10 +34,12 @@ func generateCoercion(e *Emitter, accessor string, typeMeta *metadata.Metadata) 
 	}
 	switch typeMeta.Atomic {
 	case "number":
-		// string → number via unary +
-		e.Block("if (typeof %s === \"string\")", accessor)
+		// string → number: reject empty/whitespace-only strings and hex/octal/binary
+		// literals that unary + would silently coerce (e.g., +"" → 0, +"0xff" → 255).
+		// Only coerce strings that represent plain decimal numbers.
+		e.Block("if (typeof %s === \"string\" && %s.length > 0)", accessor, accessor)
 		e.Line("const _n = +%s;", accessor)
-		e.Block("if (!Number.isNaN(_n))")
+		e.Block("if (!Number.isNaN(_n) && %s.trim() === %s && !/^0[xXoObB]/.test(%s))", accessor, accessor, accessor)
 		e.Line("%s = _n;", accessor)
 		e.EndBlock()
 		e.EndBlock()
@@ -133,12 +135,27 @@ func generateConstraintChecksInner(e *Emitter, accessor string, path string, pro
 		e.EndBlock()
 	}
 	if c.MultipleOf != nil {
-		if typeVerified {
-			e.Block("if (%s %% %v !== 0)", accessor, *c.MultipleOf)
+		mul := *c.MultipleOf
+		// For integer multipleOf, use simple modulo. For fractional multipleOf (e.g., 0.01),
+		// use an epsilon-based check to avoid floating-point precision bugs
+		// (e.g., 0.3 % 0.1 !== 0 in JS). This matches the approach used by ajv.
+		isInteger := mul == float64(int64(mul))
+		if isInteger {
+			if typeVerified {
+				e.Block("if (%s %% %v !== 0)", accessor, mul)
+			} else {
+				e.Block("if (typeof %s === \"number\" && %s %% %v !== 0)", accessor, accessor, mul)
+			}
 		} else {
-			e.Block("if (typeof %s === \"number\" && %s %% %v !== 0)", accessor, accessor, *c.MultipleOf)
+			// Epsilon approach: |x - round(x/m)*m| must be < epsilon
+			// Using relative epsilon to handle both small and large numbers
+			if typeVerified {
+				e.Block("if (Math.abs(%s / %v - Math.round(%s / %v)) > 1e-10)", accessor, mul, accessor, mul)
+			} else {
+				e.Block("if (typeof %s === \"number\" && Math.abs(%s / %v - Math.round(%s / %v)) > 1e-10)", accessor, accessor, mul, accessor, mul)
+			}
 		}
-		e.Line("errors.push({ path: %q, expected: \"%s\", received: \"\" + %s });", path, errMsg("multipleOf", fmt.Sprintf("multipleOf %v", *c.MultipleOf)), accessor)
+		e.Line("errors.push({ path: %q, expected: \"%s\", received: \"\" + %s });", path, errMsg("multipleOf", fmt.Sprintf("multipleOf %v", mul)), accessor)
 		e.EndBlock()
 	}
 	if c.NumericType != nil {

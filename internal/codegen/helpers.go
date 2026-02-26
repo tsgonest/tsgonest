@@ -24,8 +24,11 @@ func GenerateHelpers() string {
 	e.Blank()
 
 	// __s: fast string serializer
+	// Fast path: if no control chars (<0x20), double-quotes (34), backslashes (92),
+	// or LINE/PARAGRAPH SEPARATOR (0x2028/0x2029) are found, wrap in quotes directly.
+	// Otherwise fall back to JSON.stringify which handles all escaping correctly.
 	e.Block("export function __s(s)")
-	e.Line("for (var i = 0; i < s.length; i++) { var c = s.charCodeAt(i); if (c < 32 || c === 34 || c === 92) return JSON.stringify(s); }")
+	e.Line("for (var i = 0; i < s.length; i++) { var c = s.charCodeAt(i); if (c < 32 || c === 34 || c === 92 || c === 0x2028 || c === 0x2029) return JSON.stringify(s); }")
 	e.Line("return '\"' + s + '\"';")
 	e.EndBlock()
 
