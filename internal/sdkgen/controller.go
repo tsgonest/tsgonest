@@ -151,7 +151,7 @@ func generateStandaloneFunction(ctrlName string, method SDKMethod) string {
 	if len(method.PathParams) > 0 {
 		sb.WriteString("  const params: Record<string, string> = {\n")
 		for _, p := range method.PathParams {
-			sb.WriteString(fmt.Sprintf("    %s: String(options.%s),\n", p.Name, p.Name))
+			sb.WriteString(fmt.Sprintf("    %s: String(%s),\n", tsPropertyKey(p.Name), tsPropAccess("options", p.Name)))
 		}
 		sb.WriteString("  };\n")
 	}
@@ -160,7 +160,7 @@ func generateStandaloneFunction(ctrlName string, method SDKMethod) string {
 	if len(method.QueryParams) > 0 {
 		sb.WriteString("  const query: Record<string, unknown> = {};\n")
 		for _, p := range method.QueryParams {
-			sb.WriteString(fmt.Sprintf("  if (options.query?.%s !== undefined) query['%s'] = options.query.%s;\n", p.Name, p.Name, p.Name))
+			sb.WriteString(fmt.Sprintf("  if (%s !== undefined) query[\"%s\"] = %s;\n", tsOptionalAccess("options.query", p.Name), escapeJSString(p.Name), tsPropAccess("options.query", p.Name)))
 		}
 	}
 
@@ -248,7 +248,7 @@ func buildOptionsTypeDecl(method SDKMethod, typeName string) string {
 
 	// Path params (required)
 	for _, p := range method.PathParams {
-		sb.WriteString(fmt.Sprintf("  %s: %s;\n", p.Name, p.TSType))
+		sb.WriteString(fmt.Sprintf("  %s: %s;\n", tsPropertyKey(p.Name), p.TSType))
 	}
 
 	// Query params
@@ -270,7 +270,7 @@ func buildOptionsTypeDecl(method SDKMethod, typeName string) string {
 			if p.Required {
 				qopt = ""
 			}
-			sb.WriteString(fmt.Sprintf("    %s%s: %s;\n", p.Name, qopt, p.TSType))
+			sb.WriteString(fmt.Sprintf("    %s%s: %s;\n", tsPropertyKey(p.Name), qopt, p.TSType))
 		}
 		sb.WriteString("  };\n")
 	}

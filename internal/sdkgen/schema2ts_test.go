@@ -427,16 +427,66 @@ func TestTsPropertyKey(t *testing.T) {
 		{"first name", `"first name"`},
 		{"phone number", `"phone number"`},
 		{"tax rate", `"tax rate"`},
+		{"first.name", `"first.name"`},
+		{"user-id", `"user-id"`},
+		{"filter[name]", `"filter[name]"`},
 		{"123start", `"123start"`},
-		{"has-dash", `"has-dash"`},
-		{"has.dot", `"has.dot"`},
 		{"", `""`},
+		// Escaping edge cases
+		{`say "hello"`, `"say \"hello\""`},
+		{`back\slash`, `"back\\slash"`},
+		{"new\nline", `"new\nline"`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
 			got := tsPropertyKey(tt.input)
 			if got != tt.want {
 				t.Errorf("tsPropertyKey(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestTsPropAccess(t *testing.T) {
+	tests := []struct {
+		accessor string
+		name     string
+		want     string
+	}{
+		{"obj", "name", "obj.name"},
+		{"obj", "first.name", `obj["first.name"]`},
+		{"obj", "user-id", `obj["user-id"]`},
+		{"options", "page size", `options["page size"]`},
+		{"options", "filter[name]", `options["filter[name]"]`},
+		{"obj", `say "hi"`, `obj["say \"hi\""]`},
+		{"obj", `back\slash`, `obj["back\\slash"]`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tsPropAccess(tt.accessor, tt.name)
+			if got != tt.want {
+				t.Errorf("tsPropAccess(%q, %q) = %q, want %q", tt.accessor, tt.name, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestTsOptionalAccess(t *testing.T) {
+	tests := []struct {
+		accessor string
+		name     string
+		want     string
+	}{
+		{"obj", "name", "obj?.name"},
+		{"obj", "first.name", `obj?.["first.name"]`},
+		{"obj", "user-id", `obj?.["user-id"]`},
+		{"options.query", "page size", `options.query?.["page size"]`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tsOptionalAccess(tt.accessor, tt.name)
+			if got != tt.want {
+				t.Errorf("tsOptionalAccess(%q, %q) = %q, want %q", tt.accessor, tt.name, got, tt.want)
 			}
 		})
 	}
