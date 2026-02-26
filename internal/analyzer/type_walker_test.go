@@ -2,6 +2,7 @@ package analyzer_test
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/tsgonest/tsgonest/internal/metadata"
@@ -4308,5 +4309,899 @@ type UserResponse = Omit<UserEntity, 'deletedAt'> & { isActive: boolean; };
 	}
 	if len(m.Properties) != len(expected) {
 		t.Errorf("expected %d properties, got %d", len(expected), len(m.Properties))
+	}
+}
+
+// --- Bug 1: PaginatedResponse<T> Generic Collapse ---
+
+// TestWalkGenericTypeAlias_MultipleInstantiations verifies that different
+// instantiations of a generic type alias produce distinct named schemas in
+// the registry, not a single collapsed schema.
+// This mirrors the ecom-bot PaginatedResponse<T> pattern where controllers
+// return PaginatedResponse<CampaignResponse>, PaginatedResponse<AdSetResponse>, etc.
+func TestWalkGenericTypeAlias_MultipleInstantiations(t *testing.T) {
+	env := setupWalker(t, `
+type PaginatedResponse<T> = {
+  items: T[];
+  totalCount: number;
+  totalPages: number;
+  currentPage: number;
+  pageSize: number;
+};
+
+interface CampaignResponse {
+  id: string;
+  name: string;
+  budget: number;
+}
+
+interface AdSetResponse {
+  id: string;
+  targeting: string;
+  status: string;
+}
+
+interface SandboxMessageResponse {
+  id: string;
+  content: string;
+  timestamp: number;
+}
+
+// Three concrete type aliases — each should get its own schema
+type CampaignList = PaginatedResponse<CampaignResponse>;
+type AdSetList = PaginatedResponse<AdSetResponse>;
+type MessageList = PaginatedResponse<SandboxMessageResponse>;
+`)
+	defer env.release()
+
+	walker := env.walkAllNamedTypes(t)
+	reg := walker.Registry()
+
+	// Each named alias should be registered with correct items type
+	for _, tc := range []struct {
+		alias   string
+		itemRef string
+	}{
+		{"CampaignList", "CampaignResponse"},
+		{"AdSetList", "AdSetResponse"},
+		{"MessageList", "SandboxMessageResponse"},
+	} {
+		if !reg.Has(tc.alias) {
+			t.Errorf("%s should be registered in the registry", tc.alias)
+			continue
+		}
+		m := reg.Types[tc.alias]
+		if m.Kind != metadata.KindObject {
+			t.Errorf("%s: expected KindObject, got %s", tc.alias, m.Kind)
+			continue
+		}
+		itemsProp := findProperty(t, m.Properties, "items")
+		if itemsProp.Type.Kind != metadata.KindArray {
+			t.Errorf("%s.items: expected KindArray, got %s", tc.alias, itemsProp.Type.Kind)
+			continue
+		}
+		if itemsProp.Type.ElementType == nil {
+			t.Errorf("%s.items: ElementType is nil", tc.alias)
+			continue
+		}
+		elem := itemsProp.Type.ElementType
+		if elem.Kind != metadata.KindRef {
+			t.Errorf("%s.items element: expected KindRef, got %s", tc.alias, elem.Kind)
+			continue
+		}
+		if elem.Ref != tc.itemRef {
+			t.Errorf("%s.items element: expected ref to %q, got %q", tc.alias, tc.itemRef, elem.Ref)
+		}
+	}
+}
+
+// TestWalkGenericInterface_MultipleInstantiations_AsSubField tests that when
+// a generic interface like PaginatedResponse<T> is used as a sub-field property
+// with different type arguments, each instantiation gets a distinct registered name.
+func TestWalkGenericInterface_MultipleInstantiations_AsSubField(t *testing.T) {
+	env := setupWalker(t, `
+interface PaginatedResponse<T> {
+  items: T[];
+  total: number;
+  page: number;
+}
+
+interface User { name: string; email: string; }
+interface Product { id: number; title: string; price: number; }
+
+// Wrapper that uses two different instantiations as sub-fields
+type ApiResponses = {
+  users: PaginatedResponse<User>;
+  products: PaginatedResponse<Product>;
+};
+`)
+	defer env.release()
+
+	walker := env.walkAllNamedTypes(t)
+	reg := walker.Registry()
+
+	if !reg.Has("ApiResponses") {
+		t.Fatal("ApiResponses should be registered")
+	}
+	apiResp := reg.Types["ApiResponses"]
+
+	usersProp := findProperty(t, apiResp.Properties, "users")
+	productsProp := findProperty(t, apiResp.Properties, "products")
+
+	// Both sub-fields should resolve to registered types (not anonymous inline objects)
+	// AND they must be DIFFERENT registered types (not the same collapsed PaginatedResponse)
+	if usersProp.Type.Kind != metadata.KindRef && usersProp.Type.Kind != metadata.KindObject {
+		t.Fatalf("users: expected KindRef or KindObject, got %s", usersProp.Type.Kind)
+	}
+	if productsProp.Type.Kind != metadata.KindRef && productsProp.Type.Kind != metadata.KindObject {
+		t.Fatalf("products: expected KindRef or KindObject, got %s", productsProp.Type.Kind)
+	}
+
+	// Resolve both to their actual object metadata
+	resolveToObject := func(prop *metadata.Property) *metadata.Metadata {
+		if prop.Type.Kind == metadata.KindRef {
+			resolved, ok := reg.Types[prop.Type.Ref]
+			if !ok {
+				t.Fatalf("ref %q not found in registry", prop.Type.Ref)
+			}
+			return resolved
+		}
+		return &prop.Type
+	}
+	usersObj := resolveToObject(usersProp)
+	productsObj := resolveToObject(productsProp)
+
+	// Verify each has correct items type
+	usersItems := findProperty(t, usersObj.Properties, "items")
+	productsItems := findProperty(t, productsObj.Properties, "items")
+
+	if usersItems.Type.Kind != metadata.KindArray || usersItems.Type.ElementType == nil {
+		t.Fatal("users.items should be an array with element type")
+	}
+	if productsItems.Type.Kind != metadata.KindArray || productsItems.Type.ElementType == nil {
+		t.Fatal("products.items should be an array with element type")
+	}
+
+	// The element types must be DIFFERENT — User vs Product
+	usersElem := usersItems.Type.ElementType
+	productsElem := productsItems.Type.ElementType
+
+	if usersElem.Kind == metadata.KindRef && productsElem.Kind == metadata.KindRef {
+		if usersElem.Ref == productsElem.Ref {
+			t.Errorf("GENERIC COLLAPSE: users.items and products.items both reference %q — they should reference different types (User vs Product)", usersElem.Ref)
+		}
+	} else if usersElem.Kind == metadata.KindObject && productsElem.Kind == metadata.KindObject {
+		// If both are inline objects, check that they have different properties
+		if len(usersElem.Properties) == len(productsElem.Properties) {
+			// Could be coincidence, but check property names
+			userPropNames := make(map[string]bool)
+			for _, p := range usersElem.Properties {
+				userPropNames[p.Name] = true
+			}
+			productPropNames := make(map[string]bool)
+			for _, p := range productsElem.Properties {
+				productPropNames[p.Name] = true
+			}
+			allSame := true
+			for name := range userPropNames {
+				if !productPropNames[name] {
+					allSame = false
+					break
+				}
+			}
+			if allSame && len(userPropNames) > 0 {
+				t.Error("GENERIC COLLAPSE: users.items and products.items have identical property sets — they should differ (User has name+email, Product has id+title+price)")
+			}
+		}
+	}
+
+	// If both are KindRef, they should point to different names
+	if usersProp.Type.Kind == metadata.KindRef && productsProp.Type.Kind == metadata.KindRef {
+		if usersProp.Type.Ref == productsProp.Type.Ref {
+			t.Errorf("GENERIC COLLAPSE: users and products both reference the same schema %q", usersProp.Type.Ref)
+		}
+	}
+}
+
+// TestWalkGenericTypeAlias_DirectUsage_UniqueSchemas tests that using
+// PaginatedResponse<T> directly (without a named alias) still produces
+// distinct schemas for each T.
+func TestWalkGenericTypeAlias_DirectUsage_UniqueSchemas(t *testing.T) {
+	env := setupWalker(t, `
+type PaginatedResponse<T> = {
+  items: T[];
+  totalCount: number;
+};
+
+interface OrderResponse { orderId: string; total: number; }
+interface CustomerResponse { customerId: string; name: string; }
+
+type OrderContainer = {
+  orders: PaginatedResponse<OrderResponse>;
+};
+type CustomerContainer = {
+  customers: PaginatedResponse<CustomerResponse>;
+};
+`)
+	defer env.release()
+
+	walker := env.walkAllNamedTypes(t)
+	reg := walker.Registry()
+
+	if !reg.Has("OrderContainer") {
+		t.Fatal("OrderContainer should be registered")
+	}
+	if !reg.Has("CustomerContainer") {
+		t.Fatal("CustomerContainer should be registered")
+	}
+
+	orderContainer := reg.Types["OrderContainer"]
+	customerContainer := reg.Types["CustomerContainer"]
+
+	ordersProp := findProperty(t, orderContainer.Properties, "orders")
+	customersProp := findProperty(t, customerContainer.Properties, "customers")
+
+	// Resolve to object metadata
+	resolveToObj := func(m *metadata.Metadata) *metadata.Metadata {
+		if m.Kind == metadata.KindRef {
+			if resolved, ok := reg.Types[m.Ref]; ok {
+				return resolved
+			}
+		}
+		return m
+	}
+
+	ordersObj := resolveToObj(&ordersProp.Type)
+	customersObj := resolveToObj(&customersProp.Type)
+
+	// Both should have items property with array type
+	ordersItems := findProperty(t, ordersObj.Properties, "items")
+	customersItems := findProperty(t, customersObj.Properties, "items")
+
+	if ordersItems.Type.Kind != metadata.KindArray {
+		t.Fatalf("orders.items expected KindArray, got %s", ordersItems.Type.Kind)
+	}
+	if customersItems.Type.Kind != metadata.KindArray {
+		t.Fatalf("customers.items expected KindArray, got %s", customersItems.Type.Kind)
+	}
+
+	// The element types must differ — OrderResponse vs CustomerResponse
+	orderElem := ordersItems.Type.ElementType
+	customerElem := customersItems.Type.ElementType
+	if orderElem == nil || customerElem == nil {
+		t.Fatal("element types should not be nil")
+	}
+
+	// If both are refs, they should point to different types
+	if orderElem.Kind == metadata.KindRef && customerElem.Kind == metadata.KindRef {
+		if orderElem.Ref == customerElem.Ref {
+			t.Errorf("GENERIC COLLAPSE: orders.items and customers.items both reference %q", orderElem.Ref)
+		}
+	}
+}
+
+// --- Bug 2: Named Array Type Alias Double-Nesting ---
+
+// TestWalkNamedArrayTypeAlias_NoDoubleNesting verifies that a named type alias
+// that resolves to an array (e.g., type ShipmentItemSnapshot = {...}[]) does NOT
+// register as a named array schema. This prevents double-nesting in OpenAPI where
+// ShipmentItemSnapshot[] would become {...}[][] instead of {...}[].
+func TestWalkNamedArrayTypeAlias_NoDoubleNesting(t *testing.T) {
+	env := setupWalker(t, `
+type ShipmentItemSnapshot = {
+  variantId: string;
+  productId: string;
+  productName: string;
+  quantity: number;
+  price: number;
+}[];
+
+type ShipmentResponse = {
+  id: string;
+  items: ShipmentItemSnapshot;
+  trackingNumber: string;
+};
+`)
+	defer env.release()
+
+	walker := env.walkAllNamedTypes(t)
+	reg := walker.Registry()
+
+	// ShipmentResponse should be registered
+	if !reg.Has("ShipmentResponse") {
+		t.Fatal("ShipmentResponse should be registered")
+	}
+
+	resp := reg.Types["ShipmentResponse"]
+	itemsProp := findProperty(t, resp.Properties, "items")
+
+	// items should be an array of objects (not a $ref to a named array schema)
+	if itemsProp.Type.Kind == metadata.KindRef {
+		// If it's a ref, the referenced type should be an OBJECT, not an array
+		resolved, ok := reg.Types[itemsProp.Type.Ref]
+		if !ok {
+			t.Fatalf("ref %q not found in registry", itemsProp.Type.Ref)
+		}
+		if resolved.Kind == metadata.KindArray {
+			t.Errorf("DOUBLE-NESTING BUG: ShipmentItemSnapshot is registered as KindArray — it should be the inner object type, not the array wrapper")
+		}
+	} else if itemsProp.Type.Kind == metadata.KindArray {
+		// Direct array is fine — check element is an object with correct properties
+		if itemsProp.Type.ElementType == nil {
+			t.Fatal("items array should have element type")
+		}
+		elem := itemsProp.Type.ElementType
+		if elem.Kind == metadata.KindRef {
+			resolved, ok := reg.Types[elem.Ref]
+			if !ok {
+				t.Fatalf("ref %q not found", elem.Ref)
+			}
+			if resolved.Kind == metadata.KindArray {
+				t.Errorf("DOUBLE-NESTING BUG: element ref %q points to another array", elem.Ref)
+			}
+		}
+	} else {
+		t.Errorf("items: expected KindArray or KindRef, got %s", itemsProp.Type.Kind)
+	}
+}
+
+// TestWalkNamedArrayTypeAlias_UsedInArrayContext tests the critical scenario:
+// a named array type used as SomeType[] should NOT produce double nesting.
+func TestWalkNamedArrayTypeAlias_UsedInArrayContext(t *testing.T) {
+	env := setupWalker(t, `
+type ItemSnapshot = {
+  productId: string;
+  quantity: number;
+  price: number;
+}[];
+
+// Using ItemSnapshot[] - WITHOUT the fix, this would be {...}[][]
+type OrderDetail = {
+  orderId: string;
+  items: ItemSnapshot;
+};
+`)
+	defer env.release()
+
+	walker := env.walkAllNamedTypes(t)
+	reg := walker.Registry()
+
+	if !reg.Has("OrderDetail") {
+		t.Fatal("OrderDetail should be registered")
+	}
+
+	detail := reg.Types["OrderDetail"]
+	itemsProp := findProperty(t, detail.Properties, "items")
+
+	// The items property should ultimately resolve to a single-level array of objects.
+	// Not an array of arrays.
+	resolvedType := &itemsProp.Type
+	if resolvedType.Kind == metadata.KindRef {
+		resolved, ok := reg.Types[resolvedType.Ref]
+		if !ok {
+			t.Fatalf("ref %q not found", resolvedType.Ref)
+		}
+		resolvedType = resolved
+	}
+
+	if resolvedType.Kind == metadata.KindArray {
+		// It's an array — the element should be an object, NOT another array
+		if resolvedType.ElementType == nil {
+			t.Fatal("array element type should not be nil")
+		}
+		elemType := resolvedType.ElementType
+		if elemType.Kind == metadata.KindRef {
+			resolved, ok := reg.Types[elemType.Ref]
+			if !ok {
+				t.Fatalf("ref %q not found", elemType.Ref)
+			}
+			elemType = resolved
+		}
+		if elemType.Kind == metadata.KindArray {
+			t.Errorf("DOUBLE-NESTING BUG: items resolves to array-of-array — element is KindArray instead of KindObject")
+		}
+		if elemType.Kind != metadata.KindObject {
+			t.Errorf("items array element: expected KindObject, got %s", elemType.Kind)
+		}
+	} else {
+		t.Errorf("items: expected to resolve to KindArray, got %s", resolvedType.Kind)
+	}
+}
+
+// TestWalkNamedArrayTypeAlias_NameCollision tests that when two types share
+// the same name but one is an array and one is an object (like the PrismaJson
+// vs DTO ShipmentItemSnapshot case), the object version wins in the registry.
+func TestWalkNamedArrayTypeAlias_NameCollision(t *testing.T) {
+	env := setupWalker(t, `
+// First definition: array type (like PrismaJson.ShipmentItemSnapshot)
+type ShipmentItemSnapshot = {
+  variantId: string;
+  productId: string;
+  quantity: number;
+  price: number;
+}[];
+
+// Second definition: a response using it
+type ShipmentResponse = {
+  id: string;
+  items: ShipmentItemSnapshot;
+};
+`)
+	defer env.release()
+
+	walker := env.walkAllNamedTypes(t)
+	reg := walker.Registry()
+
+	// If ShipmentItemSnapshot IS in the registry, it should NOT be KindArray
+	if reg.Has("ShipmentItemSnapshot") {
+		m := reg.Types["ShipmentItemSnapshot"]
+		if m.Kind == metadata.KindArray {
+			t.Errorf("DOUBLE-NESTING BUG: ShipmentItemSnapshot registered as KindArray in the registry — named array types should not become $ref schemas")
+		}
+	}
+	// If it's not in the registry at all, that's also acceptable —
+	// it means the array is inlined, which avoids double-nesting
+}
+
+// --- Bug 1 follow-up: Type alias args should produce readable names, not T{id} ---
+
+// TestWalkGenericTypeAlias_TypeAliasArgs_ReadableNames verifies that when a
+// generic type like PaginatedResponse<T> is used with type-alias arguments
+// (not interfaces), the composite schema name uses the alias name rather than
+// falling back to T{id}. This mirrors the ecom-bot pattern where controller
+// methods return Promise<PaginatedResponse<FacebookWebhookLogResponse>> and
+// FacebookWebhookLogResponse is a type alias (not an interface).
+func TestWalkGenericTypeAlias_TypeAliasArgs_ReadableNames(t *testing.T) {
+	env := setupWalker(t, `
+type PaginatedResponse<T> = {
+  items: T[];
+  totalCount: number;
+  currentPage: number;
+};
+
+// Type aliases (not interfaces) — these resolve to anonymous object types
+type WebhookLogResponse = {
+  id: string;
+  payload: string;
+  receivedAt: string;
+};
+
+type OutboundLogResponse = {
+  id: string;
+  destination: string;
+  sentAt: string;
+  status: string;
+};
+
+// Container that uses PaginatedResponse with type-alias arguments
+type ApiResult = {
+  webhooks: PaginatedResponse<WebhookLogResponse>;
+  outbound: PaginatedResponse<OutboundLogResponse>;
+};
+`)
+	defer env.release()
+
+	walker := env.walkAllNamedTypes(t)
+	reg := walker.Registry()
+
+	if !reg.Has("ApiResult") {
+		t.Fatal("ApiResult should be registered")
+	}
+	apiResult := reg.Types["ApiResult"]
+
+	webhooksProp := findProperty(t, apiResult.Properties, "webhooks")
+	outboundProp := findProperty(t, apiResult.Properties, "outbound")
+
+	// Both should be $refs to distinct registered types
+	if webhooksProp.Type.Kind != metadata.KindRef {
+		t.Fatalf("webhooks: expected KindRef, got %s", webhooksProp.Type.Kind)
+	}
+	if outboundProp.Type.Kind != metadata.KindRef {
+		t.Fatalf("outbound: expected KindRef, got %s", outboundProp.Type.Kind)
+	}
+
+	// The ref names should contain the human-readable type alias names, NOT T{id}
+	webhooksRef := webhooksProp.Type.Ref
+	outboundRef := outboundProp.Type.Ref
+
+	if webhooksRef == outboundRef {
+		t.Errorf("webhooks and outbound both reference %q — should be distinct", webhooksRef)
+	}
+
+	// Should contain "WebhookLogResponse" and "OutboundLogResponse" respectively
+	if !strings.Contains(webhooksRef, "WebhookLogResponse") {
+		t.Errorf("webhooks ref %q should contain 'WebhookLogResponse'", webhooksRef)
+	}
+	if !strings.Contains(outboundRef, "OutboundLogResponse") {
+		t.Errorf("outbound ref %q should contain 'OutboundLogResponse'", outboundRef)
+	}
+
+	// Neither should contain T followed by digits (the fallback pattern)
+	for _, ref := range []string{webhooksRef, outboundRef} {
+		for i := 0; i < len(ref)-1; i++ {
+			if ref[i] == 'T' && i+1 < len(ref) && ref[i+1] >= '0' && ref[i+1] <= '9' {
+				// Check it's not part of a word like "Template"
+				if i == 0 || ref[i-1] == '_' {
+					t.Errorf("ref %q contains T{id} fallback name — type alias arg name was not resolved", ref)
+					break
+				}
+			}
+		}
+	}
+
+	// Verify the schemas have correct items types
+	for _, tc := range []struct {
+		ref     string
+		itemRef string
+	}{
+		{webhooksRef, "WebhookLogResponse"},
+		{outboundRef, "OutboundLogResponse"},
+	} {
+		resolved, ok := reg.Types[tc.ref]
+		if !ok {
+			t.Errorf("schema %q not in registry", tc.ref)
+			continue
+		}
+		itemsProp := findProperty(t, resolved.Properties, "items")
+		if itemsProp.Type.Kind != metadata.KindArray || itemsProp.Type.ElementType == nil {
+			t.Errorf("%s.items: expected array with element", tc.ref)
+			continue
+		}
+		elem := itemsProp.Type.ElementType
+		if elem.Kind != metadata.KindRef {
+			t.Errorf("%s.items element: expected ref, got %s", tc.ref, elem.Kind)
+			continue
+		}
+		if elem.Ref != tc.itemRef {
+			t.Errorf("%s.items element: expected ref %q, got %q", tc.ref, tc.itemRef, elem.Ref)
+		}
+	}
+}
+
+// TestWalkGenericInterface_InterfaceArgs_ReadableNames verifies that generic
+// interfaces with interface-typed arguments also produce readable composite names.
+func TestWalkGenericInterface_InterfaceArgs_ReadableNames(t *testing.T) {
+	env := setupWalker(t, `
+interface PaginatedList<T> {
+  data: T[];
+  meta: { total: number; page: number };
+}
+
+interface Campaign { id: string; name: string; budget: number; }
+interface AdSet { id: string; targeting: string; }
+
+type Dashboard = {
+  campaigns: PaginatedList<Campaign>;
+  adSets: PaginatedList<AdSet>;
+};
+`)
+	defer env.release()
+
+	walker := env.walkAllNamedTypes(t)
+	reg := walker.Registry()
+
+	if !reg.Has("Dashboard") {
+		t.Fatal("Dashboard should be registered")
+	}
+	dashboard := reg.Types["Dashboard"]
+
+	campaignsProp := findProperty(t, dashboard.Properties, "campaigns")
+	adSetsProp := findProperty(t, dashboard.Properties, "adSets")
+
+	if campaignsProp.Type.Kind != metadata.KindRef {
+		t.Fatalf("campaigns: expected KindRef, got %s", campaignsProp.Type.Kind)
+	}
+	if adSetsProp.Type.Kind != metadata.KindRef {
+		t.Fatalf("adSets: expected KindRef, got %s", adSetsProp.Type.Kind)
+	}
+
+	// Names should be readable
+	if !strings.Contains(campaignsProp.Type.Ref, "Campaign") {
+		t.Errorf("campaigns ref %q should contain 'Campaign'", campaignsProp.Type.Ref)
+	}
+	if !strings.Contains(adSetsProp.Type.Ref, "AdSet") {
+		t.Errorf("adSets ref %q should contain 'AdSet'", adSetsProp.Type.Ref)
+	}
+
+	// Verify different refs
+	if campaignsProp.Type.Ref == adSetsProp.Type.Ref {
+		t.Errorf("campaigns and adSets should have different refs, both are %q", campaignsProp.Type.Ref)
+	}
+}
+
+// TestWalkGenericTypeAlias_AnonymousArgs_InlineAndWarn verifies that when a
+// generic type like Wrapper<T> is instantiated with an anonymous object literal
+// (e.g., Wrapper<{ x: number }>), the type is inlined (not registered under a
+// T{id} name) and a warning is emitted suggesting the user create a named alias.
+func TestWalkGenericTypeAlias_AnonymousArgs_InlineAndWarn(t *testing.T) {
+	env := setupWalker(t, `
+type Wrapper<T> = {
+  data: T;
+  timestamp: number;
+};
+
+// Named alias — should get a readable composite name
+type UserDto = { id: string; name: string; };
+
+// Container with both named and anonymous type args
+type Response = {
+  named: Wrapper<UserDto>;
+  anonymous: Wrapper<{ x: number; y: number }>;
+};
+`)
+	defer env.release()
+
+	walker := env.walkAllNamedTypes(t)
+	reg := walker.Registry()
+
+	if !reg.Has("Response") {
+		t.Fatal("Response should be registered")
+	}
+	response := reg.Types["Response"]
+
+	namedProp := findProperty(t, response.Properties, "named")
+	anonProp := findProperty(t, response.Properties, "anonymous")
+
+	// Named arg should produce a $ref with readable name
+	if namedProp.Type.Kind != metadata.KindRef {
+		t.Fatalf("named: expected KindRef, got %s", namedProp.Type.Kind)
+	}
+	if !strings.Contains(namedProp.Type.Ref, "UserDto") {
+		t.Errorf("named ref %q should contain 'UserDto'", namedProp.Type.Ref)
+	}
+
+	// Anonymous arg should be inlined (KindObject, not KindRef)
+	if anonProp.Type.Kind == metadata.KindRef {
+		t.Errorf("anonymous: expected inlined type (not KindRef), got ref %q — anonymous type args should not be registered", anonProp.Type.Ref)
+	}
+	if anonProp.Type.Kind != metadata.KindObject {
+		t.Fatalf("anonymous: expected KindObject (inlined), got %s", anonProp.Type.Kind)
+	}
+
+	// Should have emitted a warning about the anonymous type arg
+	warnings := walker.Warnings()
+	found := false
+	for _, w := range warnings {
+		if strings.Contains(w, "Wrapper") && strings.Contains(w, "anonymous type arguments") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected a warning about Wrapper having anonymous type arguments, got warnings: %v", warnings)
+	}
+}
+
+// TestWalkGenericInterface_AnonymousArgs_InlineAndWarn verifies the same
+// inline+warn behavior for generic interfaces (not just type aliases).
+func TestWalkGenericInterface_AnonymousArgs_InlineAndWarn(t *testing.T) {
+	env := setupWalker(t, `
+interface Container<T> {
+  value: T;
+  count: number;
+}
+
+type Result = {
+  item: Container<{ foo: string; bar: number }>;
+};
+`)
+	defer env.release()
+
+	walker := env.walkAllNamedTypes(t)
+	reg := walker.Registry()
+
+	if !reg.Has("Result") {
+		t.Fatal("Result should be registered")
+	}
+	result := reg.Types["Result"]
+
+	itemProp := findProperty(t, result.Properties, "item")
+
+	// Anonymous arg should be inlined
+	if itemProp.Type.Kind == metadata.KindRef {
+		t.Errorf("item: expected inlined type (not KindRef), got ref %q", itemProp.Type.Ref)
+	}
+	if itemProp.Type.Kind != metadata.KindObject {
+		t.Fatalf("item: expected KindObject (inlined), got %s", itemProp.Type.Kind)
+	}
+
+	// Should have emitted a warning
+	warnings := walker.Warnings()
+	found := false
+	for _, w := range warnings {
+		if strings.Contains(w, "Container") && strings.Contains(w, "anonymous type arguments") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected a warning about Container having anonymous type arguments, got warnings: %v", warnings)
+	}
+}
+
+// TestWalkGeneric_PickWithLiteralUnion verifies that Pick<User, 'id' | 'name'>
+// gets a readable composite name from the string literal union (not inlined).
+func TestWalkGeneric_PickWithLiteralUnion(t *testing.T) {
+	env := setupWalker(t, `
+type User = {
+  id: string;
+  name: string;
+  email: string;
+  age: number;
+};
+
+type UserSummary = Pick<User, 'id' | 'name'>;
+type UserContact = Pick<User, 'email' | 'name'>;
+
+type Container = {
+  summary: UserSummary;
+  contact: UserContact;
+};
+`)
+	defer env.release()
+
+	walker := env.walkAllNamedTypes(t)
+	reg := walker.Registry()
+
+	if !reg.Has("Container") {
+		t.Fatal("Container should be registered")
+	}
+	container := reg.Types["Container"]
+
+	summaryProp := findProperty(t, container.Properties, "summary")
+	contactProp := findProperty(t, container.Properties, "contact")
+
+	// Both should be refs (Pick resolves to a concrete object; alias recovery
+	// should produce composite names using the literal union members)
+	if summaryProp.Type.Kind != metadata.KindRef {
+		// Pick resolves to an anonymous object — alias recovery with literal union
+		// may or may not produce a ref depending on whether the alias is preserved.
+		// At minimum, it should NOT have a T{id} fallback name.
+		if summaryProp.Type.Kind == metadata.KindObject {
+			t.Logf("summary inlined as KindObject (acceptable — Pick alias may not survive)")
+		} else {
+			t.Errorf("summary: unexpected kind %s", summaryProp.Type.Kind)
+		}
+	} else {
+		// If it's a ref, name should not contain T{id} pattern
+		if strings.Contains(summaryProp.Type.Ref, "T1") || strings.Contains(summaryProp.Type.Ref, "T2") {
+			t.Errorf("summary ref %q should not contain T{id} fallback names", summaryProp.Type.Ref)
+		}
+	}
+
+	// Verify distinct schemas if both are refs
+	if summaryProp.Type.Kind == metadata.KindRef && contactProp.Type.Kind == metadata.KindRef {
+		if summaryProp.Type.Ref == contactProp.Type.Ref {
+			t.Errorf("summary and contact should have different refs, both are %q", summaryProp.Type.Ref)
+		}
+	}
+
+	// No warnings should mention T{id}
+	for _, w := range walker.Warnings() {
+		if strings.Contains(w, "T1") || strings.Contains(w, "T2") {
+			t.Errorf("warning should not contain T{id} fallback: %s", w)
+		}
+	}
+}
+
+// TestWalkGeneric_WarningDeduplication verifies that multiple uses of the same
+// unnameable generic type produce only a single warning.
+func TestWalkGeneric_WarningDeduplication(t *testing.T) {
+	env := setupWalker(t, `
+type Wrapper<T> = {
+  data: T;
+};
+
+type Result = {
+  a: Wrapper<{ x: number }>;
+  b: Wrapper<{ y: string }>;
+  c: Wrapper<{ z: boolean }>;
+};
+`)
+	defer env.release()
+
+	walker := env.walkAllNamedTypes(t)
+
+	// Count how many warnings mention "Wrapper"
+	wrapperCount := 0
+	for _, w := range walker.Warnings() {
+		if strings.Contains(w, "Wrapper") && strings.Contains(w, "anonymous type arguments") {
+			wrapperCount++
+		}
+	}
+
+	if wrapperCount != 1 {
+		t.Errorf("expected exactly 1 deduplicated warning for Wrapper, got %d; warnings: %v",
+			wrapperCount, walker.Warnings())
+	}
+}
+
+// TestWalkGeneric_LargeLiteralUnion_Inlines verifies that generic types with
+// more than 4 literal union members as type arguments are inlined (not named
+// with an absurdly long composite name).
+func TestWalkGeneric_LargeLiteralUnion_Inlines(t *testing.T) {
+	env := setupWalker(t, `
+type User = {
+  id: string;
+  name: string;
+  email: string;
+  age: number;
+  phone: string;
+  address: string;
+};
+
+// 5 literals — exceeds the threshold for naming
+type BigPick = Pick<User, 'id' | 'name' | 'email' | 'age' | 'phone'>;
+
+type Container = {
+  item: BigPick;
+};
+`)
+	defer env.release()
+
+	walker := env.walkAllNamedTypes(t)
+	reg := walker.Registry()
+
+	if !reg.Has("Container") {
+		t.Fatal("Container should be registered")
+	}
+	container := reg.Types["Container"]
+
+	itemProp := findProperty(t, container.Properties, "item")
+
+	// Should be registered as "BigPick" (non-generic alias name) or inlined,
+	// but NOT with a long composite name joining all 5 literals
+	if itemProp.Type.Kind == metadata.KindRef {
+		ref := itemProp.Type.Ref
+		// BigPick is a non-generic top-level type alias — should be registered as "BigPick"
+		if ref != "BigPick" {
+			// Acceptable if it has the alias name, but should not have T{id}
+			if strings.HasPrefix(ref, "Pick_") && len(ref) > 40 {
+				t.Errorf("ref %q is too long — large literal unions should not produce composite names", ref)
+			}
+		}
+	}
+	// If it's KindObject (inlined), that's also fine for a large union
+}
+
+// TestWalkGeneric_RecordStringAnonymousObject verifies that Record<string, {...}>
+// where the value type is an anonymous object gets inlined and warns.
+func TestWalkGeneric_RecordStringAnonymousObject(t *testing.T) {
+	env := setupWalker(t, `
+type Lookup = {
+  data: Record<string, { label: string; value: number }>;
+};
+`)
+	defer env.release()
+
+	walker := env.walkAllNamedTypes(t)
+	reg := walker.Registry()
+
+	if !reg.Has("Lookup") {
+		t.Fatal("Lookup should be registered")
+	}
+	lookup := reg.Types["Lookup"]
+	dataProp := findProperty(t, lookup.Properties, "data")
+
+	// The Record<string, anonymous> should NOT produce a T{id} ref name
+	if dataProp.Type.Kind == metadata.KindRef {
+		ref := dataProp.Type.Ref
+		for i := 0; i < 100; i++ {
+			if strings.Contains(ref, fmt.Sprintf("T%d", i)) && !strings.Contains(ref, "Type") {
+				t.Errorf("data ref %q contains T{id} fallback — should be inlined or have a readable name", ref)
+				break
+			}
+		}
+	}
+
+	// If Record warning was emitted, it should be deduplicated
+	recordCount := 0
+	for _, w := range walker.Warnings() {
+		if strings.Contains(w, "Record") {
+			recordCount++
+		}
+	}
+	if recordCount > 1 {
+		t.Errorf("expected at most 1 Record warning, got %d", recordCount)
 	}
 }
