@@ -51,6 +51,7 @@ export const docsTabs: SidebarTabWithProps[] = [
       '/docs/openapi/controllers',
       '/docs/openapi/parameters',
       '/docs/openapi/returns',
+      '/docs/openapi/sse',
       '/docs/openapi/versioning',
       '/docs/openapi/config',
       '/docs/openapi/migration',

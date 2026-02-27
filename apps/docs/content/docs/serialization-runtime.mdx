@@ -179,6 +179,12 @@ import {
   FormDataBody,
   FormDataInterceptor,
   TSGONEST_FORM_DATA_FACTORY,
+
+  // SSE (Server-Sent Events)
+  EventStream,          // @EventStream() method decorator
+  SseEvent,             // SseEvent<E, T> typed event interface (type-only)
+  SseEvents,            // SseEvents<M> discriminated union helper (type-only)
+  TsgonestSseInterceptor, // Iterator → Observable bridge (auto-injected)
 } from '@tsgonest/runtime';
 ```
 

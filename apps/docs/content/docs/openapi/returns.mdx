@@ -199,7 +199,68 @@ The type name after the status code must reference a class or interface in your 
 
 ## SSE Endpoints
 
-Routes decorated with `@Sse()` map to **GET** operations with `text/event-stream` response content type and use the OpenAPI 3.2 `itemSchema` field:
+### @EventStream (recommended)
+
+Routes decorated with `@EventStream()` produce `text/event-stream` responses with discriminated `oneOf` schemas. Each event variant has a typed `contentSchema` for the data payload, and an error variant is appended automatically:
+
+```ts
+import { EventStream, SseEvents } from '@tsgonest/runtime';
+
+type OrderEvents = SseEvents<{
+  created: OrderDto;
+  cancelled: { id: string; reason: string };
+}>;
+
+@EventStream('events')
+async *events(): AsyncGenerator<OrderEvents> { ... }
+```
+
+```json
+{
+  "200": {
+    "description": "Server-Sent Events stream",
+    "content": {
+      "text/event-stream": {
+        "schema": {
+          "type": "string",
+          "format": "event-stream",
+          "itemSchema": {
+            "oneOf": [
+              {
+                "type": "object",
+                "required": ["data", "event"],
+                "properties": {
+                  "event": { "type": "string", "const": "created" },
+                  "data": {
+                    "type": "string",
+                    "contentMediaType": "application/json",
+                    "contentSchema": { "$ref": "#/components/schemas/OrderDto" }
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "required": ["data", "event"],
+                "properties": {
+                  "event": { "type": "string", "const": "error" },
+                  "data": { "type": "string" }
+                }
+              }
+            ],
+            "discriminator": { "propertyName": "event" }
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+See the [Server-Sent Events](/docs/openapi/sse) page for full documentation on event types, heartbeat, error handling, and more.
+
+### @Sse (legacy)
+
+Routes decorated with NestJS's `@Sse()` map to **GET** operations with `text/event-stream` response content type and use the OpenAPI 3.2 `itemSchema` field:
 
 ```ts
 @Sse('events')
@@ -223,9 +284,9 @@ stream(): Observable<MessageEvent> { ... }
 }
 ```
 
-### Custom SSE Types
+### Custom SSE Types (legacy @Sse)
 
-If you return a custom DTO instead of the built-in `MessageEvent`, tsgonest adds `contentMediaType` and `contentSchema` to describe the event data payload:
+If you return a custom DTO instead of the built-in `MessageEvent` with `@Sse()`, tsgonest adds `contentMediaType` and `contentSchema` to describe the event data payload:
 
 ```ts
 interface OrderUpdate {

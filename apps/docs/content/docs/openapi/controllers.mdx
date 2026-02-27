@@ -45,6 +45,7 @@ All standard NestJS HTTP method decorators are supported:
 | `@Head()` | HEAD | 200 |
 | `@Options()` | OPTIONS | 200 |
 | `@Sse()` | GET | 200 |
+| `@EventStream()` | GET | 200 |
 
 Each decorator can take an optional sub-path:
 
@@ -251,7 +252,33 @@ Each `@throws` tag generates an additional response entry in the operation. The 
 
 ## Server-Sent Events
 
-The `@Sse()` decorator maps to a **GET** operation with `text/event-stream` content type and uses the OpenAPI 3.2 `itemSchema` field:
+### @EventStream (recommended)
+
+The `@EventStream()` decorator from `@tsgonest/runtime` provides type-safe SSE with discriminated event unions, compile-time validation/serialization, and automatic OpenAPI schemas:
+
+```ts
+import { EventStream, SseEvent, SseEvents } from '@tsgonest/runtime';
+
+type OrderEvents = SseEvents<{
+  created: OrderDto;
+  shipped: OrderDto;
+  cancelled: { id: string; reason: string };
+}>;
+
+@Controller('orders')
+export class OrdersController {
+  @EventStream('events', { heartbeat: 30_000 })
+  async *events(): AsyncGenerator<OrderEvents> { ... }
+  // GET /orders/events
+  // Response: text/event-stream with discriminated oneOf itemSchema
+}
+```
+
+See the dedicated [Server-Sent Events](/docs/openapi/sse) page for full documentation.
+
+### @Sse (legacy)
+
+NestJS's built-in `@Sse()` decorator is also supported. It maps to a **GET** operation with `text/event-stream` content type:
 
 ```ts
 @Controller('notifications')
@@ -263,7 +290,7 @@ export class NotificationsController {
 }
 ```
 
-See [Return Types — SSE Endpoints](/docs/openapi/returns#sse-endpoints) for more on how SSE response schemas are generated.
+See [Return Types — SSE Endpoints](/docs/openapi/returns#sse-endpoints) for more on how `@Sse()` response schemas are generated.
 
 ## Comprehensive Example
 
