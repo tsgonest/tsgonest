@@ -1683,3 +1683,673 @@ func getKeys(m map[string]any) []string {
 	}
 	return keys
 }
+
+// ---- Bug Reproduction Tests ----
+
+// TestIntegration_Bug1_BrandedTypeConstraintsInOpenAPI verifies that branded type
+// constraints (from @tsgonest/types) are correctly propagated to OpenAPI schemas.
+// Bug: single-constraint branded types (string & MaxLength<100>), const-object enums,
+// Record<string,any> aliases, and branded arrays produce empty/metadata-only schemas.
+func TestIntegration_Bug1_BrandedTypeConstraintsInOpenAPI(t *testing.T) {
+	registry := metadata.NewTypeRegistry()
+
+	// Register PriorityEnum as a named literal union (how type walker produces Prisma const-object enums)
+	registry.Register("PriorityEnum", &metadata.Metadata{
+		Kind: metadata.KindUnion,
+		Name: "PriorityEnum",
+		UnionMembers: []metadata.Metadata{
+			{Kind: metadata.KindLiteral, LiteralValue: "HIGH"},
+			{Kind: metadata.KindLiteral, LiteralValue: "IMPORTANT"},
+			{Kind: metadata.KindLiteral, LiteralValue: "LOW"},
+			{Kind: metadata.KindLiteral, LiteralValue: "NORMAL"},
+		},
+	})
+
+	// Register JsonRecord as an object with index signature (Record<string, any>)
+	registry.Register("JsonRecord", &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Name: "JsonRecord",
+		IndexSignature: &metadata.IndexSignature{
+			KeyType:   metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"},
+			ValueType: metadata.Metadata{Kind: metadata.KindAny},
+		},
+	})
+
+	// Register CreateLeadDealDto with all the bug-reproducing patterns
+	patternStr := "^[0-9a-fA-F]{24}$"
+	maxLen100 := 100
+	registry.Register("CreateLeadDealDto", &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Name: "CreateLeadDealDto",
+		Properties: []metadata.Property{
+			// ✅ Multiple branded constraints — should work
+			{
+				Name:     "title",
+				Type:     metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"},
+				Required: true,
+				Constraints: &metadata.Constraints{
+					MinLength: intgIntPtr(1),
+					MaxLength: intgIntPtr(255),
+				},
+			},
+			// ✅ Literal union — should work
+			{
+				Name: "type",
+				Type: metadata.Metadata{
+					Kind: metadata.KindUnion,
+					UnionMembers: []metadata.Metadata{
+						{Kind: metadata.KindLiteral, LiteralValue: "LEAD"},
+						{Kind: metadata.KindLiteral, LiteralValue: "DEAL"},
+					},
+				},
+				Required: true,
+			},
+			// ✅ Numeric branded — should work
+			{
+				Name:     "value",
+				Type:     metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "number"},
+				Required: false,
+				Constraints: &metadata.Constraints{
+					Minimum: intgFloatPtr(0),
+				},
+			},
+			// Bug pattern: single MaxLength constraint
+			{
+				Name:     "location",
+				Type:     metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"},
+				Required: false,
+				Constraints: &metadata.Constraints{
+					MaxLength: &maxLen100,
+				},
+			},
+			// Bug pattern: single Pattern constraint
+			{
+				Name:     "contactId",
+				Type:     metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"},
+				Required: false,
+				Constraints: &metadata.Constraints{
+					Pattern: &patternStr,
+				},
+			},
+			// Bug pattern: Prisma const-object enum
+			{
+				Name:     "priority",
+				Type:     metadata.Metadata{Kind: metadata.KindRef, Ref: "PriorityEnum"},
+				Required: false,
+			},
+			// Bug pattern: Record<string, any>
+			{
+				Name:     "columnData",
+				Type:     metadata.Metadata{Kind: metadata.KindRef, Ref: "JsonRecord"},
+				Required: false,
+			},
+			// Bug pattern: branded array
+			{
+				Name: "tagIds",
+				Type: metadata.Metadata{
+					Kind: metadata.KindArray,
+					ElementType: &metadata.Metadata{
+						Kind:   metadata.KindAtomic,
+						Atomic: "string",
+						Constraints: &metadata.Constraints{
+							Pattern: &patternStr,
+						},
+					},
+				},
+				Required: false,
+			},
+			// ✅ Plain string
+			{
+				Name:     "statusId",
+				Type:     metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"},
+				Required: true,
+			},
+		},
+	})
+
+	gen := NewGenerator(registry)
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name: "LeadDealController",
+			Path: "lead-deals",
+			Routes: []analyzer.Route{
+				{
+					Method:      "POST",
+					Path:        "/lead-deals",
+					OperationID: "createLeadDeal",
+					Parameters: []analyzer.RouteParameter{
+						{Category: "body", Name: "", Type: metadata.Metadata{Kind: metadata.KindRef, Ref: "CreateLeadDealDto"}, Required: true},
+					},
+					ReturnType: metadata.Metadata{Kind: metadata.KindRef, Ref: "CreateLeadDealDto"},
+					StatusCode: 201,
+					Tags:       []string{"LeadDeal"},
+				},
+			},
+		},
+	}
+
+	doc := gen.Generate(controllers)
+	data := requireValidDoc(t, doc)
+	raw := parseJSON(t, data)
+
+	components := raw["components"].(map[string]any)
+	schemas := components["schemas"].(map[string]any)
+
+	// Check CreateLeadDealDto schema
+	dtoSchema, ok := schemas["CreateLeadDealDto"].(map[string]any)
+	if !ok {
+		t.Fatal("expected CreateLeadDealDto schema in components")
+	}
+	props := dtoSchema["properties"].(map[string]any)
+
+	// 1. title: type=string, minLength=1, maxLength=255
+	titleProp := props["title"].(map[string]any)
+	if titleProp["type"] != "string" {
+		t.Errorf("title: expected type=string, got %v", titleProp["type"])
+	}
+	if titleProp["minLength"] == nil {
+		t.Error("title: expected minLength to be set")
+	}
+	if titleProp["maxLength"] == nil {
+		t.Error("title: expected maxLength to be set")
+	}
+
+	// 2. type: enum=[LEAD, DEAL]
+	typeProp := props["type"].(map[string]any)
+	if typeProp["enum"] == nil {
+		t.Error("type: expected enum values")
+	}
+
+	// 3. value: type=number, minimum=0
+	valueProp := props["value"].(map[string]any)
+	if valueProp["type"] != "number" {
+		t.Errorf("value: expected type=number, got %v", valueProp["type"])
+	}
+	if valueProp["minimum"] == nil {
+		t.Error("value: expected minimum to be set")
+	}
+
+	// 4. location: type=string, maxLength=100 (BUG: was empty/metadata-only)
+	locationProp := props["location"].(map[string]any)
+	if locationProp["type"] != "string" {
+		t.Errorf("location: expected type=string, got %v (BUG: single MaxLength produced empty schema)", locationProp["type"])
+	}
+	if locationProp["maxLength"] == nil {
+		t.Error("location: expected maxLength constraint (BUG: single constraint lost)")
+	}
+
+	// 5. contactId: type=string, pattern=... (BUG: was empty/metadata-only)
+	contactIdProp := props["contactId"].(map[string]any)
+	if contactIdProp["type"] != "string" {
+		t.Errorf("contactId: expected type=string, got %v (BUG: single Pattern produced empty schema)", contactIdProp["type"])
+	}
+	if contactIdProp["pattern"] == nil {
+		t.Error("contactId: expected pattern constraint (BUG: single constraint lost)")
+	}
+
+	// 6. priority: $ref to PriorityEnum (BUG: was empty/metadata-only)
+	priorityProp := props["priority"].(map[string]any)
+	if priorityProp["$ref"] == nil || priorityProp["$ref"] != "#/components/schemas/PriorityEnum" {
+		t.Errorf("priority: expected $ref to PriorityEnum, got %v (BUG: Prisma enum not resolved)", priorityProp)
+	}
+
+	// 7. columnData: $ref to JsonRecord (BUG: was empty/metadata-only)
+	columnDataProp := props["columnData"].(map[string]any)
+	if columnDataProp["$ref"] == nil || columnDataProp["$ref"] != "#/components/schemas/JsonRecord" {
+		t.Errorf("columnData: expected $ref to JsonRecord, got %v (BUG: Record alias not resolved)", columnDataProp)
+	}
+
+	// 8. tagIds: type=array with items (BUG: was empty/metadata-only)
+	tagIdsProp := props["tagIds"].(map[string]any)
+	if tagIdsProp["type"] != "array" {
+		t.Errorf("tagIds: expected type=array, got %v (BUG: branded array lost)", tagIdsProp["type"])
+	}
+	tagIdItems, ok := tagIdsProp["items"].(map[string]any)
+	if !ok {
+		t.Error("tagIds: expected items in array schema")
+	} else if tagIdItems["type"] != "string" {
+		t.Errorf("tagIds.items: expected type=string, got %v", tagIdItems["type"])
+	}
+
+	// Verify PriorityEnum schema exists in components
+	prioritySchema, ok := schemas["PriorityEnum"].(map[string]any)
+	if !ok {
+		t.Fatal("expected PriorityEnum in components.schemas")
+	}
+	if prioritySchema["enum"] == nil {
+		t.Error("PriorityEnum: expected enum values")
+	}
+
+	// Verify JsonRecord schema exists in components
+	jsonRecordSchema, ok := schemas["JsonRecord"].(map[string]any)
+	if !ok {
+		t.Fatal("expected JsonRecord in components.schemas")
+	}
+	if jsonRecordSchema["type"] != "object" {
+		t.Errorf("JsonRecord: expected type=object, got %v", jsonRecordSchema["type"])
+	}
+}
+
+// TestIntegration_Bug1_PartialOmitConstraintPropagation verifies that constraints
+// survive through Partial<Omit<T, K>> utility type wrappers.
+// Bug: properties that already had issues in the base type lose even their JSDoc
+// metadata in the Partial<Omit> version, producing completely empty {} schemas.
+func TestIntegration_Bug1_PartialOmitConstraintPropagation(t *testing.T) {
+	registry := metadata.NewTypeRegistry()
+
+	patternStr := "^[0-9a-fA-F]{24}$"
+
+	// Register the base CreateLeadDealDto
+	registry.Register("CreateLeadDealDto", &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Name: "CreateLeadDealDto",
+		Properties: []metadata.Property{
+			{
+				Name: "title", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true,
+				Constraints: &metadata.Constraints{MinLength: intgIntPtr(1), MaxLength: intgIntPtr(255)},
+			},
+			{
+				Name: "type", Type: metadata.Metadata{Kind: metadata.KindUnion, UnionMembers: []metadata.Metadata{
+					{Kind: metadata.KindLiteral, LiteralValue: "LEAD"},
+					{Kind: metadata.KindLiteral, LiteralValue: "DEAL"},
+				}}, Required: true,
+			},
+			{
+				Name: "value", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "number"}, Required: false,
+				Constraints: &metadata.Constraints{Minimum: intgFloatPtr(0)},
+			},
+			{
+				Name: "location", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: false,
+				Constraints: &metadata.Constraints{MaxLength: intgIntPtr(100)},
+			},
+			{
+				Name: "contactId", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: false,
+				Constraints: &metadata.Constraints{Pattern: &patternStr},
+			},
+		},
+	})
+
+	// Register UpdateLeadDealDto which is conceptually Partial<Omit<CreateLeadDealDto, 'originalCreatorId'>>
+	// with an added 'id' field. This is what the type walker should produce.
+	registry.Register("UpdateLeadDealDto", &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Name: "UpdateLeadDealDto",
+		Properties: []metadata.Property{
+			// All properties from base become optional
+			{
+				Name: "title", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string", Optional: true}, Required: false,
+				Constraints: &metadata.Constraints{MinLength: intgIntPtr(1), MaxLength: intgIntPtr(255)},
+			},
+			{
+				Name: "type", Type: metadata.Metadata{Kind: metadata.KindUnion, Optional: true, UnionMembers: []metadata.Metadata{
+					{Kind: metadata.KindLiteral, LiteralValue: "LEAD"},
+					{Kind: metadata.KindLiteral, LiteralValue: "DEAL"},
+				}}, Required: false,
+			},
+			{
+				Name: "value", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "number", Optional: true}, Required: false,
+				Constraints: &metadata.Constraints{Minimum: intgFloatPtr(0)},
+			},
+			// These are the ones that were broken (empty {} in Partial<Omit>)
+			{
+				Name: "location", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string", Optional: true}, Required: false,
+				Constraints: &metadata.Constraints{MaxLength: intgIntPtr(100)},
+			},
+			{
+				Name: "contactId", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string", Optional: true}, Required: false,
+				Constraints: &metadata.Constraints{Pattern: &patternStr},
+			},
+			// Added property with single Pattern constraint — works because it's direct
+			{
+				Name: "id", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true,
+				Constraints: &metadata.Constraints{Pattern: &patternStr},
+			},
+		},
+	})
+
+	gen := NewGenerator(registry)
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name: "LeadDealController",
+			Path: "lead-deals",
+			Routes: []analyzer.Route{
+				{
+					Method:      "PATCH",
+					Path:        "/lead-deals/:id",
+					OperationID: "updateLeadDeal",
+					Parameters: []analyzer.RouteParameter{
+						{Category: "param", Name: "id", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+						{Category: "body", Name: "", Type: metadata.Metadata{Kind: metadata.KindRef, Ref: "UpdateLeadDealDto"}, Required: true},
+					},
+					ReturnType: metadata.Metadata{Kind: metadata.KindRef, Ref: "UpdateLeadDealDto"},
+					StatusCode: 200,
+					Tags:       []string{"LeadDeal"},
+				},
+			},
+		},
+	}
+
+	doc := gen.Generate(controllers)
+	data := requireValidDoc(t, doc)
+	raw := parseJSON(t, data)
+
+	components := raw["components"].(map[string]any)
+	schemas := components["schemas"].(map[string]any)
+
+	updateSchema, ok := schemas["UpdateLeadDealDto"].(map[string]any)
+	if !ok {
+		t.Fatal("expected UpdateLeadDealDto schema")
+	}
+	props := updateSchema["properties"].(map[string]any)
+
+	// Properties that worked in base should still work
+	titleProp := props["title"].(map[string]any)
+	if titleProp["type"] != "string" {
+		t.Errorf("title: expected type=string in UpdateDto, got %v", titleProp["type"])
+	}
+
+	// id (direct, not from base) should work
+	idProp := props["id"].(map[string]any)
+	if idProp["type"] != "string" {
+		t.Errorf("id: expected type=string, got %v", idProp["type"])
+	}
+	if idProp["pattern"] == nil {
+		t.Error("id: expected pattern constraint")
+	}
+
+	// Properties that were {} in Partial<Omit> should now have constraints
+	locationProp := props["location"].(map[string]any)
+	if locationProp["type"] != "string" {
+		t.Errorf("location: expected type=string in UpdateDto (BUG: was empty {}), got %v", locationProp["type"])
+	}
+	if locationProp["maxLength"] == nil {
+		t.Error("location: expected maxLength in UpdateDto (BUG: constraint lost in Partial<Omit>)")
+	}
+
+	contactIdProp := props["contactId"].(map[string]any)
+	if contactIdProp["type"] != "string" {
+		t.Errorf("contactId: expected type=string in UpdateDto (BUG: was empty {}), got %v", contactIdProp["type"])
+	}
+	if contactIdProp["pattern"] == nil {
+		t.Error("contactId: expected pattern in UpdateDto (BUG: constraint lost in Partial<Omit>)")
+	}
+}
+
+// TestIntegration_Bug2_InterfacePropertyTypesInOpenAPI verifies that exported interfaces
+// used as property types produce $ref schemas in the OpenAPI output.
+// Bug: interface types used as properties produce {} in OpenAPI and the interfaces
+// are entirely missing from components.schemas.
+func TestIntegration_Bug2_InterfacePropertyTypesInOpenAPI(t *testing.T) {
+	registry := metadata.NewTypeRegistry()
+
+	// Register all the sub-interfaces that should appear as $ref targets
+	registry.Register("ContactConfig", &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Name: "ContactConfig",
+		Properties: []metadata.Property{
+			{
+				Name: "findOne",
+				Type: metadata.Metadata{
+					Kind: metadata.KindObject,
+					Properties: []metadata.Property{
+						{Name: "slug", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: false,
+							Constraints: &metadata.Constraints{MinLength: intgIntPtr(5), MaxLength: intgIntPtr(8)}},
+						{Name: "name", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true,
+							Constraints: &metadata.Constraints{MinLength: intgIntPtr(3), MaxLength: intgIntPtr(40)}},
+					},
+				},
+				Required: false,
+			},
+			{
+				Name: "createData",
+				Type: metadata.Metadata{
+					Kind: metadata.KindObject,
+					Properties: []metadata.Property{
+						{Name: "name", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true,
+							Constraints: &metadata.Constraints{MinLength: intgIntPtr(3), MaxLength: intgIntPtr(40)}},
+						{Name: "jobTitle", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: false},
+					},
+				},
+				Required: false,
+			},
+		},
+	})
+
+	registry.Register("CompanyConfig", &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Name: "CompanyConfig",
+		Properties: []metadata.Property{
+			{
+				Name: "findOne",
+				Type: metadata.Metadata{
+					Kind: metadata.KindObject,
+					Properties: []metadata.Property{
+						{Name: "name", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+					},
+				},
+				Required: false,
+			},
+		},
+	})
+
+	registry.Register("SourceConfig", &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Name: "SourceConfig",
+		Properties: []metadata.Property{
+			{Name: "findOne", Type: metadata.Metadata{
+				Kind: metadata.KindObject,
+				Properties: []metadata.Property{
+					{Name: "title", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+				},
+			}, Required: false},
+		},
+	})
+
+	registry.Register("TeamConfig", &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Name: "TeamConfig",
+		Properties: []metadata.Property{
+			{Name: "findOne", Type: metadata.Metadata{
+				Kind: metadata.KindObject,
+				Properties: []metadata.Property{
+					{Name: "name", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+				},
+			}, Required: false},
+		},
+	})
+
+	registry.Register("StatusConfig", &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Name: "StatusConfig",
+		Properties: []metadata.Property{
+			{Name: "findOne", Type: metadata.Metadata{
+				Kind: metadata.KindObject,
+				Properties: []metadata.Property{
+					{Name: "label", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+				},
+			}, Required: false},
+		},
+	})
+
+	registry.Register("TagConfig", &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Name: "TagConfig",
+		Properties: []metadata.Property{
+			{Name: "findOne", Type: metadata.Metadata{
+				Kind: metadata.KindObject,
+				Properties: []metadata.Property{
+					{Name: "name", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+				},
+			}, Required: false},
+		},
+	})
+
+	// Register TLeadOrDeal as named literal union
+	registry.Register("TLeadOrDeal", &metadata.Metadata{
+		Kind: metadata.KindUnion,
+		Name: "TLeadOrDeal",
+		UnionMembers: []metadata.Metadata{
+			{Kind: metadata.KindLiteral, LiteralValue: "LEAD"},
+			{Kind: metadata.KindLiteral, LiteralValue: "DEAL"},
+		},
+	})
+
+	// Register the main DTO that references the interfaces
+	registry.Register("CreateLeadDealOpenApiDto", &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Name: "CreateLeadDealOpenApiDto",
+		Properties: []metadata.Property{
+			{
+				Name: "title", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true,
+				Constraints: &metadata.Constraints{MinLength: intgIntPtr(3), MaxLength: intgIntPtr(100)},
+			},
+			{
+				Name: "type", Type: metadata.Metadata{Kind: metadata.KindRef, Ref: "TLeadOrDeal"}, Required: true,
+			},
+			{
+				Name: "value", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "number"}, Required: false,
+			},
+			// Bug pattern: interface types used as properties should produce $ref
+			{Name: "contact", Type: metadata.Metadata{Kind: metadata.KindRef, Ref: "ContactConfig"}, Required: false},
+			{Name: "company", Type: metadata.Metadata{Kind: metadata.KindRef, Ref: "CompanyConfig"}, Required: false},
+			{Name: "source", Type: metadata.Metadata{Kind: metadata.KindRef, Ref: "SourceConfig"}, Required: false},
+			{Name: "teams", Type: metadata.Metadata{Kind: metadata.KindArray, ElementType: &metadata.Metadata{Kind: metadata.KindRef, Ref: "TeamConfig"}}, Required: false},
+			{Name: "status", Type: metadata.Metadata{Kind: metadata.KindRef, Ref: "StatusConfig"}, Required: false},
+			{Name: "tags", Type: metadata.Metadata{Kind: metadata.KindArray, ElementType: &metadata.Metadata{Kind: metadata.KindRef, Ref: "TagConfig"}}, Required: false},
+		},
+	})
+
+	gen := NewGenerator(registry)
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name: "PublicApiController",
+			Path: "api",
+			Routes: []analyzer.Route{
+				{
+					Method:      "POST",
+					Path:        "/api/lead-deals",
+					OperationID: "createLeadDealPublic",
+					Parameters: []analyzer.RouteParameter{
+						{Category: "body", Name: "", Type: metadata.Metadata{Kind: metadata.KindRef, Ref: "CreateLeadDealOpenApiDto"}, Required: true},
+					},
+					ReturnType: metadata.Metadata{Kind: metadata.KindRef, Ref: "CreateLeadDealOpenApiDto"},
+					StatusCode: 201,
+					Tags:       []string{"PublicAPI"},
+				},
+			},
+		},
+	}
+
+	doc := gen.Generate(controllers)
+	data := requireValidDoc(t, doc)
+	raw := parseJSON(t, data)
+
+	components := raw["components"].(map[string]any)
+	schemas := components["schemas"].(map[string]any)
+
+	// Verify all sub-interface schemas exist in components.schemas
+	expectedSchemas := []string{
+		"ContactConfig", "CompanyConfig", "SourceConfig",
+		"TeamConfig", "StatusConfig", "TagConfig",
+		"TLeadOrDeal", "CreateLeadDealOpenApiDto",
+	}
+	for _, name := range expectedSchemas {
+		if _, ok := schemas[name]; !ok {
+			t.Errorf("BUG: expected %q in components.schemas but not found", name)
+		}
+	}
+
+	// Verify the main DTO references interfaces via $ref
+	mainSchema, ok := schemas["CreateLeadDealOpenApiDto"].(map[string]any)
+	if !ok {
+		t.Fatal("expected CreateLeadDealOpenApiDto schema")
+	}
+	props := mainSchema["properties"].(map[string]any)
+
+	// title should have type=string with constraints
+	titleProp := props["title"].(map[string]any)
+	if titleProp["type"] != "string" {
+		t.Errorf("title: expected type=string, got %v", titleProp["type"])
+	}
+
+	// type should be $ref to TLeadOrDeal
+	typeProp := props["type"].(map[string]any)
+	if typeProp["$ref"] != "#/components/schemas/TLeadOrDeal" {
+		t.Errorf("type: expected $ref to TLeadOrDeal, got %v", typeProp)
+	}
+
+	// contact should be $ref to ContactConfig (BUG: was {})
+	contactProp := props["contact"].(map[string]any)
+	if contactProp["$ref"] != "#/components/schemas/ContactConfig" {
+		t.Errorf("contact: expected $ref to ContactConfig (BUG: was empty {}), got %v", contactProp)
+	}
+
+	// company should be $ref to CompanyConfig
+	companyProp := props["company"].(map[string]any)
+	if companyProp["$ref"] != "#/components/schemas/CompanyConfig" {
+		t.Errorf("company: expected $ref to CompanyConfig (BUG: was empty {}), got %v", companyProp)
+	}
+
+	// teams should be array with items.$ref to TeamConfig
+	teamsProp := props["teams"].(map[string]any)
+	if teamsProp["type"] != "array" {
+		t.Errorf("teams: expected type=array (BUG: was empty {}), got %v", teamsProp["type"])
+	}
+	teamsItems, ok := teamsProp["items"].(map[string]any)
+	if !ok {
+		t.Error("teams: expected items in array schema")
+	} else if teamsItems["$ref"] != "#/components/schemas/TeamConfig" {
+		t.Errorf("teams.items: expected $ref to TeamConfig, got %v", teamsItems)
+	}
+
+	// tags should be array with items.$ref to TagConfig
+	tagsProp := props["tags"].(map[string]any)
+	if tagsProp["type"] != "array" {
+		t.Errorf("tags: expected type=array (BUG: was empty {}), got %v", tagsProp["type"])
+	}
+	tagsItems, ok := tagsProp["items"].(map[string]any)
+	if !ok {
+		t.Error("tags: expected items in array schema")
+	} else if tagsItems["$ref"] != "#/components/schemas/TagConfig" {
+		t.Errorf("tags.items: expected $ref to TagConfig, got %v", tagsItems)
+	}
+
+	// Verify ContactConfig has the correct nested structure with constraints
+	contactSchema, ok := schemas["ContactConfig"].(map[string]any)
+	if !ok {
+		t.Fatal("expected ContactConfig schema")
+	}
+	if contactSchema["type"] != "object" {
+		t.Errorf("ContactConfig: expected type=object, got %v", contactSchema["type"])
+	}
+	contactProps, ok := contactSchema["properties"].(map[string]any)
+	if !ok {
+		t.Fatal("ContactConfig: expected properties")
+	}
+
+	// findOne should be an inline object with nested properties
+	findOneProp, ok := contactProps["findOne"].(map[string]any)
+	if !ok {
+		t.Fatal("ContactConfig: expected findOne property")
+	}
+	if findOneProp["type"] != "object" {
+		t.Errorf("ContactConfig.findOne: expected type=object, got %v", findOneProp["type"])
+	}
+	findOneProps, ok := findOneProp["properties"].(map[string]any)
+	if !ok {
+		t.Fatal("ContactConfig.findOne: expected nested properties")
+	}
+	slugProp, ok := findOneProps["slug"].(map[string]any)
+	if !ok {
+		t.Fatal("ContactConfig.findOne: expected slug property")
+	}
+	if slugProp["type"] != "string" {
+		t.Errorf("slug: expected type=string, got %v", slugProp["type"])
+	}
+	if slugProp["minLength"] == nil {
+		t.Error("slug: expected minLength constraint")
+	}
+	if slugProp["maxLength"] == nil {
+		t.Error("slug: expected maxLength constraint")
+	}
+}

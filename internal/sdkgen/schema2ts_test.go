@@ -492,6 +492,68 @@ func TestTsOptionalAccess(t *testing.T) {
 	}
 }
 
+// TestGenerateInterface_RecordWithAdditionalProperties verifies that an object type
+// with additionalProperties but no declared properties is emitted as an interface
+// with an index signature (not a type alias with Record<>). This is critical for
+// self-referential types like Prisma's JsonObject where a type alias would cause
+// TS2456: "Type alias circularly references itself".
+func TestGenerateInterface_RecordWithAdditionalProperties(t *testing.T) {
+	node := &SchemaNode{
+		Type: "object",
+		AdditionalProperties: &SchemaNode{
+			AnyOf: []*SchemaNode{
+				{Type: "string"},
+				{Type: "number"},
+				{Ref: "FlexObject"}, // self-reference
+			},
+		},
+	}
+	got := GenerateInterface("FlexObject", node, nil)
+	// Should emit interface, NOT type alias
+	if contains(got, "export type FlexObject") {
+		t.Errorf("should NOT emit type alias (causes TS2456 for self-referential types), got:\n%s", got)
+	}
+	if !contains(got, "export interface FlexObject") {
+		t.Errorf("expected interface declaration, got:\n%s", got)
+	}
+	if !contains(got, "[key: string]:") {
+		t.Errorf("expected index signature, got:\n%s", got)
+	}
+}
+
+// TestGenerateInterface_RecordNonSelfReferential verifies that object types
+// with additionalProperties still emit correctly (as interface with index signature).
+func TestGenerateInterface_RecordNonSelfReferential(t *testing.T) {
+	node := &SchemaNode{
+		Type:                 "object",
+		AdditionalProperties: &SchemaNode{Type: "string"},
+	}
+	got := GenerateInterface("Config", node, nil)
+	// Should emit interface with index signature
+	if !contains(got, "export interface Config") {
+		t.Errorf("expected interface declaration, got:\n%s", got)
+	}
+	if !contains(got, "[key: string]: string") {
+		t.Errorf("expected index signature with string value, got:\n%s", got)
+	}
+}
+
+// TestGenerateInterface_RecordWithDescription verifies JSDoc is preserved.
+func TestGenerateInterface_RecordWithDescription(t *testing.T) {
+	node := &SchemaNode{
+		Type:                 "object",
+		Description:          "A flexible key-value store",
+		AdditionalProperties: &SchemaNode{Type: "number"},
+	}
+	got := GenerateInterface("Metrics", node, nil)
+	if !contains(got, "A flexible key-value store") {
+		t.Errorf("expected JSDoc description, got:\n%s", got)
+	}
+	if !contains(got, "export interface Metrics") {
+		t.Errorf("expected interface declaration, got:\n%s", got)
+	}
+}
+
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsHelper(s, substr))
 }

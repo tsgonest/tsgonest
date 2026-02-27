@@ -2920,3 +2920,434 @@ func TestGenerator_EventStream_LegacySse_NoErrorVariant(t *testing.T) {
 		t.Error("expected no discriminator for legacy @Sse")
 	}
 }
+
+// --- Named Generic Type Alias Tests ---
+
+// TestSchemaGenerator_RefWithAliasName verifies that when a $ref metadata has both
+// a Ref (mechanical composite name) and a Name (user-defined alias), the OpenAPI
+// schema uses the alias name instead of the mechanical name.
+// e.g., type MyList = PagedResult<Item> should produce schema "MyList", not "PagedResult_Item".
+func TestSchemaGenerator_RefWithAliasName(t *testing.T) {
+	registry := metadata.NewTypeRegistry()
+	// Register the type under its mechanical composite name (as the type walker does)
+	registry.Register("PagedResult_Item", &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Name: "PagedResult_Item",
+		Properties: []metadata.Property{
+			{Name: "data", Type: metadata.Metadata{Kind: metadata.KindArray, ElementType: &metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}}, Required: true},
+			{Name: "total", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "number"}, Required: true},
+			{Name: "page", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "number"}, Required: true},
+		},
+	})
+
+	gen := NewSchemaGenerator(registry)
+	// Simulate metadata from extractReturnType: Ref is the mechanical name, Name is the alias
+	m := &metadata.Metadata{
+		Kind: metadata.KindRef,
+		Ref:  "PagedResult_Item",
+		Name: "MyItemList",
+	}
+	schema := gen.MetadataToSchema(m)
+
+	// The $ref should use the alias name
+	if schema.Ref != "#/components/schemas/MyItemList" {
+		t.Errorf("expected $ref='#/components/schemas/MyItemList', got %q", schema.Ref)
+	}
+
+	// The schema should be registered under the alias name
+	schemas := gen.Schemas()
+	if _, ok := schemas["MyItemList"]; !ok {
+		t.Error("expected schema to be registered under alias name 'MyItemList'")
+	}
+	// The mechanical name should NOT be registered
+	if _, ok := schemas["PagedResult_Item"]; ok {
+		t.Error("expected mechanical name 'PagedResult_Item' to NOT be registered as a separate schema")
+	}
+}
+
+// TestSchemaGenerator_RefWithAliasName_NoAlias verifies that when no alias name is set,
+// the schema uses the Ref name as before (backward compatibility).
+func TestSchemaGenerator_RefWithAliasName_NoAlias(t *testing.T) {
+	registry := metadata.NewTypeRegistry()
+	registry.Register("Wrapper_Foo", &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Name: "Wrapper_Foo",
+		Properties: []metadata.Property{
+			{Name: "value", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+		},
+	})
+
+	gen := NewSchemaGenerator(registry)
+	m := &metadata.Metadata{
+		Kind: metadata.KindRef,
+		Ref:  "Wrapper_Foo",
+	}
+	schema := gen.MetadataToSchema(m)
+
+	if schema.Ref != "#/components/schemas/Wrapper_Foo" {
+		t.Errorf("expected $ref='#/components/schemas/Wrapper_Foo', got %q", schema.Ref)
+	}
+
+	schemas := gen.Schemas()
+	if _, ok := schemas["Wrapper_Foo"]; !ok {
+		t.Fatal("expected schema registered under 'Wrapper_Foo'")
+	}
+}
+
+// TestSchemaGenerator_RefAliasName_FullPipeline tests the full OpenAPI generation
+// pipeline with a controller that returns a named generic type alias.
+func TestSchemaGenerator_RefAliasName_FullPipeline(t *testing.T) {
+	registry := metadata.NewTypeRegistry()
+
+	// Register the underlying generic instantiation type (as type walker does)
+	registry.Register("PagedResult_Record", &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Name: "PagedResult_Record",
+		Properties: []metadata.Property{
+			{Name: "items", Type: metadata.Metadata{Kind: metadata.KindArray, ElementType: &metadata.Metadata{Kind: metadata.KindRef, Ref: "Record"}}, Required: true},
+			{Name: "total", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "number"}, Required: true},
+		},
+	})
+	registry.Register("Record", &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Name: "Record",
+		Properties: []metadata.Property{
+			{Name: "id", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+			{Name: "value", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+		},
+	})
+
+	gen := NewGenerator(registry)
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name: "RecordController",
+			Path: "records",
+			Routes: []analyzer.Route{
+				{
+					Method:      "GET",
+					Path:        "/records",
+					OperationID: "listRecords",
+					StatusCode:  200,
+					Tags:        []string{"Records"},
+					// ReturnType has Name (alias) and Ref (mechanical) set
+					ReturnType: metadata.Metadata{
+						Kind: metadata.KindRef,
+						Ref:  "PagedResult_Record",
+						Name: "RecordListResponse",
+					},
+				},
+			},
+		},
+	}
+
+	doc := gen.Generate(controllers)
+	data, err := doc.ToJSON()
+	if err != nil {
+		t.Fatalf("ToJSON failed: %v", err)
+	}
+	jsonStr := string(data)
+
+	// The response schema should reference the alias name
+	if !strings.Contains(jsonStr, `"#/components/schemas/RecordListResponse"`) {
+		t.Errorf("expected response to reference RecordListResponse, got:\n%s", jsonStr)
+	}
+
+	// The schema should be defined under the alias name
+	if !strings.Contains(jsonStr, `"RecordListResponse"`) {
+		t.Errorf("expected RecordListResponse schema in components, got:\n%s", jsonStr)
+	}
+
+	// The mechanical name should NOT appear in the output
+	if strings.Contains(jsonStr, `"PagedResult_Record"`) {
+		t.Errorf("expected mechanical name PagedResult_Record to NOT appear in output, got:\n%s", jsonStr)
+	}
+}
+
+// TestSchemaGenerator_RefAliasName_MultipleAliases tests that multiple different
+// aliases for different instantiations of the same generic type each get their own name.
+func TestSchemaGenerator_RefAliasName_MultipleAliases(t *testing.T) {
+	registry := metadata.NewTypeRegistry()
+
+	registry.Register("PagedResult_Alpha", &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Name: "PagedResult_Alpha",
+		Properties: []metadata.Property{
+			{Name: "items", Type: metadata.Metadata{Kind: metadata.KindArray, ElementType: &metadata.Metadata{Kind: metadata.KindRef, Ref: "Alpha"}}, Required: true},
+			{Name: "total", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "number"}, Required: true},
+		},
+	})
+	registry.Register("PagedResult_Beta", &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Name: "PagedResult_Beta",
+		Properties: []metadata.Property{
+			{Name: "items", Type: metadata.Metadata{Kind: metadata.KindArray, ElementType: &metadata.Metadata{Kind: metadata.KindRef, Ref: "Beta"}}, Required: true},
+			{Name: "total", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "number"}, Required: true},
+		},
+	})
+	registry.Register("Alpha", &metadata.Metadata{
+		Kind: metadata.KindObject, Name: "Alpha",
+		Properties: []metadata.Property{{Name: "id", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true}},
+	})
+	registry.Register("Beta", &metadata.Metadata{
+		Kind: metadata.KindObject, Name: "Beta",
+		Properties: []metadata.Property{{Name: "id", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true}},
+	})
+
+	gen := NewGenerator(registry)
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name: "TestController",
+			Path: "test",
+			Routes: []analyzer.Route{
+				{
+					Method: "GET", Path: "/test/alphas", OperationID: "listAlphas",
+					StatusCode: 200, Tags: []string{"Test"},
+					ReturnType: metadata.Metadata{Kind: metadata.KindRef, Ref: "PagedResult_Alpha", Name: "AlphaListResponse"},
+				},
+				{
+					Method: "GET", Path: "/test/betas", OperationID: "listBetas",
+					StatusCode: 200, Tags: []string{"Test"},
+					ReturnType: metadata.Metadata{Kind: metadata.KindRef, Ref: "PagedResult_Beta", Name: "BetaListResponse"},
+				},
+			},
+		},
+	}
+
+	doc := gen.Generate(controllers)
+	data, err := doc.ToJSON()
+	if err != nil {
+		t.Fatalf("ToJSON failed: %v", err)
+	}
+
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("JSON parse failed: %v", err)
+	}
+
+	components, _ := raw["components"].(map[string]any)
+	schemas, _ := components["schemas"].(map[string]any)
+
+	// Both alias names should exist
+	if _, ok := schemas["AlphaListResponse"]; !ok {
+		t.Error("expected AlphaListResponse schema in components")
+	}
+	if _, ok := schemas["BetaListResponse"]; !ok {
+		t.Error("expected BetaListResponse schema in components")
+	}
+
+	// Mechanical names should not exist
+	if _, ok := schemas["PagedResult_Alpha"]; ok {
+		t.Error("expected PagedResult_Alpha to NOT be in components")
+	}
+	if _, ok := schemas["PagedResult_Beta"]; ok {
+		t.Error("expected PagedResult_Beta to NOT be in components")
+	}
+}
+
+// --- Self-referential type tests ---
+
+// TestSchemaGenerator_SelfReferentialType verifies that a self-referential type
+// produces proper schemas: the recursive property should use $ref, and all other
+// properties should be fully resolved (not degraded to empty {}).
+func TestSchemaGenerator_SelfReferentialType(t *testing.T) {
+	registry := metadata.NewTypeRegistry()
+
+	// Register types as the type walker would produce them (after the fix)
+	registry.Register("Attachment", &metadata.Metadata{
+		Kind: metadata.KindObject, Name: "Attachment",
+		Properties: []metadata.Property{
+			{Name: "name", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+			{Name: "size", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "number"}, Required: true},
+		},
+	})
+	registry.Register("Reaction", &metadata.Metadata{
+		Kind: metadata.KindObject, Name: "Reaction",
+		Properties: []metadata.Property{
+			{Name: "emoji", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+			{Name: "count", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "number"}, Required: true},
+		},
+	})
+	// Self-referential type: Message has replies: Message[] (recursive $ref)
+	registry.Register("Message", &metadata.Metadata{
+		Kind: metadata.KindObject, Name: "Message",
+		Properties: []metadata.Property{
+			{Name: "id", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+			{Name: "content", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+			{Name: "pinned", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "boolean"}, Required: true},
+			{Name: "replies", Type: metadata.Metadata{Kind: metadata.KindArray, ElementType: &metadata.Metadata{Kind: metadata.KindRef, Ref: "Message"}}, Required: false},
+			{Name: "attachments", Type: metadata.Metadata{Kind: metadata.KindArray, ElementType: &metadata.Metadata{Kind: metadata.KindRef, Ref: "Attachment"}}, Required: true},
+			{Name: "reactions", Type: metadata.Metadata{Kind: metadata.KindArray, ElementType: &metadata.Metadata{Kind: metadata.KindRef, Ref: "Reaction"}}, Required: true},
+			{Name: "pinnedBy", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string", Nullable: true}, Required: false},
+		},
+	})
+
+	gen := NewSchemaGenerator(registry)
+	schema := gen.MetadataToSchema(&metadata.Metadata{Kind: metadata.KindRef, Ref: "Message"})
+
+	if schema.Ref != "#/components/schemas/Message" {
+		t.Errorf("expected $ref to Message, got %q", schema.Ref)
+	}
+
+	schemas := gen.Schemas()
+	msgSchema, ok := schemas["Message"]
+	if !ok {
+		t.Fatal("Message schema not found")
+	}
+
+	// All properties should be present and not empty
+	for _, propName := range []string{"id", "content", "pinned", "replies", "attachments", "reactions", "pinnedBy"} {
+		prop, ok := msgSchema.Properties[propName]
+		if !ok {
+			t.Errorf("expected property %q in Message schema", propName)
+			continue
+		}
+		// No property should be an empty schema (the bug symptom)
+		data, _ := json.Marshal(prop)
+		if string(data) == "{}" {
+			t.Errorf("property %q is empty schema {} (degraded to unknown)", propName)
+		}
+	}
+
+	// replies should be an array with $ref to Message (self-referential)
+	repliesProp := msgSchema.Properties["replies"]
+	if repliesProp.Type != "array" {
+		t.Errorf("replies: expected type=array, got %q", repliesProp.Type)
+	}
+	if repliesProp.Items == nil || repliesProp.Items.Ref != "#/components/schemas/Message" {
+		t.Error("replies.items: expected $ref to Message")
+	}
+
+	// reactions should be an array with $ref to Reaction (not degraded)
+	reactionsProp := msgSchema.Properties["reactions"]
+	if reactionsProp.Type != "array" {
+		t.Errorf("reactions: expected type=array, got %q", reactionsProp.Type)
+	}
+	if reactionsProp.Items == nil || reactionsProp.Items.Ref != "#/components/schemas/Reaction" {
+		t.Error("reactions.items: expected $ref to Reaction")
+	}
+
+	// pinnedBy should be nullable string, not empty
+	pinnedByProp := msgSchema.Properties["pinnedBy"]
+	if len(pinnedByProp.AnyOf) != 2 {
+		t.Errorf("pinnedBy: expected anyOf with 2 members (string + null), got %d", len(pinnedByProp.AnyOf))
+	}
+}
+
+func TestSchemaGenerator_File(t *testing.T) {
+	gen := NewSchemaGenerator(metadata.NewTypeRegistry())
+	m := &metadata.Metadata{Kind: metadata.KindNative, NativeType: "File"}
+	schema := gen.MetadataToSchema(m)
+
+	if schema.Type != "string" {
+		t.Errorf("expected type='string', got %q", schema.Type)
+	}
+	if schema.Format != "binary" {
+		t.Errorf("expected format='binary', got %q", schema.Format)
+	}
+}
+
+func TestSchemaGenerator_Blob(t *testing.T) {
+	gen := NewSchemaGenerator(metadata.NewTypeRegistry())
+	m := &metadata.Metadata{Kind: metadata.KindNative, NativeType: "Blob"}
+	schema := gen.MetadataToSchema(m)
+
+	if schema.Type != "string" {
+		t.Errorf("expected type='string', got %q", schema.Type)
+	}
+	if schema.Format != "binary" {
+		t.Errorf("expected format='binary', got %q", schema.Format)
+	}
+}
+
+// TestSchemaGenerator_BrandedArrayItemConstraints verifies that constraints on
+// array element types (e.g., (string & tags.Pattern<...>)[]) are applied to the
+// items schema, not lost.
+// Regression: MetadataToSchema did not apply Metadata.Constraints, so branded
+// array item constraints were silently dropped.
+func TestSchemaGenerator_BrandedArrayItemConstraints(t *testing.T) {
+	gen := NewSchemaGenerator(metadata.NewTypeRegistry())
+	pattern := "^[0-9a-fA-F]{24}$"
+	elem := metadata.Metadata{
+		Kind:   metadata.KindAtomic,
+		Atomic: "string",
+		Constraints: &metadata.Constraints{
+			Pattern: &pattern,
+		},
+	}
+	m := &metadata.Metadata{
+		Kind:        metadata.KindArray,
+		ElementType: &elem,
+	}
+	schema := gen.MetadataToSchema(m)
+
+	if schema.Type != "array" {
+		t.Fatalf("expected type='array', got %q", schema.Type)
+	}
+	if schema.Items == nil {
+		t.Fatal("expected items schema, got nil")
+	}
+	if schema.Items.Type != "string" {
+		t.Errorf("items: expected type='string', got %q", schema.Items.Type)
+	}
+	if schema.Items.Pattern != pattern {
+		t.Errorf("items: expected pattern=%q, got %q", pattern, schema.Items.Pattern)
+	}
+}
+
+// TestSchemaGenerator_BrandedLiteralUnionConstraints verifies that a union of
+// branded literals with constraints (e.g., TCurrencyCode & MaxLength<3>) produces
+// an enum schema with the constraints applied.
+func TestSchemaGenerator_BrandedLiteralUnionConstraints(t *testing.T) {
+	gen := NewSchemaGenerator(metadata.NewTypeRegistry())
+	maxLen := 3
+	pattern := "^[A-Z]{3}$"
+	m := &metadata.Metadata{
+		Kind: metadata.KindUnion,
+		UnionMembers: []metadata.Metadata{
+			{Kind: metadata.KindLiteral, LiteralValue: "USD"},
+			{Kind: metadata.KindLiteral, LiteralValue: "EUR"},
+			{Kind: metadata.KindLiteral, LiteralValue: "GBP"},
+		},
+		Constraints: &metadata.Constraints{
+			MaxLength: &maxLen,
+			Pattern:   &pattern,
+		},
+	}
+	schema := gen.MetadataToSchema(m)
+
+	if schema.Enum == nil {
+		t.Fatal("expected enum schema")
+	}
+	if len(schema.Enum) != 3 {
+		t.Errorf("expected 3 enum values, got %d", len(schema.Enum))
+	}
+	if schema.MaxLength == nil || *schema.MaxLength != 3 {
+		t.Errorf("expected maxLength=3, got %v", schema.MaxLength)
+	}
+	if schema.Pattern != pattern {
+		t.Errorf("expected pattern=%q, got %q", pattern, schema.Pattern)
+	}
+}
+
+// TestSchemaGenerator_AtomicConstraints verifies that constraints on standalone
+// atomic types (e.g., string & tags.Format<"email"> used as a parameter) are
+// applied to the schema.
+func TestSchemaGenerator_AtomicConstraints(t *testing.T) {
+	gen := NewSchemaGenerator(metadata.NewTypeRegistry())
+	format := "email"
+	m := &metadata.Metadata{
+		Kind:   metadata.KindAtomic,
+		Atomic: "string",
+		Constraints: &metadata.Constraints{
+			Format: &format,
+		},
+	}
+	schema := gen.MetadataToSchema(m)
+
+	if schema.Type != "string" {
+		t.Errorf("expected type='string', got %q", schema.Type)
+	}
+	if schema.Format != "email" {
+		t.Errorf("expected format='email', got %q", schema.Format)
+	}
+}

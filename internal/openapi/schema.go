@@ -99,6 +99,14 @@ func (g *SchemaGenerator) Schemas() map[string]*Schema {
 func (g *SchemaGenerator) MetadataToSchema(m *metadata.Metadata) *Schema {
 	schema := g.convertType(m)
 
+	// Apply constraints from branded types (e.g., string & tags.Pattern<...> used as
+	// an array element or standalone type). Property-level constraints are applied
+	// separately in buildObjectSchema, but element-level constraints only exist on
+	// the Metadata itself and must be applied here.
+	if m.Constraints != nil {
+		applyConstraints(schema, m.Constraints)
+	}
+
 	// Handle nullable: wrap in anyOf with null
 	if m.Nullable {
 		schema = wrapNullable(schema)
@@ -434,6 +442,8 @@ func (g *SchemaGenerator) convertNative(m *metadata.Metadata) *Schema {
 		return &Schema{Type: "array", Items: &Schema{Type: "number"}}
 	case "ArrayBuffer", "SharedArrayBuffer":
 		return &Schema{Type: "string", Format: "binary"}
+	case "File", "Blob":
+		return &Schema{Type: "string", Format: "binary"}
 	case "Error":
 		return &Schema{
 			Type: "object",
@@ -454,31 +464,43 @@ func (g *SchemaGenerator) convertRef(m *metadata.Metadata) *Schema {
 		return &Schema{}
 	}
 
-	// Resolve through registry and register if needed
+	// If there's an alias name (e.g., type GetAllThreadsResponse = PaginatedResponse<ThreadMessageResponse>),
+	// use it as the OpenAPI schema name instead of the mechanical composite name.
+	schemaName := refName
+	if m.Name != "" {
+		schemaName = m.Name
+	}
+
+	// Resolve through registry (using the original ref name) and register under the schema name
 	if regType, ok := g.registry.Types[refName]; ok {
-		if _, exists := g.schemas[refName]; !exists {
+		if _, exists := g.schemas[schemaName]; !exists {
 			// Register placeholder for recursion protection
-			g.schemas[refName] = &Schema{}
+			g.schemas[schemaName] = &Schema{}
 			// Build the schema based on the registered type's Kind.
 			// We call buildRefSchema instead of convertType to avoid
 			// re-entering convertObject/convertUnion/convertIntersection
 			// which would see the placeholder and short-circuit.
 			schema := g.buildRefSchema(regType)
-			g.schemas[refName] = schema
+			g.schemas[schemaName] = schema
 		}
 	}
 
-	return &Schema{Ref: "#/components/schemas/" + refName}
+	return &Schema{Ref: "#/components/schemas/" + schemaName}
 }
 
 // buildRefSchema builds a schema for a registry type, dispatching by Kind.
 // Unlike convertType, this does not re-enter the named-type registration logic.
+// Important: for named unions and enums, this must NOT call buildUnionSchema/convertUnion
+// because those methods check g.schemas[m.Name] which already has a placeholder from
+// convertRef, causing a short-circuit that leaves the placeholder empty.
 func (g *SchemaGenerator) buildRefSchema(m *metadata.Metadata) *Schema {
 	switch m.Kind {
 	case metadata.KindObject:
 		return g.buildObjectSchema(m)
 	case metadata.KindUnion:
-		return g.buildUnionSchema(m)
+		// Build union schema inline without the named-type registration logic.
+		// buildUnionSchema would see the placeholder in g.schemas and short-circuit.
+		return g.buildUnionSchemaInline(m)
 	case metadata.KindIntersection:
 		if len(m.IntersectionMembers) == 0 {
 			return &Schema{}
@@ -499,6 +521,32 @@ func (g *SchemaGenerator) buildRefSchema(m *metadata.Metadata) *Schema {
 	default:
 		return g.convertType(m)
 	}
+}
+
+// buildUnionSchemaInline builds a union schema without named-type registration.
+// This is used by buildRefSchema where the caller has already handled registration.
+func (g *SchemaGenerator) buildUnionSchemaInline(m *metadata.Metadata) *Schema {
+	if len(m.UnionMembers) == 0 {
+		return &Schema{}
+	}
+
+	// Check if all members are literals — use enum
+	allLiterals := true
+	var enumValues []any
+	for _, member := range m.UnionMembers {
+		if member.Kind != metadata.KindLiteral {
+			allLiterals = false
+			break
+		}
+		enumValues = append(enumValues, member.LiteralValue)
+	}
+	if allLiterals && len(enumValues) > 0 {
+		return &Schema{Enum: enumValues}
+	}
+
+	// Discriminated or general union — delegate to buildUnionSchema
+	// which handles discriminator mapping and anyOf/oneOf.
+	return g.buildUnionSchema(m)
 }
 
 // applyConstraints applies JSDoc constraints to a property schema.

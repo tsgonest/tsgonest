@@ -31,6 +31,11 @@ type TypeWalker struct {
 	// registered name. This allows walkObjectType to short-circuit to KindRef
 	// for types previously walked via WalkNamedType.
 	typeIdToName map[shimchecker.TypeId]string
+	// pendingName maps TypeIds to alias names during WalkNamedType walks.
+	// Used by walkIntersection and walkUnion to detect self-referential types
+	// (e.g., type Message = Entity & { replies: Message[] }) and return a $ref
+	// instead of expanding infinitely.
+	pendingName map[shimchecker.TypeId]string
 	// depth tracks the current recursion depth for safety limits.
 	depth int
 	// totalTypesWalked tracks the total number of types processed to prevent
@@ -54,6 +59,7 @@ func NewTypeWalker(checker *shimchecker.Checker) *TypeWalker {
 		registry:           metadata.NewTypeRegistry(),
 		visiting:           make(map[shimchecker.TypeId]bool),
 		typeIdToName:       make(map[shimchecker.TypeId]string),
+		pendingName:        make(map[shimchecker.TypeId]string),
 		warnedGenericNames: make(map[string]bool),
 	}
 }
@@ -105,15 +111,25 @@ func (w *TypeWalker) WalkNamedType(name string, t *shimchecker.Type) metadata.Me
 		return metadata.Metadata{Kind: metadata.KindRef, Ref: name}
 	}
 
-	// If currently visiting (recursive), return a ref
+	// If currently visiting (recursive), return a ref.
+	// This catches cross-alias recursion where the same underlying type is being
+	// walked by another WalkNamedType call, or by walkObjectType/walkIntersection/walkUnion.
 	if w.visiting[t.Id()] {
 		return metadata.Metadata{Kind: metadata.KindRef, Ref: name}
 	}
 
-	// Walk the type. If it resolves to an object, register it under the given name.
-	w.visiting[t.Id()] = true
+	// Register a pending name so that self-referential intersection/union types
+	// (e.g., type Message = Entity & { replies: Message[] }) can resolve back
+	// to a $ref during walkIntersection/walkUnion recursion. This is separate
+	// from typeIdToName to avoid short-circuiting the initial walkObjectType call.
+	w.pendingName[t.Id()] = name
+
+	// Walk the type. Don't set visiting here — let walkObjectType,
+	// walkIntersection, and walkUnion manage their own recursion guards.
+	// Setting visiting here would cause walkIntersection to short-circuit
+	// on the first call, preventing the intersection from being analyzed.
 	m := w.WalkType(t)
-	delete(w.visiting, t.Id())
+	delete(w.pendingName, t.Id())
 
 	// If the result is unnamed, promote it to a named ref so that companion
 	// files are generated for the alias name. This handles type aliases to
@@ -135,6 +151,14 @@ func (w *TypeWalker) WalkNamedType(name string, t *shimchecker.Type) metadata.Me
 		w.registry.Register(name, &m)
 		w.typeIdToName[t.Id()] = name
 		return metadata.Metadata{Kind: metadata.KindRef, Ref: name}
+	}
+
+	// For ref types already registered under a mechanical name (e.g., generic
+	// instantiations like PaginatedResponse_ThreadMessageResponse), propagate
+	// the alias name so downstream consumers (OpenAPI, SDK) can use the
+	// user-defined name (e.g., GetAllThreadsResponse).
+	if m.Kind == metadata.KindRef && m.Name == "" {
+		m.Name = name
 	}
 
 	return m
@@ -280,15 +304,62 @@ func (w *TypeWalker) walkSingleType(t *shimchecker.Type) metadata.Metadata {
 	return metadata.Metadata{Kind: metadata.KindAny, Name: "unsupported"}
 }
 
+// resolveAliasName attempts to derive a registration name from a type's alias symbol.
+// This is used by walkIntersection/walkUnion recursion guards as a fallback when
+// no pendingName was set by WalkNamedType (i.e., the self-referential type was
+// encountered as a sub-field, not walked directly at the top level).
+// Returns "" if no name can be derived.
+func (w *TypeWalker) resolveAliasName(t *shimchecker.Type) string {
+	alias := shimchecker.Type_alias(t)
+	if alias == nil {
+		return ""
+	}
+	aliasSym := alias.Symbol()
+	if aliasSym == nil {
+		return ""
+	}
+	name := aliasSym.Name
+	if name == "" || name == "__type" || name == "__object" || (len(name) > 0 && name[0] == '\xfe') {
+		return ""
+	}
+	aliasTypeArgs := alias.TypeArguments()
+	if len(aliasTypeArgs) > 0 {
+		if compositeName, ok := w.buildGenericInstantiationName(name, aliasTypeArgs); ok {
+			return compositeName
+		}
+		return "" // anonymous type args — can't resolve
+	}
+	return name
+}
+
 // walkUnion handles union types (A | B | C).
 // It separates null/undefined from the union and wraps the rest.
 func (w *TypeWalker) walkUnion(t *shimchecker.Type) metadata.Metadata {
+	// Recursion guard: detect self-referential union types.
+	// Same rationale as walkIntersection — union types are dispatched before
+	// reaching walkObjectType, so they need their own guard.
+	if w.visiting[t.Id()] {
+		if cachedName, ok := w.pendingName[t.Id()]; ok {
+			return metadata.Metadata{Kind: metadata.KindRef, Ref: cachedName}
+		}
+		// Fallback: derive name from type alias for sub-field self-referential types
+		// (e.g., type JsonValue = string | JsonObject | JsonArray where JsonObject
+		// references JsonValue). Without this, recursive sub-fields degrade to KindAny.
+		if name := w.resolveAliasName(t); name != "" {
+			return metadata.Metadata{Kind: metadata.KindRef, Ref: name}
+		}
+		return metadata.Metadata{Kind: metadata.KindAny}
+	}
+	w.visiting[t.Id()] = true
+	defer delete(w.visiting, t.Id())
+
 	types := t.Types()
 	if len(types) == 0 {
 		return metadata.Metadata{Kind: metadata.KindNever}
 	}
 
 	var members []metadata.Metadata
+	var brandedConstraints *metadata.Constraints // constraints from branded literal intersections
 	nullable := false
 	optional := false
 
@@ -327,6 +398,47 @@ func (w *TypeWalker) walkUnion(t *shimchecker.Type) metadata.Metadata {
 				continue
 			}
 		}
+		// Handle string and number literals directly without calling WalkType.
+		// Large unions (e.g., 180+ currency codes) would otherwise burn through
+		// the maxTotalTypes breadth limit, causing subsequent properties to degrade
+		// to KindAny. This matches the boolean literal optimization above.
+		if flags&shimchecker.TypeFlagsStringLiteral != 0 {
+			lit := member.AsLiteralType()
+			members = append(members, metadata.Metadata{Kind: metadata.KindLiteral, LiteralValue: lit.Value()})
+			continue
+		}
+		if flags&shimchecker.TypeFlagsNumberLiteral != 0 {
+			lit := member.AsLiteralType()
+			members = append(members, metadata.Metadata{Kind: metadata.KindLiteral, LiteralValue: normalizeLiteralValue(lit.Value())})
+			continue
+		}
+		// Handle branded literal intersections without walking each member.
+		// When a literal union has branded constraints (e.g., TCurrencyCode4217 & tags.MaxLength<3>),
+		// TS distributes the intersection: ("USD" & phantom) | ("EUR" & phantom) | ...
+		// Each intersection member has TypeFlagsIntersection, not TypeFlagsStringLiteral.
+		// Walking all 163+ intersections would burn ~500 types from the breadth limit.
+		// Instead, detect the pattern on the first intersection and extract just the
+		// literal value for subsequent ones (constraints are identical across all members).
+		if flags&shimchecker.TypeFlagsIntersection != 0 {
+			if brandedConstraints != nil {
+				// We already confirmed this union has branded literal intersections.
+				// Just extract the literal value without walking phantoms again.
+				if litVal, ok := extractBrandedLiteralValue(member); ok {
+					members = append(members, metadata.Metadata{Kind: metadata.KindLiteral, LiteralValue: litVal})
+					continue
+				}
+			}
+			if litMeta, ok := w.tryFastBrandedLiteral(member); ok {
+				// First branded literal intersection — capture constraints.
+				if litMeta.Constraints != nil {
+					c := *litMeta.Constraints
+					brandedConstraints = &c
+				}
+				litMeta.Constraints = nil // Constraints will be applied at the union level
+				members = append(members, litMeta)
+				continue
+			}
+		}
 		members = append(members, w.WalkType(member))
 	}
 
@@ -335,6 +447,11 @@ func (w *TypeWalker) walkUnion(t *shimchecker.Type) metadata.Metadata {
 		result := members[0]
 		result.Nullable = nullable
 		result.Optional = optional
+		// Preserve branded constraints from the fast-path (e.g., nullable branded
+		// literal like ('USD' | null) & MaxLength<3> which unwraps to a single member).
+		if brandedConstraints != nil && result.Constraints == nil && result.Kind == metadata.KindLiteral {
+			result.Constraints = brandedConstraints
+		}
 		return result
 	}
 	if len(members) == 0 {
@@ -365,6 +482,12 @@ func (w *TypeWalker) walkUnion(t *shimchecker.Type) metadata.Metadata {
 	if allLit && len(members) > 1 {
 		if name := w.getUnionEnumName(t); name != "" {
 			result.Name = name
+		}
+		// Only apply branded constraints when all members are literals.
+		// This guards against the theoretical case where a union has a mix of
+		// branded literal intersections and non-branded members.
+		if brandedConstraints != nil {
+			result.Constraints = brandedConstraints
 		}
 	}
 
@@ -505,6 +628,106 @@ func (w *TypeWalker) detectDiscriminant(members []metadata.Metadata) *metadata.D
 	return nil
 }
 
+// tryFastBrandedLiteral checks if an intersection type is a literal + phantom objects
+// pattern (e.g., "USD" & { __tsgonest_maxLength: 3 } & { __tsgonest_pattern: "^[A-Z]{3}$" }).
+// This is used as a fast-path optimization in walkUnion to avoid walking each member
+// of a large branded literal union (e.g., TCurrencyCode4217 & tags.MaxLength<3>) through
+// the full WalkType machinery, which would exhaust the breadth limit.
+// Returns the branded literal metadata if detected, or (Metadata{}, false) if not.
+//
+// Unlike tryDetectBranded, this operates directly on raw types using the checker API
+// to avoid incrementing the breadth counter for each of the 163+ union members.
+func (w *TypeWalker) tryFastBrandedLiteral(t *shimchecker.Type) (metadata.Metadata, bool) {
+	types := t.Types()
+	if len(types) == 0 {
+		return metadata.Metadata{}, false
+	}
+
+	var litMeta *metadata.Metadata
+	var phantomMembers []*metadata.Metadata
+	var rawPhantomTypes []*shimchecker.Type
+
+	for _, member := range types {
+		memberFlags := member.Flags()
+		if memberFlags&shimchecker.TypeFlagsStringLiteral != 0 {
+			if litMeta != nil {
+				return metadata.Metadata{}, false // multiple literals
+			}
+			lit := member.AsLiteralType()
+			m := metadata.Metadata{Kind: metadata.KindLiteral, LiteralValue: lit.Value()}
+			litMeta = &m
+		} else if memberFlags&shimchecker.TypeFlagsNumberLiteral != 0 {
+			if litMeta != nil {
+				return metadata.Metadata{}, false // multiple literals
+			}
+			lit := member.AsLiteralType()
+			m := metadata.Metadata{Kind: metadata.KindLiteral, LiteralValue: normalizeLiteralValue(lit.Value())}
+			litMeta = &m
+		} else if memberFlags&shimchecker.TypeFlagsObject != 0 {
+			// Check if this object is a phantom using the checker API directly,
+			// avoiding WalkType and the breadth counter.
+			props := shimchecker.Checker_getPropertiesOfType(w.checker, member)
+			if len(props) == 0 {
+				return metadata.Metadata{}, false
+			}
+			allPhantom := true
+			var propMetadata []metadata.Property
+			for _, prop := range props {
+				if !isPhantomPropertyName(prop.Name) {
+					allPhantom = false
+					break
+				}
+				// Walk just the property type for constraint extraction
+				propType := shimchecker.Checker_getTypeOfSymbol(w.checker, prop)
+				propMeta := w.WalkType(propType)
+				propMetadata = append(propMetadata, metadata.Property{
+					Name: prop.Name,
+					Type: propMeta,
+				})
+			}
+			if !allPhantom {
+				return metadata.Metadata{}, false // non-phantom object member
+			}
+			walked := metadata.Metadata{Kind: metadata.KindObject, Properties: propMetadata}
+			phantomMembers = append(phantomMembers, &walked)
+			rawPhantomTypes = append(rawPhantomTypes, member)
+		} else {
+			return metadata.Metadata{}, false // non-literal, non-object member
+		}
+	}
+
+	if litMeta != nil && len(phantomMembers) > 0 {
+		result := *litMeta
+		constraints := w.extractBrandedConstraints(rawPhantomTypes, phantomMembers)
+		if constraints != nil {
+			result.Constraints = constraints
+		}
+		return result, true
+	}
+
+	return metadata.Metadata{}, false
+}
+
+// extractBrandedLiteralValue extracts the literal value from an intersection type
+// that is known to be a branded literal pattern (literal & phantom...).
+// This is the ultra-fast path: no WalkType calls, no breadth counter increments.
+// Returns the literal value and true if found, or ("", false) if the pattern doesn't match.
+func extractBrandedLiteralValue(t *shimchecker.Type) (interface{}, bool) {
+	types := t.Types()
+	for _, member := range types {
+		memberFlags := member.Flags()
+		if memberFlags&shimchecker.TypeFlagsStringLiteral != 0 {
+			lit := member.AsLiteralType()
+			return lit.Value(), true
+		}
+		if memberFlags&shimchecker.TypeFlagsNumberLiteral != 0 {
+			lit := member.AsLiteralType()
+			return normalizeLiteralValue(lit.Value()), true
+		}
+	}
+	return nil, false
+}
+
 // extractLiteralValue returns the string representation of a literal type's value,
 // or empty string if not a literal.
 func extractLiteralValue(m *metadata.Metadata) string {
@@ -518,6 +741,26 @@ func extractLiteralValue(m *metadata.Metadata) string {
 // When all members resolve to objects, it flattens them into a single merged object.
 // For mixed intersections (e.g., string & { __brand: 'Email' }), it keeps the intersection.
 func (w *TypeWalker) walkIntersection(t *shimchecker.Type) metadata.Metadata {
+	// Recursion guard: detect self-referential intersection types.
+	// walkObjectType has its own guard for named objects, but intersection types
+	// are dispatched before reaching walkObjectType. Without this guard,
+	// type Message = Entity & { replies: Message[] } would expand infinitely
+	// until hitting the depth limit, degrading all properties to empty schemas.
+	if w.visiting[t.Id()] {
+		if cachedName, ok := w.pendingName[t.Id()]; ok {
+			return metadata.Metadata{Kind: metadata.KindRef, Ref: cachedName}
+		}
+		// Fallback: derive name from type alias for sub-field self-referential types
+		// (e.g., type Thread = Entity & { replies?: Thread[] } used as a property
+		// of another type). Without this, recursive sub-fields degrade to KindAny.
+		if name := w.resolveAliasName(t); name != "" {
+			return metadata.Metadata{Kind: metadata.KindRef, Ref: name}
+		}
+		return metadata.Metadata{Kind: metadata.KindAny}
+	}
+	w.visiting[t.Id()] = true
+	defer delete(w.visiting, t.Id())
+
 	types := t.Types()
 	if len(types) == 0 {
 		return metadata.Metadata{Kind: metadata.KindAny}
@@ -548,7 +791,7 @@ func (w *TypeWalker) walkIntersection(t *shimchecker.Type) metadata.Metadata {
 	// Only for sub-field types (depth > 1). For generic aliases, build composite names.
 	if w.depth > 1 && result.Kind == metadata.KindObject {
 		alias := shimchecker.Type_alias(t)
-		if alias != nil && !w.visiting[t.Id()] {
+		if alias != nil && w.pendingName[t.Id()] == "" {
 			if aliasSym := alias.Symbol(); aliasSym != nil {
 				aliasName := aliasSym.Name
 				if aliasName != "" && aliasName != "__type" && aliasName != "__object" && (len(aliasName) == 0 || aliasName[0] != '\xfe') {
@@ -656,6 +899,26 @@ func (w *TypeWalker) walkObjectType(t *shimchecker.Type) metadata.Metadata {
 		return metadata.Metadata{Kind: metadata.KindArray, ElementType: &any}
 	}
 
+	// Check for interfaces extending Array<T> (e.g., Prisma's JsonArray).
+	// isArrayType returns false for named interfaces that extend Array, but their
+	// base types include the Array<T> instantiation. Detect this and treat as array.
+	// Only check class/interface types — getBaseTypes panics on anonymous object types.
+	objFlags := shimchecker.Type_objectFlags(t)
+	if objFlags&shimchecker.ObjectFlagsClassOrInterface != 0 {
+		baseTypes := shimchecker.Checker_getBaseTypes(w.checker, t)
+		for _, base := range baseTypes {
+			if shimchecker.Checker_isArrayType(w.checker, base) {
+				typeArgs := shimchecker.Checker_getTypeArguments(w.checker, base)
+				if len(typeArgs) > 0 {
+					elem := w.WalkType(typeArgs[0])
+					return metadata.Metadata{Kind: metadata.KindArray, ElementType: &elem}
+				}
+				any := metadata.Metadata{Kind: metadata.KindAny}
+				return metadata.Metadata{Kind: metadata.KindArray, ElementType: &any}
+			}
+		}
+	}
+
 	// Check for tuple
 	if shimchecker.IsTupleType(t) {
 		return w.walkTupleType(t)
@@ -712,6 +975,8 @@ func (w *TypeWalker) walkObjectType(t *shimchecker.Type) metadata.Metadata {
 			return metadata.Metadata{Kind: metadata.KindNative, NativeType: name}
 		case "URL", "URLSearchParams":
 			return metadata.Metadata{Kind: metadata.KindNative, NativeType: name}
+		case "File", "Blob":
+			return metadata.Metadata{Kind: metadata.KindNative, NativeType: name}
 		case "Error":
 			return metadata.Metadata{Kind: metadata.KindNative, NativeType: "Error"}
 		}
@@ -756,10 +1021,17 @@ func (w *TypeWalker) walkObjectType(t *shimchecker.Type) metadata.Metadata {
 			return metadata.Metadata{Kind: metadata.KindRef, Ref: typeName}
 		}
 
-		// Mark as visiting, analyze, register
+		// Mark as visiting, analyze, register.
+		// Save and reset the breadth counter so this named type gets its own
+		// budget. Without this, a large union (e.g., 163 currency codes) in a
+		// sibling property would exhaust the counter before we even start walking
+		// this type's properties, causing them all to degrade to KindAny.
+		savedBreadth := w.totalTypesWalked
+		w.totalTypesWalked = 0
 		w.visiting[t.Id()] = true
 		result := w.analyzeObjectProperties(t, typeName)
 		delete(w.visiting, t.Id())
+		w.totalTypesWalked = savedBreadth // restore parent's counter
 		w.registry.Register(typeName, &result)
 		return metadata.Metadata{Kind: metadata.KindRef, Ref: typeName}
 	}
@@ -777,12 +1049,12 @@ func (w *TypeWalker) walkObjectType(t *shimchecker.Type) metadata.Metadata {
 	// and register it for $ref extraction in OpenAPI.
 	// Only use Type_alias for sub-field types (depth > 1), not the top-level
 	// type being walked. WalkNamedType handles registration for top-level types.
-	// Also skip when visiting (recursion guard).
+	// Also skip when being walked by WalkNamedType (has a pendingName entry).
 	// Skip phantom objects (branded type building blocks like tags.Format<"email">)
 	// — they must remain inlinable so tryDetectBranded can detect them.
 	if w.depth > 1 {
 		alias := shimchecker.Type_alias(t)
-		if alias != nil && !w.visiting[t.Id()] {
+		if alias != nil && w.pendingName[t.Id()] == "" {
 			if aliasSym := alias.Symbol(); aliasSym != nil {
 				aliasName := aliasSym.Name
 				if aliasName != "" && aliasName != "__type" && aliasName != "__object" && (len(aliasName) == 0 || aliasName[0] != '\xfe') {
@@ -804,10 +1076,14 @@ func (w *TypeWalker) walkObjectType(t *shimchecker.Type) metadata.Metadata {
 					if w.registry.Has(registrationName) {
 						return metadata.Metadata{Kind: metadata.KindRef, Ref: registrationName}
 					}
-					// Analyze properties first to check if it's a phantom object
+					// Analyze properties first to check if it's a phantom object.
+					// Save and reset breadth counter for the same reason as named objects above.
+					savedBreadth := w.totalTypesWalked
+					w.totalTypesWalked = 0
 					w.visiting[t.Id()] = true
 					result := w.analyzeObjectProperties(t, registrationName)
 					delete(w.visiting, t.Id())
+					w.totalTypesWalked = savedBreadth
 					if isPhantomObject(&result) {
 						// Don't register phantom objects — they're branded type building blocks
 						return result
@@ -831,6 +1107,7 @@ func (w *TypeWalker) analyzeObjectProperties(t *shimchecker.Type, name string) m
 
 	for _, prop := range props {
 		propType := shimchecker.Checker_getTypeOfSymbol(w.checker, prop)
+
 		propMeta := w.WalkType(propType)
 
 		isOptional := prop.Flags&ast.SymbolFlagsOptional != 0
