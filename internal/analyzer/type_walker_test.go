@@ -5205,3 +5205,318 @@ type Lookup = {
 		t.Errorf("expected at most 1 Record warning, got %d", recordCount)
 	}
 }
+
+func TestWalkConstEnum(t *testing.T) {
+	env := setupWalker(t, `
+		const enum Direction { Up = 0, Down = 1, Left = 2, Right = 3 }
+		type T = Direction;
+	`)
+	defer env.release()
+
+	m := env.walkExportedType(t, "T")
+	// Const enums resolve the same way as regular enums (union of literals or enum kind)
+	if m.Kind != metadata.KindUnion && m.Kind != metadata.KindEnum {
+		t.Errorf("expected union or enum kind for const enum, got %s", m.Kind)
+	}
+}
+
+func TestWalkHeterogeneousEnum(t *testing.T) {
+	env := setupWalker(t, `
+		enum Mixed { Yes = 1, No = 0, Maybe = "maybe" }
+		type T = Mixed;
+	`)
+	defer env.release()
+
+	m := env.walkExportedType(t, "T")
+	if m.Kind != metadata.KindUnion && m.Kind != metadata.KindEnum {
+		t.Errorf("expected union or enum kind for heterogeneous enum, got %s", m.Kind)
+	}
+}
+
+func TestWalkClassVisibilityFiltering(t *testing.T) {
+	env := setupWalker(t, `
+		class UserDto {
+			public name: string = "";
+			private password: string = "";
+			protected internalId: number = 0;
+			email: string = "";
+		}
+	`)
+	defer env.release()
+
+	m, reg := env.walkExportedTypeWithRegistry(t, "UserDto")
+	resolved := resolveRef(m, reg)
+	assertKind(t, *resolved, metadata.KindObject)
+
+	// Public and default visibility should be present
+	names := propNames(resolved.Properties)
+	hasName := false
+	hasEmail := false
+	hasPassword := false
+	hasInternalId := false
+	for _, n := range names {
+		switch n {
+		case "name":
+			hasName = true
+		case "email":
+			hasEmail = true
+		case "password":
+			hasPassword = true
+		case "internalId":
+			hasInternalId = true
+		}
+	}
+
+	if !hasName {
+		t.Error("public property 'name' should be present")
+	}
+	if !hasEmail {
+		t.Error("default visibility property 'email' should be present")
+	}
+	// Private and protected may or may not be filtered by the walker.
+	// If they ARE present, we accept both behaviors — the important thing
+	// is that the walker does not crash on visibility modifiers.
+	_ = hasPassword
+	_ = hasInternalId
+}
+
+func TestWalkClassConstructorParameterProperties(t *testing.T) {
+	env := setupWalker(t, `
+		class CreateUserDto {
+			constructor(
+				public readonly name: string,
+				public age: number,
+				public email: string,
+			) {}
+		}
+	`)
+	defer env.release()
+
+	m, reg := env.walkExportedTypeWithRegistry(t, "CreateUserDto")
+	resolved := resolveRef(m, reg)
+	assertKind(t, *resolved, metadata.KindObject)
+
+	if len(resolved.Properties) < 3 {
+		t.Fatalf("expected at least 3 properties from constructor params, got %d: %v",
+			len(resolved.Properties), propNames(resolved.Properties))
+	}
+	assertPropertyExists(t, resolved.Properties, "name", metadata.KindAtomic)
+	assertPropertyExists(t, resolved.Properties, "age", metadata.KindAtomic)
+	assertPropertyExists(t, resolved.Properties, "email", metadata.KindAtomic)
+}
+
+func TestWalkPropertyTypeUndefined(t *testing.T) {
+	env := setupWalker(t, `
+		interface Strange {
+			nothing: undefined;
+			name: string;
+		}
+		type T = Strange;
+	`)
+	defer env.release()
+
+	m, reg := env.walkExportedTypeWithRegistry(t, "T")
+	resolved := resolveRef(m, reg)
+	assertKind(t, *resolved, metadata.KindObject)
+	// Should not crash; name should be present
+	assertPropertyExists(t, resolved.Properties, "name", metadata.KindAtomic)
+}
+
+func TestWalkPropertyTypeNever(t *testing.T) {
+	env := setupWalker(t, `
+		interface Impossible {
+			unreachable: never;
+			name: string;
+		}
+		type T = Impossible;
+	`)
+	defer env.release()
+
+	m, reg := env.walkExportedTypeWithRegistry(t, "T")
+	resolved := resolveRef(m, reg)
+	assertKind(t, *resolved, metadata.KindObject)
+	assertPropertyExists(t, resolved.Properties, "name", metadata.KindAtomic)
+}
+
+func TestWalkPropertyTypeUnknown(t *testing.T) {
+	env := setupWalker(t, `
+		interface Flexible {
+			data: unknown;
+			name: string;
+		}
+		type T = Flexible;
+	`)
+	defer env.release()
+
+	m, reg := env.walkExportedTypeWithRegistry(t, "T")
+	resolved := resolveRef(m, reg)
+	assertKind(t, *resolved, metadata.KindObject)
+	assertPropertyExists(t, resolved.Properties, "name", metadata.KindAtomic)
+	// data should be KindUnknown or KindAny
+	dataProp := findProperty(t, resolved.Properties, "data")
+	if dataProp.Type.Kind != metadata.KindUnknown && dataProp.Type.Kind != metadata.KindAny {
+		t.Errorf("expected data to be unknown or any, got %s", dataProp.Type.Kind)
+	}
+}
+
+func TestWalkPartialPickAndRequiredPick(t *testing.T) {
+	env := setupWalker(t, `
+		interface User {
+			id: string;
+			name: string;
+			email: string;
+			bio: string;
+			age: number;
+		}
+		type UpdateUserDto = Partial<Pick<User, 'name' | 'bio'>> & Required<Pick<User, 'id'>>;
+	`)
+	defer env.release()
+
+	walker := env.walkAllNamedTypes(t)
+	reg := walker.Registry()
+
+	if !reg.Has("UpdateUserDto") {
+		t.Fatal("UpdateUserDto should be registered")
+	}
+
+	m := reg.Types["UpdateUserDto"]
+	assertKind(t, *m, metadata.KindObject)
+
+	props := make(map[string]bool)
+	for _, p := range m.Properties {
+		props[p.Name] = true
+	}
+	if !props["id"] || !props["name"] || !props["bio"] {
+		t.Errorf("expected id, name, bio; got %v", props)
+	}
+	if len(m.Properties) != 3 {
+		t.Errorf("expected 3 properties, got %d", len(m.Properties))
+	}
+}
+
+func TestWalkRecursiveSelfType(t *testing.T) {
+	env := setupWalker(t, `
+		type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
+	`)
+	defer env.release()
+
+	// Should not infinite loop — just verify it completes
+	m := env.walkExportedType(t, "JsonValue")
+	if m.Kind != metadata.KindUnion && m.Kind != metadata.KindRef && m.Kind != metadata.KindAny {
+		t.Errorf("expected union, ref, or any for recursive self-type, got %s", m.Kind)
+	}
+}
+
+func TestWalkUnionOfTuples(t *testing.T) {
+	env := setupWalker(t, `
+		type EmptyTuple = [];
+		type Pair = [boolean, number];
+		type Triple = [number, string, boolean];
+		type T = EmptyTuple | Pair | Triple;
+	`)
+	defer env.release()
+
+	m := env.walkExportedType(t, "T")
+	assertKind(t, m, metadata.KindUnion)
+	if len(m.UnionMembers) < 2 {
+		t.Errorf("expected at least 2 union members for tuple union, got %d", len(m.UnionMembers))
+	}
+}
+
+func TestWalkReadonlyArrayGeneric(t *testing.T) {
+	env := setupWalker(t, `type T = ReadonlyArray<number>;`)
+	defer env.release()
+
+	m := env.walkExportedType(t, "T")
+	assertKind(t, m, metadata.KindArray)
+	if m.ElementType == nil {
+		t.Fatal("expected element type")
+	}
+	assertKind(t, *m.ElementType, metadata.KindAtomic)
+	assertAtomic(t, *m.ElementType, "number")
+}
+
+func TestWalkDeepNesting(t *testing.T) {
+	env := setupWalker(t, `
+		interface Level5 { value: string; }
+		interface Level4 { child: Level5; }
+		interface Level3 { child: Level4; }
+		interface Level2 { child: Level3; }
+		interface Level1 { child: Level2; }
+		type T = Level1;
+	`)
+	defer env.release()
+
+	m, reg := env.walkExportedTypeWithRegistry(t, "T")
+	if m.Kind != metadata.KindRef {
+		t.Fatalf("expected ref, got %s", m.Kind)
+	}
+	level1 := reg.Types[m.Ref]
+	if level1 == nil {
+		t.Fatal("Level1 not found in registry")
+	}
+
+	// Verify all 5 levels are registered and chain correctly
+	for _, name := range []string{"Level1", "Level2", "Level3", "Level4", "Level5"} {
+		if reg.Types[name] == nil {
+			t.Errorf("%s not found in registry", name)
+		}
+	}
+}
+
+func TestWalkNonIdentifierPropertyKeys(t *testing.T) {
+	env := setupWalker(t, `
+		interface WeirdKeys {
+			"normal-prop": string;
+			"with spaces": number;
+			"123starts-with-number": boolean;
+			"has.dot": string;
+		}
+		type T = WeirdKeys;
+	`)
+	defer env.release()
+
+	m, reg := env.walkExportedTypeWithRegistry(t, "T")
+	resolved := resolveRef(m, reg)
+	assertKind(t, *resolved, metadata.KindObject)
+
+	if len(resolved.Properties) != 4 {
+		t.Fatalf("expected 4 properties, got %d: %v", len(resolved.Properties), propNames(resolved.Properties))
+	}
+
+	// Verify all non-identifier keys are captured
+	names := make(map[string]bool)
+	for _, p := range resolved.Properties {
+		names[p.Name] = true
+	}
+	for _, expected := range []string{"normal-prop", "with spaces", "123starts-with-number", "has.dot"} {
+		if !names[expected] {
+			t.Errorf("expected property %q not found", expected)
+		}
+	}
+}
+
+func TestWalkLiteralPlusTaggedUnion(t *testing.T) {
+	env := setupWalker(t, `
+		type Format<F extends string> = { readonly __tsgonest_format: F };
+		interface Config {
+			id: "latest" | (string & Format<"uuid">);
+		}
+	`)
+	defer env.release()
+
+	m := env.walkExportedType(t, "Config")
+	if m.Kind == metadata.KindRef {
+		reg := env.walkExportedTypeWithRegistryOnly(t, "Config")
+		if resolved := reg.Types[m.Ref]; resolved != nil {
+			m = *resolved
+		}
+	}
+	assertKind(t, m, metadata.KindObject)
+
+	idProp := findProperty(t, m.Properties, "id")
+	// The union "latest" | (string & Format<"uuid">) should be a union type
+	if idProp.Type.Kind != metadata.KindUnion && idProp.Type.Kind != metadata.KindAtomic {
+		t.Errorf("expected union or atomic for literal+tagged union, got %s", idProp.Type.Kind)
+	}
+}

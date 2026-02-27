@@ -2664,3 +2664,259 @@ func TestGenerator_IgnoreOpenAPI(t *testing.T) {
 		t.Error("expected /hidden path to be excluded from OpenAPI document (IgnoreOpenAPI=true)")
 	}
 }
+
+// --- @EventStream SSE Tests ---
+
+func TestGenerator_EventStream_DiscriminatedUnion(t *testing.T) {
+	// @EventStream with multiple event types should produce oneOf with
+	// discriminator + error variant.
+	registry := metadata.NewTypeRegistry()
+	registry.Register("UserDto", &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Name: "UserDto",
+		Properties: []metadata.Property{
+			{Name: "id", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "number"}, Required: true},
+			{Name: "name", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+		},
+	})
+	registry.Register("DeletePayload", &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Name: "DeletePayload",
+		Properties: []metadata.Property{
+			{Name: "id", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+		},
+	})
+	gen := NewGenerator(registry)
+
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name: "UserEventController",
+			Path: "users",
+			Routes: []analyzer.Route{
+				{
+					Method:        "GET",
+					Path:          "/users/events",
+					OperationID:   "User_streamUserEvents",
+					ReturnType:    metadata.Metadata{Kind: metadata.KindAny}, // placeholder
+					StatusCode:    200,
+					Tags:          []string{"User"},
+					IsSSE:         true,
+					IsEventStream: true,
+					SSEEventVariants: []analyzer.SSEEventVariant{
+						{EventName: "created", DataType: metadata.Metadata{Kind: metadata.KindRef, Ref: "UserDto"}},
+						{EventName: "deleted", DataType: metadata.Metadata{Kind: metadata.KindRef, Ref: "DeletePayload"}},
+					},
+				},
+			},
+		},
+	}
+
+	doc := gen.Generate(controllers)
+
+	resp := doc.Paths["/users/events"].Get.Responses["200"]
+	if resp == nil {
+		t.Fatal("expected 200 response")
+	}
+
+	sseMedia, ok := resp.Content["text/event-stream"]
+	if !ok {
+		t.Fatal("expected text/event-stream content type")
+	}
+	if sseMedia.ItemSchema == nil {
+		t.Fatal("expected itemSchema")
+	}
+
+	schema := sseMedia.ItemSchema
+
+	// Should have oneOf with 3 entries: created, deleted, error
+	if len(schema.OneOf) != 3 {
+		t.Fatalf("expected 3 oneOf entries (2 events + error), got %d", len(schema.OneOf))
+	}
+
+	// Should have discriminator on "event"
+	if schema.Discriminator == nil {
+		t.Fatal("expected discriminator")
+	}
+	if schema.Discriminator.PropertyName != "event" {
+		t.Errorf("expected discriminator propertyName='event', got %q", schema.Discriminator.PropertyName)
+	}
+
+	// Check first variant: created
+	created := schema.OneOf[0]
+	if created.Type != "object" {
+		t.Errorf("expected created type='object', got %q", created.Type)
+	}
+	if created.Properties["event"].Const != "created" {
+		t.Errorf("expected created event.const='created', got %v", created.Properties["event"].Const)
+	}
+	if created.Properties["data"].ContentSchema == nil {
+		t.Error("expected created data.contentSchema")
+	}
+	if created.Properties["data"].ContentSchema.Ref != "#/components/schemas/UserDto" {
+		t.Errorf("expected created data contentSchema $ref to UserDto, got %q", created.Properties["data"].ContentSchema.Ref)
+	}
+
+	// Check second variant: deleted
+	deleted := schema.OneOf[1]
+	if deleted.Properties["event"].Const != "deleted" {
+		t.Errorf("expected deleted event.const='deleted', got %v", deleted.Properties["event"].Const)
+	}
+	if deleted.Properties["data"].ContentSchema.Ref != "#/components/schemas/DeletePayload" {
+		t.Errorf("expected deleted data contentSchema $ref to DeletePayload, got %q", deleted.Properties["data"].ContentSchema.Ref)
+	}
+
+	// Check error variant (always last)
+	errVariant := schema.OneOf[2]
+	if errVariant.Properties["event"].Const != "error" {
+		t.Errorf("expected error event.const='error', got %v", errVariant.Properties["event"].Const)
+	}
+	if errVariant.Properties["data"].ContentSchema != nil {
+		t.Error("error variant data should NOT have contentSchema (plain string)")
+	}
+}
+
+func TestGenerator_EventStream_SingleEvent(t *testing.T) {
+	// Single typed event: SseEvent<'notification', NotificationDto>
+	registry := metadata.NewTypeRegistry()
+	registry.Register("NotificationDto", &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Name: "NotificationDto",
+		Properties: []metadata.Property{
+			{Name: "id", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+			{Name: "message", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+		},
+	})
+	gen := NewGenerator(registry)
+
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name: "NotificationController",
+			Path: "notifications",
+			Routes: []analyzer.Route{
+				{
+					Method:        "GET",
+					Path:          "/notifications/stream",
+					OperationID:   "Notification_streamNotifications",
+					ReturnType:    metadata.Metadata{Kind: metadata.KindAny},
+					StatusCode:    200,
+					Tags:          []string{"Notification"},
+					IsSSE:         true,
+					IsEventStream: true,
+					SSEEventVariants: []analyzer.SSEEventVariant{
+						{EventName: "notification", DataType: metadata.Metadata{Kind: metadata.KindRef, Ref: "NotificationDto"}},
+					},
+				},
+			},
+		},
+	}
+
+	doc := gen.Generate(controllers)
+	schema := doc.Paths["/notifications/stream"].Get.Responses["200"].Content["text/event-stream"].ItemSchema
+
+	// oneOf: [notification, error] = 2 entries
+	if len(schema.OneOf) != 2 {
+		t.Fatalf("expected 2 oneOf entries (1 event + error), got %d", len(schema.OneOf))
+	}
+
+	// Discriminator should be present even for single literal event
+	if schema.Discriminator == nil || schema.Discriminator.PropertyName != "event" {
+		t.Error("expected discriminator on 'event'")
+	}
+
+	notification := schema.OneOf[0]
+	if notification.Properties["event"].Const != "notification" {
+		t.Errorf("expected event.const='notification', got %v", notification.Properties["event"].Const)
+	}
+}
+
+func TestGenerator_EventStream_GenericString_NoDiscriminator(t *testing.T) {
+	// Non-discriminated: SseEvent<string, UserDto> → no discriminator, '*' wildcard
+	registry := metadata.NewTypeRegistry()
+	registry.Register("UserDto", &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Name: "UserDto",
+	})
+	gen := NewGenerator(registry)
+
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name: "GenericController",
+			Path: "generic",
+			Routes: []analyzer.Route{
+				{
+					Method:        "GET",
+					Path:          "/generic/stream",
+					OperationID:   "Generic_streamGeneric",
+					ReturnType:    metadata.Metadata{Kind: metadata.KindAny},
+					StatusCode:    200,
+					Tags:          []string{"Generic"},
+					IsSSE:         true,
+					IsEventStream: true,
+					SSEEventVariants: []analyzer.SSEEventVariant{
+						{EventName: "", DataType: metadata.Metadata{Kind: metadata.KindRef, Ref: "UserDto"}},
+					},
+				},
+			},
+		},
+	}
+
+	doc := gen.Generate(controllers)
+	schema := doc.Paths["/generic/stream"].Get.Responses["200"].Content["text/event-stream"].ItemSchema
+
+	// oneOf: [generic event, error] = 2 entries
+	if len(schema.OneOf) != 2 {
+		t.Fatalf("expected 2 oneOf entries, got %d", len(schema.OneOf))
+	}
+
+	// No discriminator for generic string event name
+	if schema.Discriminator != nil {
+		t.Error("expected no discriminator for generic string event name")
+	}
+
+	// Generic variant should NOT have const on event
+	genericVariant := schema.OneOf[0]
+	if genericVariant.Properties["event"].Const != nil {
+		t.Errorf("expected no const on generic event, got %v", genericVariant.Properties["event"].Const)
+	}
+}
+
+func TestGenerator_EventStream_LegacySse_NoErrorVariant(t *testing.T) {
+	// Legacy @Sse (IsSSE=true, IsEventStream=false) should use the old schema
+	// without error variant or oneOf.
+	registry := metadata.NewTypeRegistry()
+	gen := NewGenerator(registry)
+
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name: "LegacyController",
+			Path: "legacy",
+			Routes: []analyzer.Route{
+				{
+					Method:        "GET",
+					Path:          "/legacy/events",
+					OperationID:   "Legacy_stream",
+					ReturnType:    metadata.Metadata{Kind: metadata.KindAny, Name: "MessageEvent"},
+					StatusCode:    200,
+					Tags:          []string{"Legacy"},
+					IsSSE:         true,
+					IsEventStream: false,
+				},
+			},
+		},
+	}
+
+	doc := gen.Generate(controllers)
+	schema := doc.Paths["/legacy/events"].Get.Responses["200"].Content["text/event-stream"].ItemSchema
+
+	// Legacy SSE: no oneOf, just a plain object schema
+	if len(schema.OneOf) != 0 {
+		t.Errorf("expected no oneOf for legacy @Sse, got %d entries", len(schema.OneOf))
+	}
+	if schema.Type != "object" {
+		t.Errorf("expected type='object', got %q", schema.Type)
+	}
+	// Should NOT have discriminator
+	if schema.Discriminator != nil {
+		t.Error("expected no discriminator for legacy @Sse")
+	}
+}

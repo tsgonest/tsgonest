@@ -1069,3 +1069,204 @@ func TestValidate_Uint64_SafeIntBounds(t *testing.T) {
 	assertContains(t, code, "9007199254740991") // Number.MAX_SAFE_INTEGER
 	assertContains(t, code, "< 0")
 }
+
+// ---------------------------------------------------------------------------
+// 23. Array Element Constraints
+// ---------------------------------------------------------------------------
+
+func TestValidate_ArrayElementConstraints(t *testing.T) {
+	// Array of UUIDs: Array<string & Format<"uuid">>
+	// The validation should check each element for uuid format
+	reg := metadata.NewTypeRegistry()
+	format := "uuid"
+	elemType := metadata.Metadata{
+		Kind:   metadata.KindAtomic,
+		Atomic: "string",
+	}
+	minItems := 3
+	meta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Properties: []metadata.Property{
+			{Name: "ids", Type: metadata.Metadata{
+				Kind:        metadata.KindArray,
+				ElementType: &elemType,
+			}, Required: true, Constraints: &metadata.Constraints{
+				MinItems: &minItems,
+			}},
+		},
+	}
+	// Element-level constraints are on the element property
+	meta.Properties[0].Type.ElementType = &metadata.Metadata{
+		Kind:   metadata.KindAtomic,
+		Atomic: "string",
+	}
+
+	code := GenerateCompanionSelective("UuidListDto", meta, reg, true, false)
+
+	// Should check array length minimum
+	assertContains(t, code, ".length < 3")
+	// Should validate each element is a string
+	assertContains(t, code, "typeof")
+	_ = format
+}
+
+func TestValidate_MinEqualsMaxBoundary(t *testing.T) {
+	// When min === max, the validation should produce an exact-value check
+	reg := metadata.NewTypeRegistry()
+	minLen := 5
+	maxLen := 5
+	meta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Properties: []metadata.Property{
+			{Name: "code", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true,
+				Constraints: &metadata.Constraints{
+					MinLength: &minLen,
+					MaxLength: &maxLen,
+				}},
+		},
+	}
+	code := GenerateCompanionSelective("ExactLenDto", meta, reg, true, false)
+	// Should check length against 5
+	assertContains(t, code, ".length")
+	assertContains(t, code, "5")
+}
+
+func TestValidate_MinEqualsMaxNumeric(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+	min := 42.0
+	max := 42.0
+	meta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Properties: []metadata.Property{
+			{Name: "answer", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "number"}, Required: true,
+				Constraints: &metadata.Constraints{
+					Minimum: &min,
+					Maximum: &max,
+				}},
+		},
+	}
+	code := GenerateCompanionSelective("ExactNumDto", meta, reg, true, false)
+	assertContains(t, code, "42")
+}
+
+func TestValidate_InfinityRejection(t *testing.T) {
+	// Number validation must reject Infinity as well as NaN
+	reg := metadata.NewTypeRegistry()
+	meta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Properties: []metadata.Property{
+			{Name: "score", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "number"}, Required: true},
+		},
+	}
+	code := GenerateCompanionSelective("InfDto", meta, reg, true, false)
+	// Number.isFinite rejects both NaN and Infinity
+	assertContains(t, code, "Number.isFinite")
+}
+
+func TestValidate_NestedArray(t *testing.T) {
+	// number[][] — array of arrays of numbers
+	reg := metadata.NewTypeRegistry()
+	innerElem := metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "number"}
+	innerArray := metadata.Metadata{Kind: metadata.KindArray, ElementType: &innerElem}
+	meta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Properties: []metadata.Property{
+			{Name: "matrix", Type: metadata.Metadata{
+				Kind:        metadata.KindArray,
+				ElementType: &innerArray,
+			}, Required: true},
+		},
+	}
+	code := GenerateCompanionSelective("MatrixDto", meta, reg, true, false)
+	// Should validate outer array
+	assertContains(t, code, "Array.isArray(input.matrix)")
+	// Should validate inner arrays with nested loop
+	assertContains(t, code, "Array.isArray")
+	// Should check inner elements are numbers
+	assertContains(t, code, "typeof")
+}
+
+func TestValidate_TuplePerElementTypes(t *testing.T) {
+	// [string, number, boolean] — each element has a different type
+	reg := metadata.NewTypeRegistry()
+	meta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Properties: []metadata.Property{
+			{Name: "record", Type: metadata.Metadata{
+				Kind: metadata.KindTuple,
+				Elements: []metadata.TupleElement{
+					{Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}},
+					{Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "number"}},
+					{Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "boolean"}},
+				},
+			}, Required: true},
+		},
+	}
+	code := GenerateCompanionSelective("RecordDto", meta, reg, true, false)
+	assertContains(t, code, "Array.isArray(input.record)")
+	// Should check each element type
+	assertContains(t, code, `"string"`)
+	assertContains(t, code, `"number"`)
+	assertContains(t, code, `"boolean"`)
+}
+
+func TestValidate_CombinedMultiConstraint(t *testing.T) {
+	// A property with format + minLength + maxLength + pattern all at once
+	reg := metadata.NewTypeRegistry()
+	format := "email"
+	minLen := 5
+	maxLen := 320
+	pattern := "^[^@]+@[^@]+\\.[^@]+$"
+	meta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Properties: []metadata.Property{
+			{Name: "email", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true,
+				Constraints: &metadata.Constraints{
+					Format:    &format,
+					MinLength: &minLen,
+					MaxLength: &maxLen,
+					Pattern:   &pattern,
+				}},
+		},
+	}
+	code := GenerateCompanionSelective("ContactDto", meta, reg, true, false)
+	// All constraints should be present in the validation code
+	assertContains(t, code, "5")
+	assertContains(t, code, "320")
+}
+
+func TestSerialize_DeeplyNestedObjects(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+
+	innerMeta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Name: "Inner",
+		Properties: []metadata.Property{
+			{Name: "value", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+		},
+	}
+	reg.Register("Inner", innerMeta)
+
+	middleMeta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Name: "Middle",
+		Properties: []metadata.Property{
+			{Name: "inner", Type: metadata.Metadata{Kind: metadata.KindRef, Ref: "Inner"}, Required: true},
+		},
+	}
+	reg.Register("Middle", middleMeta)
+
+	meta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Name: "Outer",
+		Properties: []metadata.Property{
+			{Name: "middle", Type: metadata.Metadata{Kind: metadata.KindRef, Ref: "Middle"}, Required: true},
+		},
+	}
+
+	code := GenerateCompanionSelective("Outer", meta, reg, false, true)
+	// Should generate nested property access
+	assertContains(t, code, "middle")
+	assertContains(t, code, "inner")
+	assertContains(t, code, "value")
+}

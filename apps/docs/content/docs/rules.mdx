@@ -23,7 +23,7 @@ If tsgonest can't see it in the source text, it doesn't exist.
 tsgonest introspects a fixed set of core NestJS decorators:
 
 - **Parameter decorators**: `@Body`, `@Query`, `@Param`, `@Headers`
-- **Route decorators**: `@Get`, `@Post`, `@Put`, `@Delete`, `@Patch`, `@Sse`
+- **Route decorators**: `@Get`, `@Post`, `@Put`, `@Delete`, `@Patch`, `@Sse`, `@EventStream`
 - **Class/method decorators**: `@Controller`, `@HttpCode`, `@Version`
 
 If you wrap **any** of these in a factory function, tsgonest cannot detect them:
@@ -148,4 +148,4 @@ tsgonest handles the full breadth of TypeScript's type system at compile time:
 - **Generic type instantiation** with automatic composite naming (`PaginatedResponse_UserDto`) and type alias priority
 - **Incremental builds** and post-processing cache — unchanged files are not re-analyzed
 - **Array paths** on controllers and routes
-- **`@HttpCode`**, **`@Version`**, and **`@Sse`** decorator extraction for OpenAPI
+- **`@HttpCode`**, **`@Version`**, **`@Sse`**, and **`@EventStream`** decorator extraction for OpenAPI

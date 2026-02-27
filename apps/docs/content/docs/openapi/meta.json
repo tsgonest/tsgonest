@@ -5,6 +5,7 @@
     "controllers",
     "parameters",
     "returns",
+    "sse",
     "versioning",
     "config",
     "migration"

@@ -12,3 +12,10 @@ export { FormDataInterceptor } from './form-data-interceptor';
 
 // Serialization
 export { TsgonestSerializeInterceptor } from './serialize-interceptor';
+
+// SSE (Server-Sent Events)
+export type { SseEvent, SseEvents } from './sse-event';
+export { EventStream, TSGONEST_SSE_METADATA, TSGONEST_SSE_TRANSFORMS } from './event-stream';
+export type { EventStreamOptions } from './event-stream';
+export { TsgonestSseInterceptor } from './sse-interceptor';
+export type { SseTransformMap } from './sse-interceptor';

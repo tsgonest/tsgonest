@@ -668,3 +668,249 @@ func TestRewriteController_BooleanParamCoercion(t *testing.T) {
 		t.Errorf("expected '1' coercion for boolean query param, got:\n%s", result)
 	}
 }
+
+// --- @EventStream SSE Rewriter Tests ---
+
+func TestRewriteController_SSETransformInjection(t *testing.T) {
+	// @EventStream with discriminated variants should inject Reflect.defineMetadata
+	// with per-event assert/stringify and TsgonestSseInterceptor.
+	input := `var common_1 = require("@nestjs/common");
+UserEventController = __decorate([
+    (0, common_1.Controller)("users")
+], UserEventController);
+__decorate([
+    (0, common_1.Get)("events")
+], UserEventController.prototype, "streamUserEvents", null);
+class UserEventController {
+    async *streamUserEvents() {
+        yield { event: "created", data: {} };
+    }
+}`
+
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name:       "UserEventController",
+			SourceFile: "/src/event.controller.ts",
+			Routes: []analyzer.Route{
+				{
+					OperationID:   "User_streamUserEvents",
+					MethodName:    "streamUserEvents",
+					Method:        "GET",
+					IsSSE:         true,
+					IsEventStream: true,
+					SSEEventVariants: []analyzer.SSEEventVariant{
+						{EventName: "created", DataType: metadata.Metadata{Kind: metadata.KindRef, Ref: "UserDto"}},
+						{EventName: "deleted", DataType: metadata.Metadata{Kind: metadata.KindRef, Ref: "DeletePayload"}},
+					},
+				},
+			},
+		},
+	}
+
+	companionMap := map[string]string{
+		"UserDto":       "/dist/dto.UserDto.tsgonest.js",
+		"DeletePayload": "/dist/dto.DeletePayload.tsgonest.js",
+	}
+
+	result := rewriteController(input, "/dist/event.controller.js", controllers, companionMap, "esm")
+
+	// Should inject Reflect.defineMetadata after the method-level __decorate
+	if !strings.Contains(result, `Reflect.defineMetadata("__tsgonest_sse_transforms__"`) {
+		t.Errorf("expected Reflect.defineMetadata for SSE transforms, got:\n%s", result)
+	}
+
+	// Should contain event name keys
+	if !strings.Contains(result, `"created"`) {
+		t.Errorf("expected 'created' event key, got:\n%s", result)
+	}
+	if !strings.Contains(result, `"deleted"`) {
+		t.Errorf("expected 'deleted' event key, got:\n%s", result)
+	}
+
+	// Should contain assert/stringify function names
+	if !strings.Contains(result, "assertUserDto") {
+		t.Errorf("expected assertUserDto function reference, got:\n%s", result)
+	}
+	if !strings.Contains(result, "stringifyUserDto") {
+		t.Errorf("expected stringifyUserDto function reference, got:\n%s", result)
+	}
+	if !strings.Contains(result, "assertDeletePayload") {
+		t.Errorf("expected assertDeletePayload function reference, got:\n%s", result)
+	}
+
+	// Should inject TsgonestSseInterceptor import
+	if !strings.Contains(result, "TsgonestSseInterceptor") {
+		t.Errorf("expected TsgonestSseInterceptor import, got:\n%s", result)
+	}
+
+	// Should inject UseInterceptors(TsgonestSseInterceptor)
+	if !strings.Contains(result, "(0, common_1.UseInterceptors)(TsgonestSseInterceptor)") {
+		t.Errorf("expected UseInterceptors(TsgonestSseInterceptor) injection, got:\n%s", result)
+	}
+
+	// Should import companion functions for both types
+	if !strings.Contains(result, "assertUserDto") || !strings.Contains(result, "stringifyUserDto") {
+		t.Errorf("expected UserDto companion imports, got:\n%s", result)
+	}
+
+	// Should contain the class name and method name in Reflect.defineMetadata
+	if !strings.Contains(result, `UserEventController.prototype, "streamUserEvents"`) {
+		t.Errorf("expected prototype reference in Reflect.defineMetadata, got:\n%s", result)
+	}
+}
+
+func TestRewriteController_SSEGenericWildcard(t *testing.T) {
+	// Non-discriminated SseEvent<string, T> should use '*' wildcard key.
+	input := `var common_1 = require("@nestjs/common");
+GenericController = __decorate([
+    (0, common_1.Controller)("generic")
+], GenericController);
+__decorate([
+    (0, common_1.Get)("stream")
+], GenericController.prototype, "streamGeneric", null);
+class GenericController {
+    async *streamGeneric() {
+        yield { event: "any", data: {} };
+    }
+}`
+
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name:       "GenericController",
+			SourceFile: "/src/generic.controller.ts",
+			Routes: []analyzer.Route{
+				{
+					OperationID:   "Generic_streamGeneric",
+					MethodName:    "streamGeneric",
+					Method:        "GET",
+					IsSSE:         true,
+					IsEventStream: true,
+					SSEEventVariants: []analyzer.SSEEventVariant{
+						{EventName: "", DataType: metadata.Metadata{Kind: metadata.KindRef, Ref: "UserDto"}},
+					},
+				},
+			},
+		},
+	}
+
+	companionMap := map[string]string{
+		"UserDto": "/dist/dto.UserDto.tsgonest.js",
+	}
+
+	result := rewriteController(input, "/dist/generic.controller.js", controllers, companionMap, "esm")
+
+	// Should use "*" as the wildcard key
+	if !strings.Contains(result, `"*"`) {
+		t.Errorf("expected '*' wildcard key for generic string event, got:\n%s", result)
+	}
+}
+
+func TestRewriteController_SSENoReturnWrapping(t *testing.T) {
+	// @EventStream routes should NOT get return statement wrapping (no stringify/serialize).
+	input := `class EventController {
+    async *streamEvents() {
+        yield { event: "created", data: {} };
+        return;
+    }
+}`
+
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name:       "EventController",
+			SourceFile: "/src/event.controller.ts",
+			Routes: []analyzer.Route{
+				{
+					OperationID:   "Event_streamEvents",
+					MethodName:    "streamEvents",
+					Method:        "GET",
+					IsSSE:         true,
+					IsEventStream: true,
+					SSEEventVariants: []analyzer.SSEEventVariant{
+						{EventName: "created", DataType: metadata.Metadata{Kind: metadata.KindRef, Ref: "UserDto"}},
+					},
+					ReturnType: metadata.Metadata{Kind: metadata.KindRef, Ref: "UserDto"},
+				},
+			},
+		},
+	}
+
+	companionMap := map[string]string{
+		"UserDto": "/dist/dto.UserDto.tsgonest.js",
+	}
+
+	result := rewriteController(input, "/dist/event.controller.js", controllers, companionMap, "esm")
+
+	// Should NOT contain stringify wrapping of return
+	if strings.Contains(result, "stringifyUserDto(await") {
+		t.Errorf("@EventStream routes should not get return wrapping, got:\n%s", result)
+	}
+}
+
+func TestRewriteController_MixedSSEAndRegular(t *testing.T) {
+	// A controller with both @EventStream and regular routes should handle both.
+	input := `var common_1 = require("@nestjs/common");
+MixedController = __decorate([
+    (0, common_1.Controller)("mixed")
+], MixedController);
+__decorate([
+    (0, common_1.Get)("events")
+], MixedController.prototype, "streamEvents", null);
+class MixedController {
+    async getHealth() {
+        return this.service.getHealth();
+    }
+    async *streamEvents() {
+        yield { event: "status", data: {} };
+    }
+}`
+
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name:       "MixedController",
+			SourceFile: "/src/mixed.controller.ts",
+			Routes: []analyzer.Route{
+				{
+					OperationID: "Mixed_getHealth",
+					MethodName:  "getHealth",
+					Method:      "GET",
+					ReturnType:  metadata.Metadata{Kind: metadata.KindRef, Ref: "HealthResponse"},
+				},
+				{
+					OperationID:   "Mixed_streamEvents",
+					MethodName:    "streamEvents",
+					Method:        "GET",
+					IsSSE:         true,
+					IsEventStream: true,
+					SSEEventVariants: []analyzer.SSEEventVariant{
+						{EventName: "status", DataType: metadata.Metadata{Kind: metadata.KindRef, Ref: "StatusDto"}},
+					},
+				},
+			},
+		},
+	}
+
+	companionMap := map[string]string{
+		"HealthResponse": "/dist/dto.HealthResponse.tsgonest.js",
+		"StatusDto":      "/dist/dto.StatusDto.tsgonest.js",
+	}
+
+	result := rewriteController(input, "/dist/mixed.controller.js", controllers, companionMap, "esm")
+
+	// Should have return wrapping for getHealth
+	if !strings.Contains(result, "stringifyHealthResponse(await") {
+		t.Errorf("expected return stringify for regular route, got:\n%s", result)
+	}
+
+	// Should have SSE transform metadata for streamEvents
+	if !strings.Contains(result, `Reflect.defineMetadata("__tsgonest_sse_transforms__"`) {
+		t.Errorf("expected SSE transform metadata, got:\n%s", result)
+	}
+
+	// Should import both interceptors
+	if !strings.Contains(result, "TsgonestSerializeInterceptor") {
+		t.Errorf("expected TsgonestSerializeInterceptor import, got:\n%s", result)
+	}
+	if !strings.Contains(result, "TsgonestSseInterceptor") {
+		t.Errorf("expected TsgonestSseInterceptor import, got:\n%s", result)
+	}
+}
