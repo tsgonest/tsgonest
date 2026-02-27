@@ -37,13 +37,17 @@
   },
   "peerDependencies": {
     "@nestjs/common": "^10.0.0 || ^11.0.0",
-    "@nestjs/core": "^10.0.0 || ^11.0.0"
+    "@nestjs/core": "^10.0.0 || ^11.0.0",
+    "rxjs": "^7.0.0"
   },
   "peerDependenciesMeta": {
     "@nestjs/common": {
       "optional": true
     },
     "@nestjs/core": {
+      "optional": true
+    },
+    "rxjs": {
       "optional": true
     }
   },

@@ -2657,5 +2657,641 @@ func TestControllerAnalyzer_VersionArrayDecorator(t *testing.T) {
 	}
 }
 
+// --- HEAD and OPTIONS HTTP Method Tests ---
+
+func TestControllerAnalyzer_HeadMethod(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Head(path?: string): MethodDecorator { return (t, k, d) => d; }
+
+		@Controller("health")
+		export class HealthController {
+			@Head()
+			checkHealth(): void {}
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 {
+		t.Fatalf("expected 1 controller, got %d", len(controllers))
+	}
+	if len(controllers[0].Routes) != 1 {
+		t.Fatalf("expected 1 route, got %d", len(controllers[0].Routes))
+	}
+
+	route := controllers[0].Routes[0]
+	if route.Method != "HEAD" {
+		t.Errorf("expected Method='HEAD', got %q", route.Method)
+	}
+	if route.Path != "/health" {
+		t.Errorf("expected Path='/health', got %q", route.Path)
+	}
+	if route.StatusCode != 200 {
+		t.Errorf("expected StatusCode=200, got %d", route.StatusCode)
+	}
+}
+
+func TestControllerAnalyzer_OptionsMethod(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Options(path?: string): MethodDecorator { return (t, k, d) => d; }
+
+		@Controller("cors")
+		export class CorsController {
+			@Options()
+			handleCors(): void {}
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 {
+		t.Fatalf("expected 1 controller, got %d", len(controllers))
+	}
+	if len(controllers[0].Routes) != 1 {
+		t.Fatalf("expected 1 route, got %d", len(controllers[0].Routes))
+	}
+
+	route := controllers[0].Routes[0]
+	if route.Method != "OPTIONS" {
+		t.Errorf("expected Method='OPTIONS', got %q", route.Method)
+	}
+	if route.Path != "/cors" {
+		t.Errorf("expected Path='/cors', got %q", route.Path)
+	}
+}
+
+func TestControllerAnalyzer_OptionalBodyParam(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Post(path?: string): MethodDecorator { return (t, k, d) => d; }
+		function Body(): ParameterDecorator { return () => {}; }
+
+		interface UpdateDto {
+			name?: string;
+			email?: string;
+		}
+
+		@Controller("users")
+		export class UserController {
+			@Post("update")
+			update(@Body() body?: UpdateDto): string { return ""; }
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 || len(controllers[0].Routes) != 1 {
+		t.Fatalf("expected 1 controller with 1 route")
+	}
+
+	route := controllers[0].Routes[0]
+	if len(route.Parameters) != 1 {
+		t.Fatalf("expected 1 parameter, got %d", len(route.Parameters))
+	}
+	param := route.Parameters[0]
+	if param.Category != "body" {
+		t.Errorf("expected Category='body', got %q", param.Category)
+	}
+	// The optional body parameter should still be recognized
+	if param.TypeName != "UpdateDto" {
+		t.Logf("optional body param TypeName=%q (may be empty for optional params)", param.TypeName)
+	}
+}
+
+func TestControllerAnalyzer_NullablePathParam(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+		function Param(name: string): ParameterDecorator { return () => {}; }
+
+		@Controller("items")
+		export class ItemController {
+			@Get(":id")
+			findOne(@Param("id") id: string | null): string { return ""; }
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 || len(controllers[0].Routes) != 1 {
+		t.Fatalf("expected 1 controller with 1 route")
+	}
+
+	route := controllers[0].Routes[0]
+	if len(route.Parameters) != 1 {
+		t.Fatalf("expected 1 parameter, got %d", len(route.Parameters))
+	}
+	param := route.Parameters[0]
+	if param.Category != "param" {
+		t.Errorf("expected Category='param', got %q", param.Category)
+	}
+	if param.Name != "id" {
+		t.Errorf("expected Name='id', got %q", param.Name)
+	}
+}
+
+func TestControllerAnalyzer_MultipleSecuritySchemes(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+
+		@Controller("admin")
+		export class AdminController {
+			/**
+			 * @security bearer
+			 * @security apiKey
+			 */
+			@Get("settings")
+			getSettings(): string { return ""; }
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 || len(controllers[0].Routes) != 1 {
+		t.Fatalf("expected 1 controller with 1 route")
+	}
+
+	route := controllers[0].Routes[0]
+	if len(route.Security) != 2 {
+		t.Fatalf("expected 2 security requirements, got %d", len(route.Security))
+	}
+	if route.Security[0].Name != "bearer" {
+		t.Errorf("expected Security[0].Name='bearer', got %q", route.Security[0].Name)
+	}
+	if route.Security[1].Name != "apiKey" {
+		t.Errorf("expected Security[1].Name='apiKey', got %q", route.Security[1].Name)
+	}
+}
+
+func TestControllerAnalyzer_CompositePathParams(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+		function Param(name: string): ParameterDecorator { return () => {}; }
+
+		@Controller("files")
+		export class FileController {
+			@Get(":userId/documents/:docId")
+			getDocument(
+				@Param("userId") userId: string,
+				@Param("docId") docId: string,
+			): string { return ""; }
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 || len(controllers[0].Routes) != 1 {
+		t.Fatalf("expected 1 controller with 1 route")
+	}
+
+	route := controllers[0].Routes[0]
+	if route.Path != "/files/:userId/documents/:docId" {
+		t.Errorf("expected Path='/files/:userId/documents/:docId', got %q", route.Path)
+	}
+	if len(route.Parameters) != 2 {
+		t.Fatalf("expected 2 parameters, got %d", len(route.Parameters))
+	}
+	if route.Parameters[0].Category != "param" || route.Parameters[0].Name != "userId" {
+		t.Errorf("param 0: expected param/userId, got %s/%s", route.Parameters[0].Category, route.Parameters[0].Name)
+	}
+	if route.Parameters[1].Category != "param" || route.Parameters[1].Name != "docId" {
+		t.Errorf("param 1: expected param/docId, got %s/%s", route.Parameters[1].Category, route.Parameters[1].Name)
+	}
+}
+
+func TestControllerAnalyzer_HeadersParamObjectType(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+		function Headers(): ParameterDecorator { return () => {}; }
+
+		interface RequestHeaders {
+			authorization: string;
+			"x-request-id"?: string;
+		}
+
+		@Controller("api")
+		export class ApiController {
+			@Get()
+			findAll(@Headers() headers: RequestHeaders): string { return ""; }
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 || len(controllers[0].Routes) != 1 {
+		t.Fatalf("expected 1 controller with 1 route")
+	}
+
+	route := controllers[0].Routes[0]
+	if len(route.Parameters) != 1 {
+		t.Fatalf("expected 1 parameter, got %d", len(route.Parameters))
+	}
+	param := route.Parameters[0]
+	if param.Category != "headers" {
+		t.Errorf("expected Category='headers', got %q", param.Category)
+	}
+}
+
+func TestControllerAnalyzer_ControllerNoPath(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path?: string): ClassDecorator { return (target) => target; }
+		function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+
+		@Controller()
+		export class RootController {
+			@Get()
+			root(): string { return "ok"; }
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 {
+		t.Fatalf("expected 1 controller, got %d", len(controllers))
+	}
+
+	ctrl := controllers[0]
+	if ctrl.Path != "" {
+		t.Errorf("expected empty path for @Controller(), got %q", ctrl.Path)
+	}
+	if len(ctrl.Routes) != 1 {
+		t.Fatalf("expected 1 route, got %d", len(ctrl.Routes))
+	}
+	if ctrl.Routes[0].Path != "/" {
+		t.Errorf("expected route Path='/', got %q", ctrl.Routes[0].Path)
+	}
+}
+
+func TestControllerAnalyzer_MultipleQueryAndParamDecorators(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+		function Param(name: string): ParameterDecorator { return () => {}; }
+		function Query(): ParameterDecorator { return () => {}; }
+
+		interface SearchQuery {
+			term?: string;
+			limit?: number;
+		}
+
+		@Controller("users")
+		export class UserController {
+			@Get(":id/posts")
+			getUserPosts(
+				@Param("id") userId: string,
+				@Query() query: SearchQuery,
+			): string { return ""; }
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 || len(controllers[0].Routes) != 1 {
+		t.Fatalf("expected 1 controller with 1 route")
+	}
+
+	route := controllers[0].Routes[0]
+	if len(route.Parameters) != 2 {
+		t.Fatalf("expected 2 parameters, got %d", len(route.Parameters))
+	}
+
+	if route.Parameters[0].Category != "param" || route.Parameters[0].Name != "id" {
+		t.Errorf("param 0: expected param/id, got %s/%s", route.Parameters[0].Category, route.Parameters[0].Name)
+	}
+	if route.Parameters[1].Category != "query" {
+		t.Errorf("param 1: expected Category='query', got %q", route.Parameters[1].Category)
+	}
+}
+
+func TestControllerAnalyzer_EventStreamDecorator_DiscriminatedUnion(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (t) => t; }
+		function EventStream(path?: string, options?: { heartbeat?: number }): MethodDecorator {
+			return (target, key, descriptor) => descriptor;
+		}
+
+		interface SseEvent<E extends string = string, T = unknown> {
+			event: E;
+			data: T;
+			id?: string;
+			retry?: number;
+		}
+
+		type SseEvents<M extends Record<string, unknown>> = {
+			[K in keyof M & string]: SseEvent<K, M[K]>;
+		}[keyof M & string];
+
+		interface UserDto {
+			id: number;
+			name: string;
+		}
+
+		interface DeletePayload {
+			id: string;
+		}
+
+		type UserEvents = SseEvents<{
+			created: UserDto;
+			deleted: DeletePayload;
+		}>;
+
+		@Controller("users")
+		export class UserEventController {
+			@EventStream("events")
+			async *streamUserEvents(): AsyncGenerator<UserEvents> {
+				yield { event: "created", data: {} as UserDto };
+			}
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 {
+		t.Fatalf("expected 1 controller, got %d", len(controllers))
+	}
+	if len(controllers[0].Routes) != 1 {
+		t.Fatalf("expected 1 route, got %d", len(controllers[0].Routes))
+	}
+
+	route := controllers[0].Routes[0]
+	if !route.IsSSE {
+		t.Error("expected IsSSE=true")
+	}
+	if !route.IsEventStream {
+		t.Error("expected IsEventStream=true")
+	}
+	if route.Method != "GET" {
+		t.Errorf("expected Method=GET, got %q", route.Method)
+	}
+	if route.Path != "/users/events" {
+		t.Errorf("expected Path=/users/events, got %q", route.Path)
+	}
+
+	// Check SSE event variants
+	if len(route.SSEEventVariants) != 2 {
+		t.Fatalf("expected 2 SSE event variants, got %d", len(route.SSEEventVariants))
+	}
+
+	// Variants may come in any order since it's a union; check both exist
+	variants := make(map[string]bool)
+	for _, v := range route.SSEEventVariants {
+		variants[v.EventName] = true
+	}
+	if !variants["created"] {
+		t.Error("expected 'created' event variant")
+	}
+	if !variants["deleted"] {
+		t.Error("expected 'deleted' event variant")
+	}
+}
+
+func TestControllerAnalyzer_EventStreamDecorator_SingleEvent(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (t) => t; }
+		function EventStream(path?: string): MethodDecorator {
+			return (target, key, descriptor) => descriptor;
+		}
+
+		interface SseEvent<E extends string = string, T = unknown> {
+			event: E;
+			data: T;
+			id?: string;
+			retry?: number;
+		}
+
+		interface NotificationDto {
+			id: string;
+			message: string;
+		}
+
+		@Controller("notifications")
+		export class NotificationController {
+			@EventStream("stream")
+			async *streamNotifications(): AsyncGenerator<SseEvent<"notification", NotificationDto>> {
+				yield { event: "notification", data: {} as NotificationDto };
+			}
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 || len(controllers[0].Routes) != 1 {
+		t.Fatalf("expected 1 controller with 1 route")
+	}
+
+	route := controllers[0].Routes[0]
+	if !route.IsEventStream {
+		t.Error("expected IsEventStream=true")
+	}
+
+	if len(route.SSEEventVariants) != 1 {
+		t.Fatalf("expected 1 SSE event variant, got %d", len(route.SSEEventVariants))
+	}
+	if route.SSEEventVariants[0].EventName != "notification" {
+		t.Errorf("expected EventName='notification', got %q", route.SSEEventVariants[0].EventName)
+	}
+}
+
+func TestControllerAnalyzer_EventStreamDecorator_GenericString(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (t) => t; }
+		function EventStream(path?: string): MethodDecorator {
+			return (target, key, descriptor) => descriptor;
+		}
+
+		interface SseEvent<E extends string = string, T = unknown> {
+			event: E;
+			data: T;
+			id?: string;
+			retry?: number;
+		}
+
+		interface UserDto {
+			id: number;
+			name: string;
+		}
+
+		@Controller("generic")
+		export class GenericEventController {
+			@EventStream("stream")
+			async *streamGeneric(): AsyncGenerator<SseEvent<string, UserDto>> {
+				yield { event: "any-name", data: {} as UserDto };
+			}
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 || len(controllers[0].Routes) != 1 {
+		t.Fatalf("expected 1 controller with 1 route")
+	}
+
+	route := controllers[0].Routes[0]
+	if !route.IsEventStream {
+		t.Error("expected IsEventStream=true")
+	}
+
+	if len(route.SSEEventVariants) != 1 {
+		t.Fatalf("expected 1 SSE event variant (generic), got %d", len(route.SSEEventVariants))
+	}
+	// Generic string → empty EventName (wildcard)
+	if route.SSEEventVariants[0].EventName != "" {
+		t.Errorf("expected empty EventName for generic string, got %q", route.SSEEventVariants[0].EventName)
+	}
+}
+
+func TestControllerAnalyzer_EventStreamDecorator_NoPath(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (t) => t; }
+		function EventStream(): MethodDecorator {
+			return (target, key, descriptor) => descriptor;
+		}
+
+		interface SseEvent<E extends string = string, T = unknown> {
+			event: E;
+			data: T;
+			id?: string;
+			retry?: number;
+		}
+
+		@Controller("default-path")
+		export class DefaultPathController {
+			@EventStream()
+			async *streamDefault(): AsyncGenerator<SseEvent<"ping", { ts: number }>> {
+				yield { event: "ping", data: { ts: Date.now() } };
+			}
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 || len(controllers[0].Routes) != 1 {
+		t.Fatalf("expected 1 controller with 1 route")
+	}
+
+	route := controllers[0].Routes[0]
+	if !route.IsSSE || !route.IsEventStream {
+		t.Error("expected IsSSE=true and IsEventStream=true")
+	}
+	// No path → defaults to controller path only
+	if route.Path != "/default-path" {
+		t.Errorf("expected Path=/default-path, got %q", route.Path)
+	}
+}
+
+func TestControllerAnalyzer_EventStreamDecorator_MixedWithRegularRoutes(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (t) => t; }
+		function Get(path?: string): MethodDecorator {
+			return (target, key, descriptor) => descriptor;
+		}
+		function EventStream(path?: string): MethodDecorator {
+			return (target, key, descriptor) => descriptor;
+		}
+
+		interface SseEvent<E extends string = string, T = unknown> {
+			event: E;
+			data: T;
+			id?: string;
+			retry?: number;
+		}
+
+		@Controller("mixed")
+		export class MixedController {
+			@Get("health")
+			health(): string { return "ok"; }
+
+			@EventStream("events")
+			async *streamMixed(): AsyncGenerator<SseEvent<"status", { online: boolean }>> {
+				yield { event: "status", data: { online: true } };
+			}
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 {
+		t.Fatalf("expected 1 controller, got %d", len(controllers))
+	}
+	if len(controllers[0].Routes) != 2 {
+		t.Fatalf("expected 2 routes, got %d", len(controllers[0].Routes))
+	}
+
+	// Find the regular route and SSE route
+	var regularRoute, sseRoute *analyzer.Route
+	for i := range controllers[0].Routes {
+		r := &controllers[0].Routes[i]
+		if r.IsSSE {
+			sseRoute = r
+		} else {
+			regularRoute = r
+		}
+	}
+
+	if regularRoute == nil {
+		t.Fatal("expected a regular (non-SSE) route")
+	}
+	if sseRoute == nil {
+		t.Fatal("expected an SSE route")
+	}
+
+	if regularRoute.IsEventStream {
+		t.Error("regular route should not be an EventStream")
+	}
+	if !sseRoute.IsEventStream {
+		t.Error("SSE route should be an EventStream")
+	}
+	if len(sseRoute.SSEEventVariants) != 1 {
+		t.Errorf("expected 1 SSE event variant, got %d", len(sseRoute.SSEEventVariants))
+	}
+}
+
 // The following ensures we're using the shimcompiler import correctly.
 var _ = (*shimcompiler.Program)(nil)

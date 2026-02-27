@@ -68,9 +68,17 @@ type Route struct {
 	ErrorResponses []ErrorResponse
 	// Version is from @Version() decorator (e.g., "1", "2").
 	Version string
-	// IsSSE indicates this is a Server-Sent Events endpoint (from @Sse decorator).
-	// SSE endpoints use GET method and return Observable<MessageEvent>.
+	// IsSSE indicates this is a Server-Sent Events endpoint (from @Sse or @EventStream decorator).
+	// SSE endpoints use GET method and return Observable<MessageEvent> or AsyncGenerator<SseEvent>.
 	IsSSE bool
+	// IsEventStream distinguishes @EventStream (iterator-based, typed, with error variant)
+	// from @Sse (Observable-based, legacy). Only @EventStream routes get the error variant
+	// in OpenAPI and compile-time serialization/validation injection.
+	IsEventStream bool
+	// SSEEventVariants holds the discriminated event types for @EventStream routes.
+	// Empty for @Sse routes or untyped @EventStream. Used for per-event serialization/
+	// validation and discriminated OpenAPI schemas with oneOf.
+	SSEEventVariants []SSEEventVariant
 	// UsesRawResponse indicates a parameter uses @Res()/@Response(), meaning
 	// the developer handles the response manually. Return type is meaningless.
 	UsesRawResponse bool
@@ -123,6 +131,18 @@ type AdditionalResponse struct {
 	ReturnType  metadata.Metadata
 	ContentType string
 	Description string
+}
+
+// SSEEventVariant represents one arm of a discriminated SSE event union.
+// For @EventStream routes returning AsyncGenerator<SseEvents<{ created: UserDto, deleted: DeletePayload }>>,
+// there would be two variants: {EventName: "created", DataType: UserDto} and
+// {EventName: "deleted", DataType: DeletePayload}.
+type SSEEventVariant struct {
+	// EventName is the literal event name (e.g., "created", "updated").
+	// Empty when the event name is generic `string` (non-discriminated).
+	EventName string
+	// DataType is the type metadata for the event's `data` field.
+	DataType metadata.Metadata
 }
 
 // SecurityRequirement represents an OpenAPI security requirement.
@@ -390,6 +410,7 @@ func (a *ControllerAnalyzer) analyzeMethod(methodNode *ast.Node, controllerPath 
 	version := ""
 	var versions []string
 	isSSE := false
+	isEventStream := false
 	var returnsDecoratorInfos []*DecoratorInfo
 	var responseHeaders []ResponseHeader
 	var redirect *RedirectInfo
@@ -447,6 +468,21 @@ func (a *ControllerAnalyzer) analyzeMethod(methodNode *ast.Node, controllerPath 
 			}
 			httpMethod = "GET"
 			isSSE = true
+			if hasPathArg {
+				subPath = pathArg
+			}
+		case "EventStream":
+			// @EventStream('path', { heartbeat?: number }) — typed iterator-based SSE endpoint.
+			// Sets isSSE=true (same OpenAPI content-type handling) and isEventStream=true
+			// (enables error variant in OpenAPI, compile-time serialization/validation).
+			pathArg, hasPathArg, unsupported := extractStaticDecoratorPathArg(dec)
+			if unsupported {
+				a.warnUnsupportedDynamicRoutePath(methodNode, sourceFile, className, operationID, "EventStream")
+				return nil
+			}
+			httpMethod = "GET"
+			isSSE = true
+			isEventStream = true
 			if hasPathArg {
 				subPath = pathArg
 			}
@@ -563,6 +599,14 @@ func (a *ControllerAnalyzer) analyzeMethod(methodNode *ast.Node, controllerPath 
 		returnType = metadata.Metadata{Kind: metadata.KindVoid}
 	} else {
 		returnType = a.extractReturnType(methodNode, className, operationID, sourceFile)
+	}
+
+	// For @EventStream routes, extract SSE event variants (discriminated event types).
+	// The returnType at this point has been unwrapped through AsyncGenerator → SseEvent level.
+	// We need the pre-unwrapped type to detect SseEvent<E, T> structure.
+	var sseEventVariants []SSEEventVariant
+	if isEventStream && !usesRawResponse {
+		sseEventVariants = a.extractSSEEventVariants(methodNode, sourceFile, returnType)
 	}
 
 	var tags []string
@@ -682,6 +726,8 @@ func (a *ControllerAnalyzer) analyzeMethod(methodNode *ast.Node, controllerPath 
 		Version:             version,
 		Versions:            versions,
 		IsSSE:               isSSE,
+		IsEventStream:       isEventStream,
+		SSEEventVariants:    sseEventVariants,
 		UsesRawResponse:     usesRawResponse,
 		ResponseContentType: responseContentType,
 		ResponseDescription: responseDescription,
@@ -1437,8 +1483,10 @@ func resolveInnerTypeName(typeNode *ast.Node) string {
 	}
 	name := ref.TypeName.Text()
 
-	// Unwrap Promise<T> and Observable<T> to get inner type name
-	if name == "Promise" || name == "Observable" {
+	// Unwrap Promise<T>, Observable<T>, AsyncGenerator<Y,R,N>, AsyncIterable<T>,
+	// AsyncIterableIterator<T> to get inner type name.
+	if name == "Promise" || name == "Observable" ||
+		name == "AsyncGenerator" || name == "AsyncIterable" || name == "AsyncIterableIterator" {
 		if ref.TypeArguments != nil && len(ref.TypeArguments.Nodes) > 0 {
 			return resolveInnerTypeName(ref.TypeArguments.Nodes[0])
 		}
@@ -1552,6 +1600,108 @@ func (a *ControllerAnalyzer) extractReturnsDecoratorType(info *DecoratorInfo) (r
 	}
 
 	return
+}
+
+// extractSSEEventVariants extracts discriminated SSE event variants from a
+// @EventStream route's return type metadata.
+//
+// The returnType has already been unwrapped through AsyncGenerator<Y> → Y by
+// the type walker. At this point it is either:
+//   - KindUnion: a discriminated union like SseEvent<'a', A> | SseEvent<'b', B>
+//     or SseEvents<{ a: A, b: B }> (which resolves to the same union)
+//   - KindObject: a single SseEvent<E, T> (single event type)
+//   - KindRef: a reference to one of the above (resolve from registry)
+//
+// For each union member (or the single object), we look for an `event` property
+// and a `data` property. If `event` is a literal string, the EventName is that
+// literal. If `event` is a generic `string` (atomic), EventName is "" (wildcard).
+//
+// Returns nil when no variants can be extracted (e.g., void, any, or malformed types).
+func (a *ControllerAnalyzer) extractSSEEventVariants(methodNode *ast.Node, sourceFile string, returnType metadata.Metadata) []SSEEventVariant {
+	// Resolve KindRef to the underlying type from the registry.
+	resolved := returnType
+	if resolved.Kind == metadata.KindRef && resolved.Ref != "" {
+		if regType, ok := a.registry.Types[resolved.Ref]; ok {
+			resolved = *regType
+		}
+	}
+
+	switch resolved.Kind {
+	case metadata.KindUnion:
+		// Discriminated union: extract one variant per union member.
+		var variants []SSEEventVariant
+		for _, member := range resolved.UnionMembers {
+			v := extractSseEventVariantFromObject(member, a.registry)
+			if v != nil {
+				variants = append(variants, *v)
+			}
+		}
+		return variants
+
+	case metadata.KindObject:
+		// Single SseEvent<E, T>.
+		v := extractSseEventVariantFromObject(resolved, a.registry)
+		if v != nil {
+			return []SSEEventVariant{*v}
+		}
+		return nil
+
+	default:
+		return nil
+	}
+}
+
+// extractSseEventVariantFromObject extracts an SSEEventVariant from a single
+// SseEvent-shaped object metadata. The object must have an `event` property
+// (literal string or atomic string) and a `data` property.
+//
+// Returns nil if the metadata is not an SseEvent-shaped object.
+func extractSseEventVariantFromObject(m metadata.Metadata, registry *metadata.TypeRegistry) *SSEEventVariant {
+	// Resolve refs.
+	resolved := m
+	if resolved.Kind == metadata.KindRef && resolved.Ref != "" {
+		if regType, ok := registry.Types[resolved.Ref]; ok {
+			resolved = *regType
+		}
+	}
+
+	if resolved.Kind != metadata.KindObject {
+		return nil
+	}
+
+	var eventName string
+	var hasEvent bool
+	var dataType metadata.Metadata
+	var hasData bool
+
+	for _, prop := range resolved.Properties {
+		switch prop.Name {
+		case "event":
+			hasEvent = true
+			switch prop.Type.Kind {
+			case metadata.KindLiteral:
+				// Literal string event name: SseEvent<'created', T>
+				if s, ok := prop.Type.LiteralValue.(string); ok {
+					eventName = s
+				}
+			case metadata.KindAtomic:
+				// Generic string: SseEvent<string, T> → wildcard
+				eventName = ""
+			}
+		case "data":
+			hasData = true
+			dataType = prop.Type
+		}
+	}
+
+	if !hasEvent || !hasData {
+		return nil
+	}
+
+	return &SSEEventVariant{
+		EventName: eventName,
+		DataType:  dataType,
+	}
 }
 
 // httpMethodForDecorator maps a decorator name to its HTTP method.

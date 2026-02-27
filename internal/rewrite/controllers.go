@@ -9,10 +9,26 @@ import (
 	"github.com/tsgonest/tsgonest/internal/metadata"
 )
 
+// sseTransformEntry holds the per-event-name assert/stringify function pair
+// for @EventStream SSE transform metadata injection.
+type sseTransformEntry struct {
+	eventName     string // literal event name, or "*" for generic string
+	assertFunc    string
+	stringifyFunc string
+}
+
+// sseTransform holds SSE transform metadata for a single @EventStream method.
+type sseTransform struct {
+	className  string
+	methodName string
+	entries    []sseTransformEntry
+}
+
 // rewriteController injects @Body() parameter validation and return value
 // transformation into a controller file's emitted JS.
 // For body params: inserts `paramName = assertTypeName(paramName);` at method start.
 // For return values: wraps `return EXPR;` with `return transformTypeName(await EXPR);`.
+// For @EventStream routes: injects Reflect.defineMetadata with per-event assert/stringify.
 func rewriteController(text string, outputFile string, controllers []analyzer.ControllerInfo, companionMap map[string]string, moduleFormat string) string {
 	// Collect all body parameters with named types from matching controllers
 	type bodyValidation struct {
@@ -38,9 +54,12 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 	var validations []bodyValidation
 	var transforms []returnTransform
 	var scalarCoercions []scalarCoercion
+	var sseTransforms []sseTransform
 	neededTypes := make(map[string]bool)
 	neededTransformTypes := make(map[string]bool)
+	neededSSETypes := make(map[string]bool)
 	needsHelpersImport := false
+	needsSseInterceptor := false
 
 	for _, ctrl := range controllers {
 		for _, route := range ctrl.Routes {
@@ -122,7 +141,40 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 				}
 			}
 
-			// Return transform collection
+			// SSE transform collection for @EventStream routes
+			if route.IsEventStream && len(route.SSEEventVariants) > 0 {
+				var entries []sseTransformEntry
+				for _, v := range route.SSEEventVariants {
+					typeName := resolveReturnTypeName(&v.DataType)
+					if typeName == "" {
+						continue
+					}
+					if _, ok := companionMap[typeName]; !ok {
+						continue
+					}
+					eventKey := v.EventName
+					if eventKey == "" {
+						eventKey = "*" // generic string event → wildcard
+					}
+					entries = append(entries, sseTransformEntry{
+						eventName:     eventKey,
+						assertFunc:    companionFuncName("assert", typeName),
+						stringifyFunc: companionFuncName("stringify", typeName),
+					})
+					neededSSETypes[typeName] = true
+				}
+				if len(entries) > 0 {
+					sseTransforms = append(sseTransforms, sseTransform{
+						className:  ctrl.Name,
+						methodName: route.MethodName,
+						entries:    entries,
+					})
+					needsSseInterceptor = true
+				}
+				continue // SSE routes don't get return serialization wrapping
+			}
+
+			// Return transform collection (non-SSE routes)
 			if route.IsSSE {
 				continue
 			}
@@ -144,7 +196,7 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 		}
 	}
 
-	if len(validations) == 0 && len(transforms) == 0 && len(scalarCoercions) == 0 {
+	if len(validations) == 0 && len(transforms) == 0 && len(scalarCoercions) == 0 && len(sseTransforms) == 0 {
 		return text
 	}
 
@@ -183,6 +235,11 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 		}
 	}
 
+	// Inject SSE transform metadata after method-level __decorate calls
+	for _, st := range sseTransforms {
+		text = injectSSETransforms(text, st)
+	}
+
 	// Generate companion imports for the types we need
 	var markerCalls []MarkerCall
 	for typeName := range neededTypes {
@@ -203,6 +260,17 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 			TypeName:     typeName,
 		})
 	}
+	// Import assert + stringify for SSE variant data types
+	for typeName := range neededSSETypes {
+		markerCalls = append(markerCalls, MarkerCall{
+			FunctionName: "assert",
+			TypeName:     typeName,
+		})
+		markerCalls = append(markerCalls, MarkerCall{
+			FunctionName: "stringify",
+			TypeName:     typeName,
+		})
+	}
 	importLines := companionImports(markerCalls, companionMap, outputFile, moduleFormat)
 
 	// If we have response stringify transforms, inject the serialize interceptor
@@ -213,7 +281,18 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 			importLines = append(importLines, `import { TsgonestSerializeInterceptor } from "@tsgonest/runtime";`)
 		}
 		// Inject UseInterceptors decorator on the controller class
-		text = injectClassInterceptor(text, controllers)
+		text = injectClassInterceptor(text, controllers, "TsgonestSerializeInterceptor")
+	}
+
+	// If we have SSE transforms, inject the SSE interceptor
+	if needsSseInterceptor {
+		if moduleFormat == "cjs" {
+			importLines = append(importLines, `const { TsgonestSseInterceptor } = require("@tsgonest/runtime");`)
+		} else {
+			importLines = append(importLines, `import { TsgonestSseInterceptor } from "@tsgonest/runtime";`)
+		}
+		// Inject UseInterceptors decorator on the controller class
+		text = injectClassInterceptor(text, controllers, "TsgonestSseInterceptor")
 	}
 
 	// If we have scalar coercions, import TsgonestValidationError as __e
@@ -639,11 +718,11 @@ func isIdentChar(c byte) bool {
 	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '$'
 }
 
-// injectClassInterceptor adds UseInterceptors(TsgonestSerializeInterceptor)
+// injectClassInterceptor adds UseInterceptors(interceptorName)
 // as a class-level decorator on each controller.
 // It finds the class-level __decorate([ ... ], ControllerName) call and inserts
 // the interceptor decorator after the opening bracket.
-func injectClassInterceptor(text string, controllers []analyzer.ControllerInfo) string {
+func injectClassInterceptor(text string, controllers []analyzer.ControllerInfo, interceptorName string) string {
 	for _, ctrl := range controllers {
 		className := ctrl.Name
 		// Find: ClassName = __decorate([
@@ -656,8 +735,52 @@ func injectClassInterceptor(text string, controllers []analyzer.ControllerInfo) 
 		bracketPos := loc[1] - 1
 		insertPos := bracketPos + 1
 
-		interceptorLine := "\n    (0, common_1.UseInterceptors)(TsgonestSerializeInterceptor),"
+		interceptorLine := "\n    (0, common_1.UseInterceptors)(" + interceptorName + "),"
 		text = text[:insertPos] + interceptorLine + text[insertPos:]
 	}
+	return text
+}
+
+// injectSSETransforms injects Reflect.defineMetadata for SSE per-event transform
+// maps after the method-level __decorate call for the given method.
+//
+// It generates code like:
+//
+//	Reflect.defineMetadata("__tsgonest_sse_transforms__", {
+//	  "created": [assertUserDto, stringifyUserDto],
+//	  "deleted": [assertDeletePayload, stringifyDeletePayload]
+//	}, ClassName.prototype, "methodName");
+//
+// This metadata is read at request time by TsgonestSseInterceptor to validate
+// and serialize each event's data field.
+func injectSSETransforms(text string, st sseTransform) string {
+	// Find the method-level __decorate call:
+	// __decorate([...], ClassName.prototype, "methodName", null);
+	pattern := regexp.MustCompile(
+		`__decorate\(\[[^\]]*\],\s*` +
+			regexp.QuoteMeta(st.className) + `\.prototype,\s*"` +
+			regexp.QuoteMeta(st.methodName) + `"[^;]*;`,
+	)
+	loc := pattern.FindStringIndex(text)
+	if loc == nil {
+		return text
+	}
+
+	// Build the transform map object literal
+	var entries []string
+	for _, e := range st.entries {
+		entries = append(entries, fmt.Sprintf("  %q: [%s, %s]", e.eventName, e.assertFunc, e.stringifyFunc))
+	}
+	transformMap := "{\n" + strings.Join(entries, ",\n") + "\n}"
+
+	metadataCall := fmt.Sprintf(
+		"\nReflect.defineMetadata(\"__tsgonest_sse_transforms__\", %s, %s.prototype, %q);",
+		transformMap, st.className, st.methodName,
+	)
+
+	// Insert after the __decorate call
+	insertPos := loc[1]
+	text = text[:insertPos] + metadataCall + text[insertPos:]
+
 	return text
 }

@@ -689,6 +689,21 @@ func (w *TypeWalker) walkObjectType(t *shimchecker.Type) metadata.Metadata {
 				return w.WalkType(typeArgs[0])
 			}
 			return metadata.Metadata{Kind: metadata.KindAny}
+		case "AsyncGenerator":
+			// Unwrap AsyncGenerator<Y, R, N> → Y (yield type, first type arg).
+			// Used by @EventStream() which returns AsyncGenerator<SseEvent<...>>.
+			typeArgs := shimchecker.Checker_getTypeArguments(w.checker, t)
+			if len(typeArgs) > 0 {
+				return w.WalkType(typeArgs[0])
+			}
+			return metadata.Metadata{Kind: metadata.KindAny}
+		case "AsyncIterable", "AsyncIterableIterator":
+			// Unwrap AsyncIterable<T> / AsyncIterableIterator<T> → T.
+			typeArgs := shimchecker.Checker_getTypeArguments(w.checker, t)
+			if len(typeArgs) > 0 {
+				return w.WalkType(typeArgs[0])
+			}
+			return metadata.Metadata{Kind: metadata.KindAny}
 		case "Uint8Array", "Int8Array", "Uint16Array", "Int16Array",
 			"Uint32Array", "Int32Array", "Float32Array", "Float64Array",
 			"BigInt64Array", "BigUint64Array":
@@ -1012,7 +1027,8 @@ func (w *TypeWalker) WalkTypeNode(node *ast.Node) metadata.Metadata {
 		ref := node.AsTypeReferenceNode()
 		if ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier {
 			name := ref.TypeName.Text()
-			if name != "Promise" && name != "Observable" && name != "Array" {
+			if name != "Promise" && name != "Observable" && name != "Array" &&
+				name != "AsyncGenerator" && name != "AsyncIterable" && name != "AsyncIterableIterator" {
 				result.Name = name
 			}
 		}

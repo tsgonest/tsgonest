@@ -371,7 +371,14 @@ func (g *Generator) buildOperation(route analyzer.Route, controllerName string) 
 
 	if route.IsSSE {
 		// SSE endpoint → text/event-stream with itemSchema (OpenAPI 3.2)
-		eventSchema := g.buildSSEEventSchema(&route.ReturnType)
+		var eventSchema *Schema
+		if route.IsEventStream && len(route.SSEEventVariants) > 0 {
+			// @EventStream with typed variants → discriminated oneOf + error variant
+			eventSchema = g.buildEventStreamSchema(route.SSEEventVariants)
+		} else {
+			// Legacy @Sse or untyped @EventStream
+			eventSchema = g.buildSSEEventSchema(&route.ReturnType)
+		}
 		op.Responses[statusStr] = &Response{
 			Description: "Server-Sent Events stream",
 			Content: map[string]MediaType{
@@ -539,6 +546,90 @@ func (g *Generator) buildSSEEventSchema(returnType *metadata.Metadata) *Schema {
 		Properties: map[string]*Schema{
 			"data":  dataProp,
 			"event": {Type: "string"},
+			"id":    {Type: "string"},
+			"retry": {Type: "integer", Minimum: floatPtr(0)},
+		},
+	}
+}
+
+// buildEventStreamSchema creates a discriminated oneOf schema for @EventStream routes
+// with typed SSE event variants. Each variant becomes a schema object with:
+//   - event: const literal (the discriminant)
+//   - data: string with contentMediaType + contentSchema for the typed payload
+//   - id: optional string
+//   - retry: optional integer
+//
+// An error variant is always appended: { event: "error", data: string }.
+// The schema uses a discriminator on propertyName "event".
+func (g *Generator) buildEventStreamSchema(variants []analyzer.SSEEventVariant) *Schema {
+	var oneOfSchemas []*Schema
+
+	for _, v := range variants {
+		dataProp := &Schema{Type: "string"}
+
+		// Add contentSchema for typed data payload
+		if v.DataType.Kind != metadata.KindAny && v.DataType.Kind != metadata.KindVoid && v.DataType.Kind != "" {
+			dataSchema := g.schemaGen.MetadataToSchema(&v.DataType)
+			dataProp.ContentMediaType = "application/json"
+			dataProp.ContentSchema = dataSchema
+		}
+
+		eventProp := &Schema{Type: "string"}
+		if v.EventName != "" {
+			// Discriminated: literal event name
+			eventProp.Const = v.EventName
+		}
+
+		variantSchema := &Schema{
+			Type:     "object",
+			Required: []string{"data", "event"},
+			Properties: map[string]*Schema{
+				"data":  dataProp,
+				"event": eventProp,
+				"id":    {Type: "string"},
+				"retry": {Type: "integer", Minimum: floatPtr(0)},
+			},
+		}
+
+		oneOfSchemas = append(oneOfSchemas, variantSchema)
+
+	}
+
+	// Always append error variant for @EventStream routes
+	oneOfSchemas = append(oneOfSchemas, buildSSEErrorVariantSchema())
+
+	// If there's only one user variant (+ error), check if it's non-discriminated (generic string)
+	// In that case, don't use discriminator.
+	hasDiscriminator := false
+	for _, v := range variants {
+		if v.EventName != "" {
+			hasDiscriminator = true
+			break
+		}
+	}
+
+	result := &Schema{
+		OneOf: oneOfSchemas,
+	}
+
+	if hasDiscriminator {
+		result.Discriminator = &Discriminator{
+			PropertyName: "event",
+		}
+	}
+
+	return result
+}
+
+// buildSSEErrorVariantSchema creates the error event variant schema for @EventStream routes.
+// Error events have: event: "error" (const), data: string (the error message).
+func buildSSEErrorVariantSchema() *Schema {
+	return &Schema{
+		Type:     "object",
+		Required: []string{"data", "event"},
+		Properties: map[string]*Schema{
+			"data":  {Type: "string"},
+			"event": {Type: "string", Const: "error"},
 			"id":    {Type: "string"},
 			"retry": {Type: "integer", Minimum: floatPtr(0)},
 		},
