@@ -124,6 +124,21 @@ func GenerateInterface(name string, node *SchemaNode, visited map[string]bool) s
 		return fmt.Sprintf("export type %s = unknown;\n", name)
 	}
 
+	// Object with additionalProperties but no declared properties:
+	// emit as interface with index signature instead of Record<> type alias.
+	// Interfaces support self-referential types (e.g., JsonObject where
+	// additionalProperties references JsonValue which includes JsonObject),
+	// while type aliases would cause TS2456: "Type alias circularly references itself".
+	if node.Type == "object" && len(node.Properties) == 0 && node.AdditionalProperties != nil {
+		valType := SchemaToTS(node.AdditionalProperties, visited)
+		var sb strings.Builder
+		if node.Description != "" {
+			sb.WriteString(buildSchemaJSDoc(node.Description))
+		}
+		fmt.Fprintf(&sb, "export interface %s { [key: string]: %s }\n", name, valType)
+		return sb.String()
+	}
+
 	// Non-object schemas: emit as type alias
 	if node.Type != "object" || len(node.Properties) == 0 {
 		ts := SchemaToTS(node, visited)

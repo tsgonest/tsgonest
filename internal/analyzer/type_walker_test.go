@@ -5,6 +5,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/microsoft/typescript-go/shim/ast"
+	shimchecker "github.com/microsoft/typescript-go/shim/checker"
+	"github.com/tsgonest/tsgonest/internal/analyzer"
 	"github.com/tsgonest/tsgonest/internal/metadata"
 )
 
@@ -5518,5 +5521,1507 @@ func TestWalkLiteralPlusTaggedUnion(t *testing.T) {
 	// The union "latest" | (string & Format<"uuid">) should be a union type
 	if idProp.Type.Kind != metadata.KindUnion && idProp.Type.Kind != metadata.KindAtomic {
 		t.Errorf("expected union or atomic for literal+tagged union, got %s", idProp.Type.Kind)
+	}
+}
+
+// --- Bug: Named generic type alias name not preserved ---
+
+// TestWalkNamedType_GenericInterface_PreservesAliasName verifies that when a named
+// type alias points to a generic interface instantiation (e.g.,
+// type MyList = PagedResult<Item>), WalkNamedType propagates the alias name on
+// the returned KindRef metadata. This ensures downstream consumers (OpenAPI, SDK)
+// can use the user-defined name instead of the mechanical composite name
+// (PagedResult_Item).
+func TestWalkNamedType_GenericInterface_PreservesAliasName(t *testing.T) {
+	env := setupWalker(t, `
+interface PagedResult<T> {
+  items: T[];
+  total: number;
+  page: number;
+}
+
+interface Item {
+  id: string;
+  value: string;
+}
+
+type MyItemList = PagedResult<Item>;
+`)
+	defer env.release()
+
+	// Walk the named type alias directly via WalkNamedType
+	walker := analyzer.NewTypeWalker(env.checker)
+	var result metadata.Metadata
+	found := false
+	for _, stmt := range env.sourceFile.Statements.Nodes {
+		if stmt.Kind == ast.KindTypeAliasDeclaration {
+			decl := stmt.AsTypeAliasDeclaration()
+			if decl.TypeParameters != nil {
+				continue
+			}
+			name := decl.Name().Text()
+			resolvedType := shimchecker.Checker_getTypeFromTypeNode(env.checker, decl.Type)
+			m := walker.WalkNamedType(name, resolvedType)
+
+			if name == "MyItemList" {
+				result = m
+				found = true
+			}
+		}
+	}
+
+	if !found {
+		t.Fatal("MyItemList type alias not found")
+	}
+
+	// The result should be a KindRef pointing to the mechanical composite name,
+	// but with the alias Name propagated for downstream consumers (OpenAPI, SDK).
+	if result.Kind != metadata.KindRef {
+		t.Fatalf("expected KindRef, got %s", result.Kind)
+	}
+	if result.Name != "MyItemList" {
+		t.Errorf("expected Name='MyItemList', got %q", result.Name)
+	}
+	if result.Ref != "PagedResult_Item" {
+		t.Errorf("expected Ref='PagedResult_Item', got %q", result.Ref)
+	}
+}
+
+// --- Bug: Self-referential intersection types degrade to empty schemas ---
+
+// TestWalkNamedType_SelfReferentialIntersection verifies that a self-referential
+// type alias using an intersection (e.g., type Node = Base & { children: Node[] })
+// correctly handles recursion: the recursive property should become a $ref, and
+// all OTHER properties (non-recursive) should be fully resolved.
+func TestWalkNamedType_SelfReferentialIntersection(t *testing.T) {
+	env := setupWalker(t, `
+interface Entity {
+  id: string;
+  createdAt: string;
+}
+
+interface Attachment {
+  name: string;
+  size: number;
+}
+
+interface Reaction {
+  emoji: string;
+  count: number;
+}
+
+type Message = Entity & {
+  content: string;
+  pinned: boolean;
+  replies?: Message[];
+  attachments: Attachment[];
+  reactions: Reaction[];
+};
+`)
+	defer env.release()
+
+	walker := env.walkAllNamedTypes(t)
+	reg := walker.Registry()
+
+	if !reg.Has("Message") {
+		t.Fatal("Message should be registered in the registry")
+	}
+	m := reg.Types["Message"]
+
+	if m.Kind != metadata.KindObject {
+		t.Fatalf("expected KindObject, got %s", m.Kind)
+	}
+
+	// Check that properties from the intersection were merged correctly
+	propMap := make(map[string]*metadata.Property)
+	for i := range m.Properties {
+		propMap[m.Properties[i].Name] = &m.Properties[i]
+	}
+
+	// Properties from Entity should be present
+	if _, ok := propMap["id"]; !ok {
+		t.Error("expected 'id' property from Entity")
+	}
+	if _, ok := propMap["createdAt"]; !ok {
+		t.Error("expected 'createdAt' property from Entity")
+	}
+
+	// The recursive property should resolve to a $ref, not degrade to KindAny
+	repliesProp, ok := propMap["replies"]
+	if !ok {
+		t.Fatal("expected 'replies' property")
+	}
+	if repliesProp.Type.Kind != metadata.KindArray {
+		t.Fatalf("replies: expected KindArray, got %s", repliesProp.Type.Kind)
+	}
+	if repliesProp.Type.ElementType == nil {
+		t.Fatal("replies: expected array element type to be set")
+	}
+	if repliesProp.Type.ElementType.Kind != metadata.KindRef {
+		t.Errorf("replies element: expected KindRef, got %s", repliesProp.Type.ElementType.Kind)
+	}
+	if repliesProp.Type.ElementType.Ref != "Message" {
+		t.Errorf("replies element: expected Ref='Message', got %q", repliesProp.Type.ElementType.Ref)
+	}
+
+	// NON-recursive properties must NOT degrade to KindAny/empty
+	contentProp, ok := propMap["content"]
+	if !ok {
+		t.Fatal("expected 'content' property")
+	}
+	if contentProp.Type.Kind != metadata.KindAtomic || contentProp.Type.Atomic != "string" {
+		t.Errorf("content: expected atomic string, got Kind=%s Atomic=%q", contentProp.Type.Kind, contentProp.Type.Atomic)
+	}
+
+	pinnedProp, ok := propMap["pinned"]
+	if !ok {
+		t.Fatal("expected 'pinned' property")
+	}
+	if pinnedProp.Type.Kind != metadata.KindAtomic || pinnedProp.Type.Atomic != "boolean" {
+		t.Errorf("pinned: expected atomic boolean, got Kind=%s Atomic=%q", pinnedProp.Type.Kind, pinnedProp.Type.Atomic)
+	}
+
+	// Attachment[] and Reaction[] must be fully resolved arrays, not degraded
+	attachProp, ok := propMap["attachments"]
+	if !ok {
+		t.Fatal("expected 'attachments' property")
+	}
+	if attachProp.Type.Kind != metadata.KindArray {
+		t.Errorf("attachments: expected KindArray, got %s", attachProp.Type.Kind)
+	}
+	if attachProp.Type.ElementType != nil && attachProp.Type.ElementType.Kind == metadata.KindAny {
+		t.Error("attachments element: should NOT be KindAny (degraded)")
+	}
+
+	reactionsProp, ok := propMap["reactions"]
+	if !ok {
+		t.Fatal("expected 'reactions' property")
+	}
+	if reactionsProp.Type.Kind != metadata.KindArray {
+		t.Errorf("reactions: expected KindArray, got %s", reactionsProp.Type.Kind)
+	}
+	if reactionsProp.Type.ElementType != nil && reactionsProp.Type.ElementType.Kind == metadata.KindAny {
+		t.Error("reactions element: should NOT be KindAny (degraded)")
+	}
+}
+
+// TestWalkNamedType_SelfReferentialIntersection_NullableScalars verifies that
+// simple scalar properties (string | null, etc.) in a self-referential intersection
+// type are fully resolved and not degraded to unknown.
+func TestWalkNamedType_SelfReferentialIntersection_NullableScalars(t *testing.T) {
+	env := setupWalker(t, `
+interface Base {
+  id: string;
+}
+
+type TreeNode = Base & {
+  children: TreeNode[];
+  label: string;
+  description: string | null;
+  priority: number | null;
+};
+`)
+	defer env.release()
+
+	walker := env.walkAllNamedTypes(t)
+	reg := walker.Registry()
+
+	if !reg.Has("TreeNode") {
+		t.Fatal("TreeNode should be registered")
+	}
+	m := reg.Types["TreeNode"]
+
+	propMap := make(map[string]*metadata.Property)
+	for i := range m.Properties {
+		propMap[m.Properties[i].Name] = &m.Properties[i]
+	}
+
+	// label should be a plain string, not KindAny
+	labelProp, ok := propMap["label"]
+	if !ok {
+		t.Fatal("expected 'label' property")
+	}
+	if labelProp.Type.Kind != metadata.KindAtomic || labelProp.Type.Atomic != "string" {
+		t.Errorf("label: expected atomic string, got Kind=%s", labelProp.Type.Kind)
+	}
+
+	// description should be string | null (nullable string), not unknown | null
+	descProp, ok := propMap["description"]
+	if !ok {
+		t.Fatal("expected 'description' property")
+	}
+	// Should be an atomic string with Nullable=true, or a union with string member
+	if descProp.Type.Kind == metadata.KindAny {
+		t.Error("description: should NOT be KindAny (degraded to unknown)")
+	}
+
+	// priority should be number | null, not unknown | null
+	priProp, ok := propMap["priority"]
+	if !ok {
+		t.Fatal("expected 'priority' property")
+	}
+	if priProp.Type.Kind == metadata.KindAny {
+		t.Error("priority: should NOT be KindAny (degraded to unknown)")
+	}
+}
+
+// --- Bug: Self-referential intersection as sub-field produces empty schema ---
+
+// TestWalkNamedType_SelfReferentialIntersection_AsSubField verifies that when a
+// self-referential intersection type (e.g., type Thread = Entity & { replies?: Thread[] })
+// is used as a property of a DIFFERENT parent type, the recursive property still
+// produces a $ref — not an empty schema ({}).
+//
+// This catches the case where the parent type is walked via WalkNamedType (which sets
+// pendingName for the parent), but the self-referential child type is only encountered
+// as a sub-field (walkIntersection runs without pendingName for the child type).
+func TestWalkNamedType_SelfReferentialIntersection_AsSubField(t *testing.T) {
+	env := setupWalker(t, `
+interface Entity {
+  id: string;
+  createdAt: string;
+}
+
+type Thread = Entity & {
+  content: string;
+  replies?: Thread[];
+};
+
+type ChannelResponse = {
+  name: string;
+  threads: Thread[];
+};
+`)
+	defer env.release()
+
+	// Walk ONLY ChannelResponse via WalkNamedType. Thread is NOT walked directly —
+	// it's encountered as a sub-field. This is the production scenario where the
+	// parent type is the one being walked, and the child type is discovered during
+	// property analysis.
+	walker := analyzer.NewTypeWalker(env.checker)
+	for _, stmt := range env.sourceFile.Statements.Nodes {
+		if stmt.Kind == ast.KindTypeAliasDeclaration {
+			decl := stmt.AsTypeAliasDeclaration()
+			name := decl.Name().Text()
+			// Only walk ChannelResponse — skip Thread and generic aliases
+			if name == "ChannelResponse" {
+				resolvedType := shimchecker.Checker_getTypeFromTypeNode(env.checker, decl.Type)
+				walker.WalkNamedType(name, resolvedType)
+			}
+		}
+	}
+
+	reg := walker.Registry()
+
+	// Thread should be discovered and registered as a sub-field type
+	if !reg.Has("Thread") {
+		t.Fatal("Thread should be registered in the registry (discovered as sub-field)")
+	}
+	threadMeta := reg.Types["Thread"]
+	if threadMeta.Kind != metadata.KindObject {
+		t.Fatalf("Thread: expected KindObject, got %s", threadMeta.Kind)
+	}
+
+	propMap := make(map[string]*metadata.Property)
+	for i := range threadMeta.Properties {
+		propMap[threadMeta.Properties[i].Name] = &threadMeta.Properties[i]
+	}
+
+	// The recursive 'replies' property should be KindArray with KindRef element
+	repliesProp, ok := propMap["replies"]
+	if !ok {
+		t.Fatal("expected 'replies' property on Thread")
+	}
+	if repliesProp.Type.Kind != metadata.KindArray {
+		t.Fatalf("replies: expected KindArray, got %s", repliesProp.Type.Kind)
+	}
+	if repliesProp.Type.ElementType == nil {
+		t.Fatal("replies: expected element type, got nil")
+	}
+	// CRITICAL: element type must be KindRef to "Thread", NOT KindAny (which produces {} in OpenAPI)
+	if repliesProp.Type.ElementType.Kind == metadata.KindAny {
+		t.Fatal("replies element: got KindAny — self-referential type degraded to empty schema")
+	}
+	if repliesProp.Type.ElementType.Kind != metadata.KindRef {
+		t.Fatalf("replies element: expected KindRef, got %s", repliesProp.Type.ElementType.Kind)
+	}
+	if repliesProp.Type.ElementType.Ref != "Thread" {
+		t.Errorf("replies element: expected Ref='Thread', got %q", repliesProp.Type.ElementType.Ref)
+	}
+
+	// Non-recursive properties should be fully resolved
+	contentProp, ok := propMap["content"]
+	if !ok {
+		t.Fatal("expected 'content' property on Thread")
+	}
+	if contentProp.Type.Kind != metadata.KindAtomic || contentProp.Type.Atomic != "string" {
+		t.Errorf("content: expected atomic string, got Kind=%s Atomic=%q", contentProp.Type.Kind, contentProp.Type.Atomic)
+	}
+}
+
+// --- Interface extending Array<T> ---
+
+// TestWalkType_InterfaceExtendsArray verifies that an interface extending Array<T>
+// is recognized as KindArray with the correct element type, rather than being
+// expanded into an object with all Array.prototype methods as properties.
+func TestWalkType_InterfaceExtendsArray(t *testing.T) {
+	env := setupWalker(t, `
+		interface Tags extends Array<string> {}
+		type Wrapper = { tags: Tags; };
+	`)
+	defer env.release()
+
+	m := env.walkExportedType(t, "Wrapper")
+	assertKind(t, m, metadata.KindObject)
+
+	if len(m.Properties) != 1 {
+		t.Fatalf("expected 1 property, got %d", len(m.Properties))
+	}
+	tagsProp := m.Properties[0]
+	if tagsProp.Name != "tags" {
+		t.Fatalf("expected property 'tags', got %q", tagsProp.Name)
+	}
+
+	// tags should be KindArray, NOT KindObject with Array.prototype methods
+	if tagsProp.Type.Kind != metadata.KindArray {
+		t.Fatalf("tags: expected KindArray, got %s", tagsProp.Type.Kind)
+	}
+	if tagsProp.Type.ElementType == nil {
+		t.Fatal("tags: expected element type, got nil")
+	}
+	if tagsProp.Type.ElementType.Kind != metadata.KindAtomic || tagsProp.Type.ElementType.Atomic != "string" {
+		t.Errorf("tags element: expected atomic string, got Kind=%s Atomic=%s", tagsProp.Type.ElementType.Kind, tagsProp.Type.ElementType.Atomic)
+	}
+}
+
+// TestWalkType_InterfaceExtendsArrayOfObject verifies interface extends Array<T>
+// where T is a named object type (element type becomes a KindRef).
+func TestWalkType_InterfaceExtendsArrayOfObject(t *testing.T) {
+	env := setupWalker(t, `
+		interface Item { id: string; label: string; }
+		interface ItemList extends Array<Item> {}
+		type Wrapper = { items: ItemList; };
+	`)
+	defer env.release()
+
+	m := env.walkExportedType(t, "Wrapper")
+	assertKind(t, m, metadata.KindObject)
+
+	itemsProp := m.Properties[0]
+	if itemsProp.Name != "items" {
+		t.Fatalf("expected property 'items', got %q", itemsProp.Name)
+	}
+
+	// items should be KindArray (not KindObject with all Array.prototype methods)
+	if itemsProp.Type.Kind != metadata.KindArray {
+		t.Fatalf("items: expected KindArray, got %s", itemsProp.Type.Kind)
+	}
+	if itemsProp.Type.ElementType == nil {
+		t.Fatal("items: expected element type, got nil")
+	}
+	// Item is a named interface, so the element type is KindRef
+	if itemsProp.Type.ElementType.Kind != metadata.KindRef {
+		t.Errorf("items element: expected KindRef (named Item), got %s", itemsProp.Type.ElementType.Kind)
+	}
+}
+
+// TestWalkType_MutuallyRecursiveJsonTypes simulates Prisma's JsonValue/JsonObject/JsonArray
+// pattern. The key assertion: the array-extending interface should be KindArray, not an
+// object with 30+ Array.prototype methods as properties.
+func TestWalkType_MutuallyRecursiveJsonTypes(t *testing.T) {
+	env := setupWalker(t, `
+		type FlexValue = string | number | boolean | FlexObject | FlexList | null;
+		type FlexObject = { [Key in string]?: FlexValue; };
+		interface FlexList extends Array<FlexValue> {}
+
+		type Container = {
+			data: FlexValue;
+			metadata: FlexObject;
+			tags: FlexList;
+		};
+	`)
+	defer env.release()
+
+	m := env.walkExportedType(t, "Container")
+	assertKind(t, m, metadata.KindObject)
+
+	propMap := make(map[string]metadata.Property)
+	for _, p := range m.Properties {
+		propMap[p.Name] = p
+	}
+
+	// data: FlexValue is a recursive union — should be resolved (not KindAny)
+	dataProp, ok := propMap["data"]
+	if !ok {
+		t.Fatal("expected 'data' property")
+	}
+	if dataProp.Type.Kind == metadata.KindAny {
+		t.Error("data: should NOT be KindAny (FlexValue should resolve to a union)")
+	}
+
+	// metadata: FlexObject has index signature — should be resolved (not KindAny)
+	metaProp, ok := propMap["metadata"]
+	if !ok {
+		t.Fatal("expected 'metadata' property")
+	}
+	if metaProp.Type.Kind == metadata.KindAny {
+		t.Error("metadata: should NOT be KindAny (FlexObject should resolve)")
+	}
+
+	// tags: FlexList extends Array<FlexValue> — MUST be KindArray
+	tagsProp, ok := propMap["tags"]
+	if !ok {
+		t.Fatal("expected 'tags' property")
+	}
+	if tagsProp.Type.Kind != metadata.KindArray {
+		t.Fatalf("tags: expected KindArray, got %s (interface extends Array should be recognized as array)", tagsProp.Type.Kind)
+	}
+	if tagsProp.Type.ElementType == nil {
+		t.Fatal("tags: expected element type, got nil")
+	}
+	if tagsProp.Type.ElementType.Kind == metadata.KindAny {
+		t.Error("tags element type: should not be KindAny (should be FlexValue)")
+	}
+}
+
+// --- Bug: Large literal unions exhaust breadth limit, degrading later properties ---
+
+// TestWalkType_LargeUnionDoesNotExhaustBreadthLimit verifies that a type with a
+// large union property (e.g., 300+ currency codes) does not cause later properties
+// to degrade to KindAny due to the breadth limit. This reproduces the Partial<T>
+// and enum degradation bugs where properties after a large union became {}.
+func TestWalkType_LargeUnionDoesNotExhaustBreadthLimit(t *testing.T) {
+	// Generate a large union of 400 string literals to simulate TCurrencyCode4217
+	var codes []string
+	for i := 0; i < 400; i++ {
+		codes = append(codes, fmt.Sprintf("'CODE_%03d'", i))
+	}
+	largeUnion := strings.Join(codes, " | ")
+
+	src := fmt.Sprintf(`
+		type CodeType = %s;
+
+		type StatusEnum = 'ACTIVE' | 'INACTIVE' | 'PENDING';
+
+		type Config = {
+			code: CodeType;
+			status: StatusEnum;
+			name: string;
+			count: number;
+		};
+	`, largeUnion)
+
+	env := setupWalker(t, src)
+	defer env.release()
+
+	m := env.walkExportedType(t, "Config")
+	assertKind(t, m, metadata.KindObject)
+
+	propMap := make(map[string]metadata.Property)
+	for _, p := range m.Properties {
+		propMap[p.Name] = p
+	}
+
+	// All 4 properties should be fully resolved, none should be KindAny
+	statusProp, ok := propMap["status"]
+	if !ok {
+		t.Fatal("expected 'status' property")
+	}
+	if statusProp.Type.Kind == metadata.KindAny {
+		t.Error("status: should NOT be KindAny (breadth limit exhausted by large union)")
+	}
+
+	nameProp, ok := propMap["name"]
+	if !ok {
+		t.Fatal("expected 'name' property")
+	}
+	if nameProp.Type.Kind != metadata.KindAtomic || nameProp.Type.Atomic != "string" {
+		t.Errorf("name: expected atomic string, got Kind=%s Atomic=%q", nameProp.Type.Kind, nameProp.Type.Atomic)
+	}
+
+	countProp, ok := propMap["count"]
+	if !ok {
+		t.Fatal("expected 'count' property")
+	}
+	if countProp.Type.Kind != metadata.KindAtomic || countProp.Type.Atomic != "number" {
+		t.Errorf("count: expected atomic number, got Kind=%s Atomic=%q", countProp.Type.Kind, countProp.Type.Atomic)
+	}
+}
+
+// --- Bug: File and Blob types not recognized as native types ---
+
+// TestWalkType_FileNativeType verifies that the global File type is recognized as
+// a native type, not expanded into an object with all File interface properties.
+// File/Blob are DOM types, so we declare minimal stubs since the walker test
+// environment uses lib: ["esnext"] which doesn't include DOM.
+func TestWalkType_FileNativeType(t *testing.T) {
+	env := setupWalker(t, `
+		interface Blob {
+			readonly size: number;
+			readonly type: string;
+			slice(start?: number, end?: number, contentType?: string): Blob;
+		}
+		interface File extends Blob {
+			readonly lastModified: number;
+			readonly name: string;
+		}
+		type Upload = { file: File; };
+	`)
+	defer env.release()
+
+	m := env.walkExportedType(t, "Upload")
+	assertKind(t, m, metadata.KindObject)
+
+	fileProp := m.Properties[0]
+	if fileProp.Name != "file" {
+		t.Fatalf("expected property 'file', got %q", fileProp.Name)
+	}
+	if fileProp.Type.Kind != metadata.KindNative || fileProp.Type.NativeType != "File" {
+		t.Errorf("file: expected KindNative/File, got Kind=%s NativeType=%q", fileProp.Type.Kind, fileProp.Type.NativeType)
+	}
+}
+
+// TestWalkType_BlobNativeType verifies that the global Blob type is recognized as
+// a native type.
+func TestWalkType_BlobNativeType(t *testing.T) {
+	env := setupWalker(t, `
+		interface Blob {
+			readonly size: number;
+			readonly type: string;
+			slice(start?: number, end?: number, contentType?: string): Blob;
+		}
+		type Upload = { data: Blob; };
+	`)
+	defer env.release()
+
+	m := env.walkExportedType(t, "Upload")
+	assertKind(t, m, metadata.KindObject)
+
+	dataProp := m.Properties[0]
+	if dataProp.Name != "data" {
+		t.Fatalf("expected property 'data', got %q", dataProp.Name)
+	}
+	if dataProp.Type.Kind != metadata.KindNative || dataProp.Type.NativeType != "Blob" {
+		t.Errorf("data: expected KindNative/Blob, got Kind=%s NativeType=%q", dataProp.Type.Kind, dataProp.Type.NativeType)
+	}
+}
+
+// TestWalkType_InterfacePropertyTypesRegistered verifies that interfaces used
+// as property types are registered as named schemas (KindRef), not inlined as
+// empty schemas. Regression: nested interfaces with branded type properties
+// were omitted from the type registry.
+func TestWalkType_InterfacePropertyTypesRegistered(t *testing.T) {
+	env := setupWalker(t, `
+		interface PhoneEntry { number: string; type: string; }
+		interface EmailEntry { address: string; label?: string; }
+
+		interface ContactConfig {
+			findOne?: { name: string; slug?: string; };
+			createData?: {
+				name: string;
+				jobTitle?: string;
+				phones?: PhoneEntry[];
+				emails?: EmailEntry[];
+			};
+		}
+
+		interface CompanyConfig {
+			findOne?: { name: string; };
+			createData?: {
+				name: string;
+				url?: string;
+				phones?: PhoneEntry[];
+			};
+		}
+
+		interface SourceConfig {
+			findOne?: { title: string; };
+			createData?: { title: string; url?: string; };
+		}
+
+		interface TeamConfig {
+			findOne?: { name: string; };
+			createData?: { name: string; description?: string; };
+		}
+
+		interface StatusConfig {
+			findOne?: { label: string; };
+			createData?: { label: string; color?: string; };
+		}
+
+		interface TagConfig {
+			findOne?: { name: string; };
+			createData?: { name: string; color?: string; };
+		}
+
+		export type MainDto = {
+			title: string;
+			category: 'A' | 'B';
+			value?: number;
+			contact?: ContactConfig;
+			company?: CompanyConfig;
+			source?: SourceConfig;
+			teams?: TeamConfig[];
+			status?: StatusConfig;
+			tags?: TagConfig[];
+		};
+	`)
+	defer env.release()
+
+	_, reg := env.walkExportedTypeWithRegistry(t, "MainDto")
+
+	// All interface types used as properties must be in the registry
+	expectedSchemas := []string{
+		"ContactConfig", "CompanyConfig", "SourceConfig",
+		"TeamConfig", "StatusConfig", "TagConfig",
+		"PhoneEntry", "EmailEntry",
+	}
+	for _, name := range expectedSchemas {
+		if !reg.Has(name) {
+			t.Errorf("expected schema %q to be in registry, but it was not", name)
+		}
+	}
+
+	// Check that property types are KindRef, not KindAny
+	m, _ := env.walkExportedTypeWithRegistry(t, "MainDto")
+	propMap := make(map[string]metadata.Property)
+	for _, p := range m.Properties {
+		propMap[p.Name] = p
+	}
+
+	for _, p := range m.Properties {
+		if p.Type.Kind == metadata.KindAny {
+			t.Errorf("property %q has KindAny — type information was lost", p.Name)
+		}
+	}
+
+	// Specific checks for interface-typed properties
+	if p, ok := propMap["contact"]; ok {
+		if p.Type.Kind != metadata.KindRef || p.Type.Ref != "ContactConfig" {
+			t.Errorf("contact: expected KindRef/ContactConfig, got Kind=%s Ref=%q", p.Type.Kind, p.Type.Ref)
+		}
+	}
+	if p, ok := propMap["teams"]; ok {
+		if p.Type.Kind != metadata.KindArray {
+			t.Errorf("teams: expected KindArray, got Kind=%s", p.Type.Kind)
+		} else if p.Type.ElementType == nil || p.Type.ElementType.Kind != metadata.KindRef {
+			t.Errorf("teams: expected array of KindRef, got element Kind=%v", p.Type.ElementType)
+		}
+	}
+}
+
+// TestWalkType_PartialOmitConditionalPhantom tests if restructuring the phantom
+// types to use a top-level conditional (no intersection with WithErr) fixes it.
+func TestWalkType_PartialOmitConditionalPhantom(t *testing.T) {
+	// Instead of `{ __tsgonest_x?: NumVal<N> } & WithErr<...>`,
+	// use a single conditional type that produces the full object:
+	// N extends { value: V; error: E } ? { __tsgonest_x?: V; __tsgonest_x_error?: E }
+	//                                   : { __tsgonest_x?: N }
+	env := setupWalker(t, `
+		type MinLength<N extends number | { value: number; error?: string }> =
+			N extends { value: infer V extends number; error: infer E extends string }
+				? { readonly __tsgonest_minLength?: V; readonly __tsgonest_minLength_error?: E }
+				: { readonly __tsgonest_minLength?: N extends { value: infer V } ? V : N };
+
+		type MaxLength<N extends number | { value: number; error?: string }> =
+			N extends { value: infer V extends number; error: infer E extends string }
+				? { readonly __tsgonest_maxLength?: V; readonly __tsgonest_maxLength_error?: E }
+				: { readonly __tsgonest_maxLength?: N extends { value: infer V } ? V : N };
+
+		type Pattern<P extends string | { value: string; error?: string }> =
+			P extends { value: infer V extends string; error: infer E extends string }
+				? { readonly __tsgonest_pattern?: V; readonly __tsgonest_pattern_error?: E }
+				: { readonly __tsgonest_pattern?: P extends { value: infer V } ? V : P };
+
+		type Minimum<N extends number | { value: number; error?: string }> =
+			N extends { value: infer V extends number; error: infer E extends string }
+				? { readonly __tsgonest_minimum?: V; readonly __tsgonest_minimum_error?: E }
+				: { readonly __tsgonest_minimum?: N extends { value: infer V } ? V : N };
+
+		interface Base {
+			title: string & MinLength<1> & MaxLength<255>;
+			category: 'A' | 'B';
+			value?: number & Minimum<0>;
+			contactId?: string & Pattern<'^[0-9a-f]{24}$'>;
+			statusId: string;
+		}
+		export type Result = Partial<Omit<Base, 'foo'>>;
+	`)
+	defer env.release()
+	checkNoAny(t, env, "Result")
+}
+
+// TestWalkType_PartialOmitConditionalPhantomFull tests the full 13-property
+// pattern with the restructured phantom types.
+func TestWalkType_PartialOmitConditionalPhantomFull(t *testing.T) {
+	env := setupWalker(t, `
+		type MinLength<N extends number | { value: number; error?: string }> =
+			N extends { value: infer V extends number; error: infer E extends string }
+				? { readonly __tsgonest_minLength?: V; readonly __tsgonest_minLength_error?: E }
+				: { readonly __tsgonest_minLength?: N extends { value: infer V } ? V : N };
+
+		type MaxLength<N extends number | { value: number; error?: string }> =
+			N extends { value: infer V extends number; error: infer E extends string }
+				? { readonly __tsgonest_maxLength?: V; readonly __tsgonest_maxLength_error?: E }
+				: { readonly __tsgonest_maxLength?: N extends { value: infer V } ? V : N };
+
+		type Pattern<P extends string | { value: string; error?: string }> =
+			P extends { value: infer V extends string; error: infer E extends string }
+				? { readonly __tsgonest_pattern?: V; readonly __tsgonest_pattern_error?: E }
+				: { readonly __tsgonest_pattern?: P extends { value: infer V } ? V : P };
+
+		type Minimum<N extends number | { value: number; error?: string }> =
+			N extends { value: infer V extends number; error: infer E extends string }
+				? { readonly __tsgonest_minimum?: V; readonly __tsgonest_minimum_error?: E }
+				: { readonly __tsgonest_minimum?: N extends { value: infer V } ? V : N };
+
+		type PriorityLevel = 'LOW' | 'MEDIUM' | 'HIGH' | 'URGENT';
+
+		interface BaseItem {
+			title: string & MinLength<1> & MaxLength<255>;
+			category: 'A' | 'B';
+			value?: number & Minimum<0>;
+			priority?: PriorityLevel;
+			location?: string & MaxLength<100>;
+			data?: Record<string, any>;
+			contactId?: string & Pattern<'^[0-9a-f]{24}$'>;
+			companyId?: string & Pattern<'^[0-9a-f]{24}$'>;
+			sourceId?: string & Pattern<'^[0-9a-f]{24}$'>;
+			statusId: string;
+			tagIds?: (string & Pattern<'^[0-9a-f]{24}$'>)[];
+			ownerId?: string & Pattern<'^[0-9a-f]{24}$'>;
+			teamIds?: (string & Pattern<'^[0-9a-f]{24}$'>)[];
+		}
+
+		type BaseItemWithout = Omit<BaseItem, 'foo'>;
+		export type UpdateItem = Partial<BaseItemWithout> & {
+			id: string & Pattern<'^[0-9a-f]{24}$'>;
+		};
+	`)
+	defer env.release()
+
+	m := env.walkExportedType(t, "UpdateItem")
+	if m.Kind != metadata.KindObject {
+		t.Fatalf("expected KindObject, got %s", m.Kind)
+	}
+
+	anyCount := 0
+	for _, p := range m.Properties {
+		t.Logf("  %s: Kind=%s", p.Name, p.Type.Kind)
+		if p.Type.Kind == metadata.KindAny {
+			anyCount++
+		}
+	}
+	if anyCount > 0 {
+		t.Errorf("%d/%d properties have KindAny", anyCount, len(m.Properties))
+	}
+
+	// Verify constraints are extracted for branded types
+	propMap := make(map[string]metadata.Property)
+	for _, p := range m.Properties {
+		propMap[p.Name] = p
+	}
+
+	if p, ok := propMap["title"]; ok {
+		if p.Type.Kind != metadata.KindAtomic || p.Type.Atomic != "string" {
+			t.Errorf("title: expected string, got Kind=%s", p.Type.Kind)
+		}
+		if p.Constraints == nil {
+			t.Errorf("title: expected constraints (minLength/maxLength)")
+		}
+	}
+	if p, ok := propMap["id"]; ok {
+		if p.Type.Kind != metadata.KindAtomic || p.Type.Atomic != "string" {
+			t.Errorf("id: expected string, got Kind=%s", p.Type.Kind)
+		}
+	}
+}
+
+// TestWalkType_InterfaceSingleBrandedConstraint reproduces the bug where
+// certain branded type compositions produce empty schemas.
+// Single-constraint branded types (string & MaxLength<100>), const-object enums,
+// Record<string,any> aliases, and branded arrays all degrade to KindAny.
+func TestWalkType_InterfaceSingleBrandedConstraint(t *testing.T) {
+	env := setupWalker(t, `
+		type MinLength<N extends number | { value: number; error?: string }> =
+			N extends { value: infer V extends number; error: infer E extends string }
+				? { readonly __tsgonest_minLength?: V; readonly __tsgonest_minLength_error?: E }
+				: { readonly __tsgonest_minLength?: N extends { value: infer V } ? V : N };
+
+		type MaxLength<N extends number | { value: number; error?: string }> =
+			N extends { value: infer V extends number; error: infer E extends string }
+				? { readonly __tsgonest_maxLength?: V; readonly __tsgonest_maxLength_error?: E }
+				: { readonly __tsgonest_maxLength?: N extends { value: infer V } ? V : N };
+
+		type Pattern<P extends string | { value: string; error?: string }> =
+			P extends { value: infer V extends string; error: infer E extends string }
+				? { readonly __tsgonest_pattern?: V; readonly __tsgonest_pattern_error?: E }
+				: { readonly __tsgonest_pattern?: P extends { value: infer V } ? V : P };
+
+		type Minimum<N extends number | { value: number; error?: string }> =
+			N extends { value: infer V extends number; error: infer E extends string }
+				? { readonly __tsgonest_minimum?: V; readonly __tsgonest_minimum_error?: E }
+				: { readonly __tsgonest_minimum?: N extends { value: infer V } ? V : N };
+
+		// Prisma-style const-object enum
+		const PriorityEnum = {
+			LOW: 'LOW' as const,
+			NORMAL: 'NORMAL' as const,
+			IMPORTANT: 'IMPORTANT' as const,
+			HIGH: 'HIGH' as const,
+		};
+		type PriorityEnum = (typeof PriorityEnum)[keyof typeof PriorityEnum];
+
+		// Record<string, any> alias
+		type JsonRecord = Record<string, any>;
+
+		export interface CreateLeadDealDto {
+			// ✅ Multiple branded constraints
+			title: string & MinLength<1> & MaxLength<255>;
+			// ✅ Literal union
+			type: 'LEAD' | 'DEAL';
+			// ✅ Numeric branded
+			value?: number & Minimum<0>;
+			// ❌ Single string constraint
+			location?: string & MaxLength<100>;
+			// ❌ Single pattern constraint
+			contactId?: string & Pattern<'^[0-9a-fA-F]{24}$'>;
+			// ❌ Const-object enum
+			priority?: PriorityEnum;
+			// ❌ Record alias
+			columnData?: JsonRecord;
+			// ❌ Branded array
+			tagIds?: (string & Pattern<'^[0-9a-fA-F]{24}$'>)[];
+			// ✅ Plain string
+			statusId: string;
+		}
+	`)
+	defer env.release()
+
+	m, reg := env.walkExportedTypeWithRegistry(t, "CreateLeadDealDto")
+	if m.Kind == metadata.KindRef {
+		if resolved := reg.Types[m.Ref]; resolved != nil {
+			m = *resolved
+		}
+	}
+	if m.Kind != metadata.KindObject {
+		t.Fatalf("expected KindObject, got %s", m.Kind)
+	}
+
+	propMap := make(map[string]metadata.Property)
+	for _, p := range m.Properties {
+		propMap[p.Name] = p
+		t.Logf("  %s: Kind=%s Atomic=%q Ref=%q", p.Name, p.Type.Kind, p.Type.Atomic, p.Type.Ref)
+	}
+
+	// Properties that MUST NOT be KindAny
+	for _, name := range []string{"title", "type", "value", "location", "contactId", "priority", "columnData", "tagIds", "statusId"} {
+		p, ok := propMap[name]
+		if !ok {
+			t.Errorf("property %q not found", name)
+			continue
+		}
+		if p.Type.Kind == metadata.KindAny {
+			t.Errorf("property %q: got KindAny — type info lost", name)
+		}
+	}
+
+	// Specific type checks
+	if p, ok := propMap["title"]; ok {
+		if p.Type.Kind != metadata.KindAtomic || p.Type.Atomic != "string" {
+			t.Errorf("title: expected KindAtomic/string, got Kind=%s Atomic=%q", p.Type.Kind, p.Type.Atomic)
+		}
+		if p.Constraints == nil || p.Constraints.MinLength == nil || p.Constraints.MaxLength == nil {
+			t.Errorf("title: expected minLength+maxLength constraints, got %+v", p.Constraints)
+		}
+	}
+	if p, ok := propMap["location"]; ok {
+		if p.Type.Kind != metadata.KindAtomic || p.Type.Atomic != "string" {
+			t.Errorf("location: expected KindAtomic/string, got Kind=%s Atomic=%q", p.Type.Kind, p.Type.Atomic)
+		}
+		if p.Constraints == nil || p.Constraints.MaxLength == nil {
+			t.Errorf("location: expected maxLength constraint, got %+v", p.Constraints)
+		}
+	}
+	if p, ok := propMap["contactId"]; ok {
+		if p.Type.Kind != metadata.KindAtomic || p.Type.Atomic != "string" {
+			t.Errorf("contactId: expected KindAtomic/string, got Kind=%s Atomic=%q", p.Type.Kind, p.Type.Atomic)
+		}
+		if p.Constraints == nil || p.Constraints.Pattern == nil {
+			t.Errorf("contactId: expected pattern constraint, got %+v", p.Constraints)
+		}
+	}
+	if p, ok := propMap["tagIds"]; ok {
+		if p.Type.Kind != metadata.KindArray {
+			t.Errorf("tagIds: expected KindArray, got Kind=%s", p.Type.Kind)
+		}
+	}
+}
+
+// TestWalkType_OldWithErrSingleConstraint reproduces the bug where the OLD
+// phantom types (using WithErr intersection) cause single-constraint branded types
+// to degrade to KindAny when used as interface properties.
+func TestWalkType_OldWithErrSingleConstraint(t *testing.T) {
+	env := setupWalker(t, `
+		type NumVal<N extends number | { value: number; error?: string }> =
+			N extends { value: infer V } ? V : N;
+		type StrVal<S extends string | { value: string; error?: string }> =
+			S extends { value: infer V } ? V : S;
+		type WithErr<Prefix extends string, C> =
+			C extends { error: infer E extends string }
+				? { readonly [K in `+"`"+`${Prefix}_error`+"`"+`]?: E }
+				: {};
+
+		type MinLength<N extends number | { value: number; error?: string }> = {
+			readonly __tsgonest_minLength?: NumVal<N>;
+		} & WithErr<"__tsgonest_minLength", N>;
+
+		type MaxLength<N extends number | { value: number; error?: string }> = {
+			readonly __tsgonest_maxLength?: NumVal<N>;
+		} & WithErr<"__tsgonest_maxLength", N>;
+
+		type Pattern<P extends string | { value: string; error?: string }> = {
+			readonly __tsgonest_pattern?: StrVal<P>;
+		} & WithErr<"__tsgonest_pattern", P>;
+
+		type Minimum<N extends number | { value: number; error?: string }> = {
+			readonly __tsgonest_minimum?: NumVal<N>;
+		} & WithErr<"__tsgonest_minimum", N>;
+
+		type JsonRecord = Record<string, any>;
+
+		export interface CreateLeadDealDto {
+			title: string & MinLength<1> & MaxLength<255>;
+			type: 'LEAD' | 'DEAL';
+			value?: number & Minimum<0>;
+			location?: string & MaxLength<100>;
+			contactId?: string & Pattern<'^[0-9a-fA-F]{24}$'>;
+			columnData?: JsonRecord;
+			tagIds?: (string & Pattern<'^[0-9a-fA-F]{24}$'>)[];
+			statusId: string;
+		}
+	`)
+	defer env.release()
+
+	m, reg := env.walkExportedTypeWithRegistry(t, "CreateLeadDealDto")
+	if m.Kind == metadata.KindRef {
+		if resolved := reg.Types[m.Ref]; resolved != nil {
+			m = *resolved
+		}
+	}
+	if m.Kind != metadata.KindObject {
+		t.Fatalf("expected KindObject, got %s", m.Kind)
+	}
+
+	for _, p := range m.Properties {
+		t.Logf("  %s: Kind=%s Atomic=%q", p.Name, p.Type.Kind, p.Type.Atomic)
+		if p.Type.Kind == metadata.KindAny {
+			t.Errorf("property %q: got KindAny — type info lost (old WithErr bug)", p.Name)
+		}
+	}
+}
+
+// TestWalkType_MultiFileSingleBrandedConstraint tests branded types imported
+// from a separate file (simulating import from @tsgonest/types).
+func TestWalkType_MultiFileSingleBrandedConstraint(t *testing.T) {
+	files := map[string]string{
+		"tags.ts": `
+			export type MinLength<N extends number | { value: number; error?: string }> =
+				N extends { value: infer V extends number; error: infer E extends string }
+					? { readonly __tsgonest_minLength?: V; readonly __tsgonest_minLength_error?: E }
+					: { readonly __tsgonest_minLength?: N extends { value: infer V } ? V : N };
+
+			export type MaxLength<N extends number | { value: number; error?: string }> =
+				N extends { value: infer V extends number; error: infer E extends string }
+					? { readonly __tsgonest_maxLength?: V; readonly __tsgonest_maxLength_error?: E }
+					: { readonly __tsgonest_maxLength?: N extends { value: infer V } ? V : N };
+
+			export type Pattern<P extends string | { value: string; error?: string }> =
+				P extends { value: infer V extends string; error: infer E extends string }
+					? { readonly __tsgonest_pattern?: V; readonly __tsgonest_pattern_error?: E }
+					: { readonly __tsgonest_pattern?: P extends { value: infer V } ? V : P };
+
+			export type Minimum<N extends number | { value: number; error?: string }> =
+				N extends { value: infer V extends number; error: infer E extends string }
+					? { readonly __tsgonest_minimum?: V; readonly __tsgonest_minimum_error?: E }
+					: { readonly __tsgonest_minimum?: N extends { value: infer V } ? V : N };
+		`,
+		"dto.ts": `
+			import { MinLength, MaxLength, Pattern, Minimum } from './tags.js';
+
+			type JsonRecord = Record<string, any>;
+
+			export interface CreateLeadDealDto {
+				title: string & MinLength<1> & MaxLength<255>;
+				type: 'LEAD' | 'DEAL';
+				value?: number & Minimum<0>;
+				location?: string & MaxLength<100>;
+				contactId?: string & Pattern<'^[0-9a-fA-F]{24}$'>;
+				columnData?: JsonRecord;
+				tagIds?: (string & Pattern<'^[0-9a-fA-F]{24}$'>)[];
+				statusId: string;
+			}
+		`,
+	}
+
+	env := setupWalkerMultiFile(t, files, "dto.ts")
+	defer env.release()
+
+	m, reg := env.walkExportedTypeWithRegistry(t, "CreateLeadDealDto")
+	if m.Kind == metadata.KindRef {
+		if resolved := reg.Types[m.Ref]; resolved != nil {
+			m = *resolved
+		}
+	}
+	if m.Kind != metadata.KindObject {
+		t.Fatalf("expected KindObject, got %s", m.Kind)
+	}
+
+	propMap := make(map[string]metadata.Property)
+	for _, p := range m.Properties {
+		propMap[p.Name] = p
+		t.Logf("  %s: Kind=%s Atomic=%q", p.Name, p.Type.Kind, p.Type.Atomic)
+	}
+
+	for _, name := range []string{"title", "type", "value", "location", "contactId", "columnData", "tagIds", "statusId"} {
+		p, ok := propMap[name]
+		if !ok {
+			t.Errorf("property %q not found", name)
+			continue
+		}
+		if p.Type.Kind == metadata.KindAny {
+			t.Errorf("property %q: got KindAny — type info lost", name)
+		}
+	}
+
+	// Verify constraints on single-constraint properties
+	if p, ok := propMap["location"]; ok {
+		if p.Type.Kind != metadata.KindAtomic || p.Type.Atomic != "string" {
+			t.Errorf("location: expected KindAtomic/string, got Kind=%s", p.Type.Kind)
+		}
+		if p.Constraints == nil || p.Constraints.MaxLength == nil {
+			t.Errorf("location: expected maxLength constraint, got %+v", p.Constraints)
+		}
+	}
+	if p, ok := propMap["contactId"]; ok {
+		if p.Type.Kind != metadata.KindAtomic || p.Type.Atomic != "string" {
+			t.Errorf("contactId: expected KindAtomic/string, got Kind=%s", p.Type.Kind)
+		}
+		if p.Constraints == nil || p.Constraints.Pattern == nil {
+			t.Errorf("contactId: expected pattern constraint, got %+v", p.Constraints)
+		}
+	}
+	if p, ok := propMap["tagIds"]; ok {
+		if p.Type.Kind != metadata.KindArray {
+			t.Errorf("tagIds: expected KindArray, got Kind=%s", p.Type.Kind)
+		} else if p.Type.ElementType != nil {
+			if p.Type.ElementType.Kind != metadata.KindAtomic || p.Type.ElementType.Atomic != "string" {
+				t.Errorf("tagIds element: expected KindAtomic/string, got Kind=%s", p.Type.ElementType.Kind)
+			}
+		}
+	}
+}
+
+// checkNoAny verifies no properties of the type have KindAny.
+func checkNoAny(t *testing.T, env *walkerEnv, typeName string) {
+	t.Helper()
+	m := env.walkExportedType(t, typeName)
+	if m.Kind != metadata.KindObject {
+		t.Fatalf("expected KindObject, got %s", m.Kind)
+	}
+	anyCount := 0
+	for _, p := range m.Properties {
+		t.Logf("  %s: Kind=%s", p.Name, p.Type.Kind)
+		if p.Type.Kind == metadata.KindAny {
+			anyCount++
+		}
+	}
+	if anyCount > 0 {
+		t.Errorf("%d/%d properties have KindAny", anyCount, len(m.Properties))
+	}
+}
+
+// TestWalkType_BrandedLiteralUnion tests that a union of branded literal
+// intersections (e.g., TCurrencyCode4217 & tags.MaxLength<3> & tags.Pattern<...>)
+// produces a union of KindLiteral members with constraints, not a union of
+// KindIntersection members that leak phantom objects.
+// Regression: TypeScript distributes the intersection across the union, producing
+// ("USD" & phantom) | ("EUR" & phantom) | ..., which exhausted the breadth limit
+// and caused subsequent properties to degrade to KindAny.
+func TestWalkType_BrandedLiteralUnion(t *testing.T) {
+	env := setupWalker(t, `
+		type MaxLength<N extends number | { value: number; error?: string }> =
+			N extends { value: infer V extends number; error: infer E extends string }
+				? { readonly __tsgonest_maxLength?: V; readonly __tsgonest_maxLength_error?: E }
+				: { readonly __tsgonest_maxLength?: N extends { value: infer V } ? V : N };
+
+		type Pattern<P extends string | { value: string; error?: string }> =
+			P extends { value: infer V extends string; error: infer E extends string }
+				? { readonly __tsgonest_pattern?: V; readonly __tsgonest_pattern_error?: E }
+				: { readonly __tsgonest_pattern?: P extends { value: infer V } ? V : P };
+
+		// Simulate a large const-union type (like TCurrencyCode4217)
+		const CURRENCIES = [
+			'USD', 'EUR', 'GBP', 'JPY', 'AUD', 'CAD', 'CHF', 'CNY', 'SEK', 'NZD',
+			'MXN', 'SGD', 'HKD', 'NOK', 'KRW', 'TRY', 'RUB', 'INR', 'BRL', 'ZAR',
+			'DKK', 'PLN', 'TWD', 'THB', 'IDR', 'HUF', 'CZK', 'ILS', 'CLP', 'PHP',
+			'AED', 'COP', 'SAR', 'MYR', 'RON', 'BGN', 'HRK', 'PEN', 'ARS', 'VND',
+		] as const;
+		type TCurrencyCode = (typeof CURRENCIES)[number];
+
+		export interface TestDto {
+			// Branded literal union: should produce KindUnion of literals with constraints
+			currency?: TCurrencyCode & MaxLength<3> & Pattern<'^[A-Z]{3}$'>;
+			// Properties AFTER the large union must NOT degrade to KindAny
+			name: string & MaxLength<100>;
+			pattern?: string & Pattern<'^[a-z]+$'>;
+			plain: string;
+		}
+	`)
+	defer env.release()
+
+	m, reg := env.walkExportedTypeWithRegistry(t, "TestDto")
+	if m.Kind == metadata.KindRef {
+		if resolved := reg.Types[m.Ref]; resolved != nil {
+			m = *resolved
+		}
+	}
+	if m.Kind != metadata.KindObject {
+		t.Fatalf("expected KindObject, got %s", m.Kind)
+	}
+
+	propMap := make(map[string]metadata.Property)
+	for _, p := range m.Properties {
+		propMap[p.Name] = p
+	}
+
+	// currency must be a union of literals, not KindAny or KindIntersection
+	if p, ok := propMap["currency"]; ok {
+		if p.Type.Kind == metadata.KindAny {
+			t.Errorf("currency: got KindAny — branded literal union was not detected")
+		}
+		if p.Type.Kind == metadata.KindUnion {
+			for i, member := range p.Type.UnionMembers {
+				if member.Kind != metadata.KindLiteral {
+					t.Errorf("currency union member[%d]: expected KindLiteral, got %s", i, member.Kind)
+					break
+				}
+			}
+			if len(p.Type.UnionMembers) < 30 {
+				t.Errorf("currency: expected 40 union members, got %d", len(p.Type.UnionMembers))
+			}
+		} else if p.Type.Kind == metadata.KindRef {
+			// KindRef is acceptable if the type alias was registered
+		} else {
+			t.Errorf("currency: expected KindUnion or KindRef, got %s", p.Type.Kind)
+		}
+		// Constraints should be extracted from the branded intersection
+		if p.Constraints == nil {
+			t.Errorf("currency: expected constraints (maxLength+pattern)")
+		} else {
+			if p.Constraints.MaxLength == nil {
+				t.Errorf("currency: expected maxLength constraint")
+			}
+			if p.Constraints.Pattern == nil {
+				t.Errorf("currency: expected pattern constraint")
+			}
+		}
+	} else {
+		t.Error("currency property not found")
+	}
+
+	// Properties after the large union must NOT be KindAny
+	if p, ok := propMap["name"]; ok {
+		if p.Type.Kind != metadata.KindAtomic || p.Type.Atomic != "string" {
+			t.Errorf("name: expected KindAtomic/string, got Kind=%s", p.Type.Kind)
+		}
+		if p.Constraints == nil || p.Constraints.MaxLength == nil {
+			t.Errorf("name: expected maxLength constraint")
+		}
+	} else {
+		t.Error("name property not found")
+	}
+	if p, ok := propMap["pattern"]; ok {
+		if p.Type.Kind != metadata.KindAtomic || p.Type.Atomic != "string" {
+			t.Errorf("pattern: expected KindAtomic/string, got Kind=%s", p.Type.Kind)
+		}
+		if p.Constraints == nil || p.Constraints.Pattern == nil {
+			t.Errorf("pattern: expected pattern constraint")
+		}
+	} else {
+		t.Error("pattern property not found")
+	}
+	if p, ok := propMap["plain"]; ok {
+		if p.Type.Kind != metadata.KindAtomic || p.Type.Atomic != "string" {
+			t.Errorf("plain: expected KindAtomic/string, got Kind=%s", p.Type.Kind)
+		}
+	} else {
+		t.Error("plain property not found")
+	}
+}
+
+// TestWalkType_BreadthCounterIsolation tests that the breadth counter is properly
+// isolated per named type, so a large union in one type doesn't exhaust the counter
+// for sibling properties that reference other named types.
+// Regression: walking a 163-currency branded union consumed ~490 types from the
+// breadth budget, causing subsequent interface-typed properties (ContactConfig, etc.)
+// to degrade to KindAny with "breadth-exceeded".
+func TestWalkType_BreadthCounterIsolation(t *testing.T) {
+	env := setupWalker(t, `
+		type MaxLength<N extends number | { value: number; error?: string }> =
+			N extends { value: infer V extends number; error: infer E extends string }
+				? { readonly __tsgonest_maxLength?: V; readonly __tsgonest_maxLength_error?: E }
+				: { readonly __tsgonest_maxLength?: N extends { value: infer V } ? V : N };
+
+		type Pattern<P extends string | { value: string; error?: string }> =
+			P extends { value: infer V extends string; error: infer E extends string }
+				? { readonly __tsgonest_pattern?: V; readonly __tsgonest_pattern_error?: E }
+				: { readonly __tsgonest_pattern?: P extends { value: infer V } ? V : P };
+
+		type MinLength<N extends number | { value: number; error?: string }> =
+			N extends { value: infer V extends number; error: infer E extends string }
+				? { readonly __tsgonest_minLength?: V; readonly __tsgonest_minLength_error?: E }
+				: { readonly __tsgonest_minLength?: N extends { value: infer V } ? V : N };
+
+		// Large literal union to consume breadth budget
+		const CURRENCIES = [
+			'USD', 'EUR', 'GBP', 'JPY', 'AUD', 'CAD', 'CHF', 'CNY', 'SEK', 'NZD',
+			'MXN', 'SGD', 'HKD', 'NOK', 'KRW', 'TRY', 'RUB', 'INR', 'BRL', 'ZAR',
+			'DKK', 'PLN', 'TWD', 'THB', 'IDR', 'HUF', 'CZK', 'ILS', 'CLP', 'PHP',
+			'AED', 'COP', 'SAR', 'MYR', 'RON', 'BGN', 'HRK', 'PEN', 'ARS', 'VND',
+		] as const;
+		type TCurrencyCode = (typeof CURRENCIES)[number];
+
+		// Interfaces that will be used as property types
+		interface ContactConfig {
+			findOne?: { name: string & MinLength<3> & MaxLength<40>; slug?: string; };
+			createData?: {
+				name: string & MinLength<3> & MaxLength<40>;
+				jobTitle?: string;
+				location?: string & MinLength<2> & MaxLength<40>;
+			};
+		}
+
+		interface SourceConfig {
+			findOne?: { title: string & MinLength<3> & MaxLength<40>; };
+			createData?: { title: string & MinLength<3> & MaxLength<40>; };
+		}
+
+		interface TagConfig {
+			findOne?: { name: string & MinLength<2> & MaxLength<40>; };
+			createData?: { name: string & MinLength<2> & MaxLength<40>; color?: string; };
+		}
+
+		export interface MainDto {
+			title: string & MinLength<3> & MaxLength<100>;
+			currency?: TCurrencyCode & MaxLength<3> & Pattern<'^[A-Z]{3}$'>;
+			// These MUST NOT degrade to KindAny even though currency consumed many types
+			contact?: ContactConfig;
+			source?: SourceConfig;
+			tags?: TagConfig[];
+			contactId?: string & Pattern<'^[0-9a-f]{24}$'>;
+			plain: string;
+		}
+	`)
+	defer env.release()
+
+	m, reg := env.walkExportedTypeWithRegistry(t, "MainDto")
+	if m.Kind == metadata.KindRef {
+		if resolved := reg.Types[m.Ref]; resolved != nil {
+			m = *resolved
+		}
+	}
+	if m.Kind != metadata.KindObject {
+		t.Fatalf("expected KindObject, got %s", m.Kind)
+	}
+
+	propMap := make(map[string]metadata.Property)
+	for _, p := range m.Properties {
+		propMap[p.Name] = p
+		t.Logf("  %s: Kind=%s", p.Name, p.Type.Kind)
+	}
+
+	// No property should be KindAny
+	for _, name := range []string{"title", "currency", "contact", "source", "tags", "contactId", "plain"} {
+		p, ok := propMap[name]
+		if !ok {
+			t.Errorf("property %q not found", name)
+			continue
+		}
+		if p.Type.Kind == metadata.KindAny {
+			t.Errorf("property %q: got KindAny — breadth counter leaked from currency union", name)
+		}
+	}
+
+	// Interface-typed properties must be KindRef
+	if p, ok := propMap["contact"]; ok {
+		if p.Type.Kind != metadata.KindRef || p.Type.Ref != "ContactConfig" {
+			t.Errorf("contact: expected KindRef/ContactConfig, got Kind=%s Ref=%q", p.Type.Kind, p.Type.Ref)
+		}
+	}
+	if p, ok := propMap["source"]; ok {
+		if p.Type.Kind != metadata.KindRef || p.Type.Ref != "SourceConfig" {
+			t.Errorf("source: expected KindRef/SourceConfig, got Kind=%s Ref=%q", p.Type.Kind, p.Type.Ref)
+		}
+	}
+	if p, ok := propMap["tags"]; ok {
+		if p.Type.Kind != metadata.KindArray {
+			t.Errorf("tags: expected KindArray, got Kind=%s", p.Type.Kind)
+		} else if p.Type.ElementType == nil || p.Type.ElementType.Kind != metadata.KindRef {
+			t.Errorf("tags: expected array of KindRef/TagConfig")
+		}
+	}
+
+	// All referenced interfaces must be in the registry
+	for _, name := range []string{"ContactConfig", "SourceConfig", "TagConfig"} {
+		if !reg.Has(name) {
+			t.Errorf("expected %q in registry, not found", name)
+		}
+	}
+
+	// contactId after the currency union must still have constraints
+	if p, ok := propMap["contactId"]; ok {
+		if p.Type.Kind != metadata.KindAtomic || p.Type.Atomic != "string" {
+			t.Errorf("contactId: expected KindAtomic/string, got Kind=%s", p.Type.Kind)
+		}
+		if p.Constraints == nil || p.Constraints.Pattern == nil {
+			t.Errorf("contactId: expected pattern constraint")
+		}
+	}
+}
+
+// TestWalkType_TryDetectBrandedLiteral tests that tryDetectBranded correctly
+// handles literal & phantom intersections (not just atomic & phantom).
+// Regression: tryDetectBranded only checked KindAtomic, missing KindLiteral.
+func TestWalkType_TryDetectBrandedLiteral(t *testing.T) {
+	env := setupWalker(t, `
+		type MaxLength<N extends number | { value: number; error?: string }> =
+			N extends { value: infer V extends number; error: infer E extends string }
+				? { readonly __tsgonest_maxLength?: V; readonly __tsgonest_maxLength_error?: E }
+				: { readonly __tsgonest_maxLength?: N extends { value: infer V } ? V : N };
+
+		// A literal intersected with a phantom — tryDetectBranded must handle this
+		export type BrandedLiteral = 'USD' & MaxLength<3>;
+	`)
+	defer env.release()
+
+	m := env.walkExportedType(t, "BrandedLiteral")
+	// The result should be a KindLiteral with constraints, not KindIntersection
+	if m.Kind == metadata.KindIntersection {
+		t.Errorf("BrandedLiteral: got KindIntersection — tryDetectBranded missed literal & phantom")
+	}
+	if m.Kind != metadata.KindLiteral {
+		t.Errorf("BrandedLiteral: expected KindLiteral, got %s", m.Kind)
+	}
+	if m.Kind == metadata.KindLiteral {
+		if m.LiteralValue != "USD" {
+			t.Errorf("BrandedLiteral: expected literal value 'USD', got %v", m.LiteralValue)
+		}
+		if m.Constraints == nil || m.Constraints.MaxLength == nil {
+			t.Errorf("BrandedLiteral: expected maxLength constraint")
+		}
+	}
+}
+
+// TestWalkType_NonBrandedIntersectionInUnion verifies that when a union contains
+// intersection members that are NOT branded literals (e.g., object intersections),
+// they fall through to normal WalkType processing and are not incorrectly detected
+// by the branded literal fast-path.
+func TestWalkType_NonBrandedIntersectionInUnion(t *testing.T) {
+	env := setupWalker(t, `
+		interface A { x: number; }
+		interface B { y: string; }
+		interface C { z: boolean; }
+
+		// Union of object intersections — not branded literals
+		export type Result = (A & B) | C;
+	`)
+	defer env.release()
+
+	m := env.walkExportedType(t, "Result")
+	// Should be KindUnion with 2 members (flattened intersection + C)
+	if m.Kind != metadata.KindUnion {
+		t.Fatalf("expected KindUnion, got %s", m.Kind)
+	}
+	if len(m.UnionMembers) != 2 {
+		t.Fatalf("expected 2 union members, got %d", len(m.UnionMembers))
+	}
+	// First member: A & B flattened into an object (may be registered as KindRef)
+	first := m.UnionMembers[0]
+	if first.Kind != metadata.KindObject && first.Kind != metadata.KindRef {
+		t.Errorf("union member[0]: expected KindObject or KindRef (flattened intersection), got %s", first.Kind)
+	}
+	// Second member: C as a ref or object
+	second := m.UnionMembers[1]
+	if second.Kind != metadata.KindRef && second.Kind != metadata.KindObject {
+		t.Errorf("union member[1]: expected KindRef or KindObject, got %s", second.Kind)
+	}
+	// The key assertion: neither member should be KindAny or KindIntersection
+	// with phantom objects (which would happen if the branded fast-path
+	// incorrectly consumed object intersections)
+	for i, member := range m.UnionMembers {
+		if member.Kind == metadata.KindAny {
+			t.Errorf("union member[%d]: got KindAny — type info lost", i)
+		}
+		if member.Kind == metadata.KindIntersection {
+			t.Errorf("union member[%d]: got KindIntersection — should have been flattened", i)
+		}
+	}
+}
+
+// TestWalkType_BrandedArrayElementConstraints verifies that constraints on
+// branded array element types (e.g., (string & Pattern<...>)[]) are preserved
+// on the element metadata, enabling downstream OpenAPI/SDK generators to emit
+// them on the items schema.
+func TestWalkType_BrandedArrayElementConstraints(t *testing.T) {
+	env := setupWalker(t, `
+		type Pattern<P extends string | { value: string; error?: string }> =
+			P extends { value: infer V extends string; error: infer E extends string }
+				? { readonly __tsgonest_pattern?: V; readonly __tsgonest_pattern_error?: E }
+				: { readonly __tsgonest_pattern?: P extends { value: infer V } ? V : P };
+
+		export interface TestDto {
+			ids: (string & Pattern<'^[0-9a-fA-F]{24}$'>)[];
+		}
+	`)
+	defer env.release()
+
+	m, reg := env.walkExportedTypeWithRegistry(t, "TestDto")
+	if m.Kind == metadata.KindRef {
+		if resolved := reg.Types[m.Ref]; resolved != nil {
+			m = *resolved
+		}
+	}
+	if m.Kind != metadata.KindObject {
+		t.Fatalf("expected KindObject, got %s", m.Kind)
+	}
+
+	var idsProp *metadata.Property
+	for i := range m.Properties {
+		if m.Properties[i].Name == "ids" {
+			idsProp = &m.Properties[i]
+			break
+		}
+	}
+	if idsProp == nil {
+		t.Fatal("ids property not found")
+	}
+	if idsProp.Type.Kind != metadata.KindArray {
+		t.Fatalf("ids: expected KindArray, got %s", idsProp.Type.Kind)
+	}
+	if idsProp.Type.ElementType == nil {
+		t.Fatal("ids: element type is nil")
+	}
+	elem := idsProp.Type.ElementType
+	if elem.Kind != metadata.KindAtomic || elem.Atomic != "string" {
+		t.Errorf("ids element: expected KindAtomic/string, got Kind=%s Atomic=%q", elem.Kind, elem.Atomic)
+	}
+	// The branded constraints should be on the element metadata
+	if elem.Constraints == nil {
+		t.Error("ids element: expected constraints on element metadata")
+	} else if elem.Constraints.Pattern == nil {
+		t.Error("ids element: expected pattern constraint")
+	} else if *elem.Constraints.Pattern != "^[0-9a-fA-F]{24}$" {
+		t.Errorf("ids element: expected pattern '^[0-9a-fA-F]{24}$', got %q", *elem.Constraints.Pattern)
 	}
 }

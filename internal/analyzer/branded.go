@@ -23,9 +23,9 @@ func (w *TypeWalker) tryDetectBranded(rawTypes []*shimchecker.Type, members []me
 
 	for i := range members {
 		m := &members[i]
-		if m.Kind == metadata.KindAtomic {
+		if m.Kind == metadata.KindAtomic || m.Kind == metadata.KindLiteral {
 			if atomicMember != nil {
-				return nil // Multiple atomics — not a branded type
+				return nil // Multiple atomics/literals — not a branded type
 			}
 			atomicMember = m
 		} else if m.Kind == metadata.KindObject && isPhantomObject(m) {
