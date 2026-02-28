@@ -1,0 +1,179 @@
+---
+title: Nestia & Typia Migration
+description: How tsgonest migrate converts Nestia route decorators and Typia branded types.
+---
+
+`tsgonest migrate` converts Nestia's `@nestia/core` decorators to standard NestJS decorators and rewrites Typia's branded type imports to `@tsgonest/types`. Since tsgonest mirrors Typia's tag names, your type annotations remain unchanged.
+
+## Route Decorator Replacements
+
+| Nestia | NestJS (after migration) |
+| --- | --- |
+| `@TypedRoute.Get()` | `@Get()` |
+| `@TypedRoute.Post()` | `@Post()` |
+| `@TypedRoute.Put()` | `@Put()` |
+| `@TypedRoute.Patch()` | `@Patch()` |
+| `@TypedRoute.Delete()` | `@Delete()` |
+
+Path arguments are preserved: `@TypedRoute.Get(':id')` becomes `@Get(':id')`.
+
+## Parameter Decorator Replacements
+
+| Nestia | NestJS (after migration) |
+| --- | --- |
+| `@TypedBody()` | `@Body()` |
+| `@TypedQuery()` | `@Query()` |
+| `@TypedParam<T>('name')` | `@Param('name')` |
+| `@TypedHeaders()` | `@Headers()` |
+
+Type parameters are dropped since tsgonest infers types from the parameter's TypeScript type annotation.
+
+## FormData Handling
+
+Nestia's `@TypedFormData.Body()` is converted to `@FormDataBody()` from `@tsgonest/runtime`, with a `@UseInterceptors(FormDataInterceptor)` added to the method:
+
+### Before
+
+```ts
+import { TypedFormData } from '@nestia/core';
+
+@Controller('upload')
+export class UploadController {
+  @Post()
+  upload(@TypedFormData.Body() body: UploadDto) {}
+}
+```
+
+### After
+
+```ts
+import { FormDataBody, FormDataInterceptor } from '@tsgonest/runtime';
+import { Controller, Post, UseInterceptors } from '@nestjs/common';
+
+@Controller('upload')
+export class UploadController {
+  @UseInterceptors(FormDataInterceptor)
+  @Post()
+  upload(@FormDataBody() body: UploadDto) {}
+}
+```
+
+Multer factory arguments are preserved: `@TypedFormData.Body(() => multer())` becomes `@FormDataBody(() => multer())`.
+
+## Typia Call Removal
+
+Runtime Typia calls are removed or replaced, since tsgonest handles validation and serialization at compile time:
+
+| Typia call | Replacement | Notes |
+| --- | --- | --- |
+| `typia.assert<T>(input)` | `input` | Validation is handled by tsgonest's compile-time transforms |
+| `typia.is<T>(input)` | `input` | Same as above |
+| `typia.json.stringify<T>(data)` | `JSON.stringify(data)` | tsgonest generates fast serializers automatically |
+| `typia.json.assertStringify<T>(data)` | `JSON.stringify(data)` | Validation + serialization handled by tsgonest |
+| `typia.json.assertParse<T>(input)` | `JSON.parse(input)` | TODO added — add manual validation if needed |
+
+## Branded Types Import Rewrite
+
+tsgonest's `@tsgonest/types` package mirrors Typia's tag names, so type annotations don't change — only the import source is rewritten:
+
+```ts
+// Before
+import { tags } from 'typia';
+
+// After
+import { tags } from '@tsgonest/types';
+```
+
+Your branded type annotations (`tags.MinLength<1>`, `tags.Format<"email">`, etc.) remain exactly the same.
+
+### tags.TagBase (Custom Validators)
+
+If your code uses `tags.TagBase<>` for custom Typia validators, a TODO is added to the migration report. Custom validators need manual migration to tsgonest's `Validate<typeof fn>` pattern.
+
+## @SwaggerCustomizer
+
+Nestia's `@SwaggerCustomizer()` decorator is removed with a TODO. Configure OpenAPI customizations in `tsgonest.config.ts` or via JSDoc tags instead.
+
+## Config and Tooling Changes
+
+### ts-patch Removal
+
+Nestia/Typia projects use `ts-patch` to hook into the TypeScript compiler. Since tsgonest replaces the compiler entirely, `ts-patch` is no longer needed.
+
+The migration removes `ts-patch` and `typescript-transform-paths` from `package.json` and strips plugin entries from `tsconfig.json`.
+
+### Nestia Config
+
+Nestia config files (`nestia.config.ts`, `nestia.config.js`, etc.) are removed. Their equivalent settings are generated in `tsgonest.config.ts`:
+
+| Nestia config | tsgonest config |
+| --- | --- |
+| `input` (controllers glob) | `controllers.include` |
+| `output` (SDK output) | Not applicable (tsgonest doesn't generate SDK) |
+| `swagger.output` | `openapi.output` |
+| `swagger.security` | `openapi.securitySchemes` (auto-detected from decorators) |
+
+## Full Before/After Example
+
+### Before (Nestia + Typia)
+
+```ts
+import { TypedRoute, TypedBody, TypedQuery } from '@nestia/core';
+import { Controller } from '@nestjs/common';
+import { tags } from 'typia';
+
+interface SearchQuery {
+  q: string & tags.MinLength<1>;
+  page: number & tags.Minimum<1>;
+}
+
+interface CreateUserInput {
+  email: string & tags.Format<'email'>;
+  name: string & tags.MinLength<1>;
+}
+
+@Controller('users')
+export class UsersController {
+  @TypedRoute.Get()
+  findAll(@TypedQuery() query: SearchQuery) {
+    return this.usersService.findAll(query);
+  }
+
+  @TypedRoute.Post()
+  create(@TypedBody() body: CreateUserInput) {
+    return this.usersService.create(body);
+  }
+}
+```
+
+### After (tsgonest)
+
+```ts
+import { Controller, Get, Post, Query, Body } from '@nestjs/common';
+import { tags } from '@tsgonest/types';
+
+interface SearchQuery {
+  q: string & tags.MinLength<1>;
+  page: number & tags.Minimum<1>;
+}
+
+interface CreateUserInput {
+  email: string & tags.Format<'email'>;
+  name: string & tags.MinLength<1>;
+}
+
+@Controller('users')
+export class UsersController {
+  @Get()
+  findAll(@Query() query: SearchQuery) {
+    return this.usersService.findAll(query);
+  }
+
+  @Post()
+  create(@Body() body: CreateUserInput) {
+    return this.usersService.create(body);
+  }
+}
+```
+
+The type annotations are identical — only imports and decorators changed.

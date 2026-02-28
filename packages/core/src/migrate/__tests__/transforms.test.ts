@@ -14,6 +14,7 @@ import { transformNestia } from "../transforms/nestia.js";
 import { transformTypiaTags } from "../transforms/typia-tags.js";
 import { transformClassTransformer } from "../transforms/class-transformer.js";
 import { cleanupImports } from "../transforms/imports.js";
+import { rewriteBaseUrlImports } from "../transforms/baseurl-imports.js";
 
 let project: Project;
 let report: MigrateReport;
@@ -187,20 +188,53 @@ export class TypesDto {
     expect(text).toContain("export interface TypesDto");
   });
 
-  it("skips non-DTO files", () => {
-    const file = createFile(
-      `
+  it("skips @Injectable classes", () => {
+    const file = createFile(`
 import { IsString } from 'class-validator';
 
+@Injectable()
 export class SomeService {
   @IsString()
   name: string;
 }
+`);
+    transformClassValidator(file, report);
+    // Should remain a class — @Injectable means it's a NestJS provider, not a DTO
+    const text = normalize(file.getFullText());
+    expect(text).toContain("class SomeService");
+  });
+
+  it("processes .request.ts and .model.ts files (no filename filter)", () => {
+    const requestFile = createFile(
+      `
+import { IsEmail } from 'class-validator';
+
+export class CreateRequest {
+  @IsEmail()
+  email: string;
+}
 `,
-      "/test/src/some.service.ts",
+      "/test/src/create.request.ts",
     );
-    const count = transformClassValidator(file, report);
-    expect(count).toBe(0);
+    const count1 = transformClassValidator(requestFile, report);
+    expect(count1).toBeGreaterThan(0);
+    expect(normalize(requestFile.getFullText())).toContain("export interface CreateRequest");
+
+    const modelFile = createFile(
+      `
+import { IsNotEmpty } from 'class-validator';
+
+export class UserModel {
+  @IsNotEmpty()
+  name: string;
+}
+`,
+      "/test/src/user.model.ts",
+    );
+    report = new MigrateReport();
+    const count2 = transformClassValidator(modelFile, report);
+    expect(count2).toBeGreaterThan(0);
+    expect(normalize(modelFile.getFullText())).toContain("export interface UserModel");
   });
 
   it("skips NestJS framework classes (Controller, Injectable, etc.)", () => {
@@ -321,7 +355,7 @@ export class ContactDto {
     expect(text).toContain("tags.MaxLength<100>");
   });
 
-  it("maps @Length(min, max) to tags.MinLength + tags.MaxLength", () => {
+  it("maps @Length(min, max) to both tags.MinLength + tags.MaxLength", () => {
     const file = createFile(`
 import { Length } from 'class-validator';
 
@@ -332,8 +366,130 @@ export class CodeDto {
 `);
     transformClassValidator(file, report);
     const text = normalize(file.getFullText());
-    // @Length(min) maps to tags.MinLength<min> (current behavior)
     expect(text).toContain("tags.MinLength<2>");
+    expect(text).toContain("tags.MaxLength<10>");
+  });
+
+  it("maps @Length(min) with only min arg", () => {
+    const file = createFile(`
+import { Length } from 'class-validator';
+
+export class ShortDto {
+  @Length(3)
+  code: string;
+}
+`);
+    transformClassValidator(file, report);
+    const text = normalize(file.getFullText());
+    expect(text).toContain("tags.MinLength<3>");
+    expect(text).not.toContain("MaxLength");
+  });
+
+  it("skips @Entity classes (ORM entities)", () => {
+    const file = createFile(`
+import { IsNotEmpty } from 'class-validator';
+
+@Entity()
+export class UserEntity {
+  @IsNotEmpty()
+  name: string;
+}
+`);
+    transformClassValidator(file, report);
+    const text = normalize(file.getFullText());
+    // Should remain a class — @Entity means it's an ORM entity
+    expect(text).toContain("class UserEntity");
+    expect(text).not.toContain("interface UserEntity");
+  });
+
+  it("skips @Schema classes (Mongoose schemas)", () => {
+    const file = createFile(`
+import { IsEmail } from 'class-validator';
+
+@Schema()
+export class UserSchema {
+  @IsEmail()
+  email: string;
+}
+`);
+    transformClassValidator(file, report);
+    const text = normalize(file.getFullText());
+    expect(text).toContain("class UserSchema");
+    expect(text).not.toContain("interface UserSchema");
+  });
+
+  it("keeps class when extending OmitType/PickType (mapped types)", () => {
+    const file = createFile(`
+import { IsEmail, MinLength } from 'class-validator';
+import { OmitType } from '@nestjs/swagger';
+
+class BaseEntity {
+  id: string;
+  email: string;
+  password: string;
+}
+
+export class CreateDto extends OmitType(BaseEntity, ['id']) {
+  @IsEmail()
+  email: string;
+
+  @MinLength(6)
+  password: string;
+}
+`);
+    transformClassValidator(file, report);
+    const text = normalize(file.getFullText());
+    // Should remain a class (not interface) because extends OmitType(...)
+    expect(text).toContain("export class CreateDto extends OmitType");
+    expect(text).not.toContain("export interface CreateDto");
+    // But decorators should be removed and branded types added
+    expect(text).toContain("tags.Email");
+    expect(text).toContain("tags.MinLength<6>");
+    expect(text).not.toContain("@IsEmail");
+    expect(text).not.toContain("@MinLength");
+  });
+
+  it("keeps class when extending PickType (mapped types)", () => {
+    const file = createFile(`
+import { IsNotEmpty } from 'class-validator';
+import { PickType } from '@nestjs/swagger';
+
+class UserEntity {
+  name: string;
+  email: string;
+}
+
+export class UpdateDto extends PickType(UserEntity, ['name']) {
+  @IsNotEmpty()
+  name: string;
+}
+`);
+    transformClassValidator(file, report);
+    const text = normalize(file.getFullText());
+    expect(text).toContain("export class UpdateDto extends PickType");
+    expect(text).toContain("tags.MinLength<1>");
+    expect(text).not.toContain("@IsNotEmpty");
+  });
+
+  it("does not remove unknown decorators in mapped-type class path", () => {
+    const file = createFile(`
+import { IsString } from 'class-validator';
+import { OmitType } from '@nestjs/swagger';
+
+class Base { id: string; }
+
+export class Dto extends OmitType(Base, ['id']) {
+  @Prop({ required: true })
+  @IsString()
+  name: string;
+}
+`);
+    transformClassValidator(file, report);
+    const text = normalize(file.getFullText());
+    // @Prop should remain (it's from typegoose, not class-validator)
+    expect(text).toContain("@Prop");
+    // @IsString should be removed (it's class-validator)
+    expect(text).not.toContain("@IsString");
   });
 
   it("handles multiple classes in one DTO file", () => {
@@ -430,6 +586,50 @@ SwaggerModule.setup('api', app, doc);
     expect(todos.some((t) => t.message.includes("SwaggerModule"))).toBe(true);
   });
 
+  it("removes only unused named imports from @nestjs/swagger", () => {
+    const file = createFile(
+      `
+import { ApiProperty, OmitType } from '@nestjs/swagger';
+
+export class MyDto extends OmitType(BaseEntity, ['id']) {
+  @ApiProperty()
+  name: string;
+}
+`,
+      "/test/src/my.dto.ts",
+    );
+    transformSwagger(file, report);
+    const text = normalize(file.getFullText());
+    // ApiProperty decorator and import should be removed
+    expect(text).not.toContain("@ApiProperty");
+    expect(text).not.toContain("ApiProperty");
+    // OmitType should remain (still referenced in extends clause)
+    // Since only mapped-type helpers remain, import source is rewritten
+    expect(text).toContain("OmitType");
+    expect(text).toContain("@nestjs/mapped-types");
+  });
+
+  it("removes entire @nestjs/swagger import when all named imports are unused", () => {
+    const file = createFile(
+      `
+import { ApiTags, ApiOperation } from '@nestjs/swagger';
+import { Controller, Get } from '@nestjs/common';
+
+@ApiTags('Test')
+@Controller('test')
+export class TestController {
+  @ApiOperation({ summary: 'test' })
+  @Get()
+  test() {}
+}
+`,
+      "/test/src/test.controller.ts",
+    );
+    transformSwagger(file, report);
+    const text = normalize(file.getFullText());
+    expect(text).not.toContain("@nestjs/swagger");
+  });
+
   it("returns 0 when no @nestjs/swagger import exists", () => {
     const file = createFile(
       `
@@ -441,6 +641,55 @@ export class TestController {}
       "/test/src/test.controller.ts",
     );
     expect(transformSwagger(file, report)).toBe(0);
+  });
+
+  it("rewrites @nestjs/swagger → @nestjs/mapped-types when only mapped-type helpers remain", () => {
+    const file = createFile(
+      `
+import { ApiProperty, OmitType, PickType } from '@nestjs/swagger';
+
+export class CreateDto extends OmitType(BaseEntity, ['id']) {
+  @ApiProperty()
+  name: string;
+}
+
+export class UpdateDto extends PickType(BaseEntity, ['name']) {
+  name: string;
+}
+`,
+      "/test/src/combined.dto.ts",
+    );
+    transformSwagger(file, report);
+    const text = normalize(file.getFullText());
+    // ApiProperty should be removed
+    expect(text).not.toContain("@ApiProperty");
+    expect(text).not.toContain("ApiProperty");
+    // OmitType/PickType should remain, but import source should be @nestjs/mapped-types
+    expect(text).toContain("OmitType");
+    expect(text).toContain("PickType");
+    expect(text).toContain("@nestjs/mapped-types");
+    expect(text).not.toContain("@nestjs/swagger");
+  });
+
+  it("keeps @nestjs/swagger when non-mapped-type helpers remain", () => {
+    const file = createFile(
+      `
+import { ApiProperty, OmitType, SwaggerModule } from '@nestjs/swagger';
+
+const doc = SwaggerModule.createDocument(app, config);
+
+export class MyDto extends OmitType(BaseEntity, ['id']) {
+  @ApiProperty()
+  name: string;
+}
+`,
+      "/test/src/main-dto.ts",
+    );
+    transformSwagger(file, report);
+    const text = normalize(file.getFullText());
+    // SwaggerModule is still referenced → import stays as @nestjs/swagger
+    expect(text).toContain("@nestjs/swagger");
+    expect(text).not.toContain("@nestjs/mapped-types");
   });
 });
 
@@ -690,6 +939,25 @@ function serialize(data: User) {
     expect(text).not.toContain("typia.json.stringify");
   });
 
+  it("replaces typia.json.assertParse<T>() with JSON.parse()", () => {
+    const file = createFile(
+      `
+import typia from 'typia';
+
+function parse(input: string) {
+  return typia.json.assertParse<User>(input);
+}
+`,
+      "/test/src/parse.ts",
+    );
+    transformTypiaTags(file, report);
+    const text = normalize(file.getFullText());
+    expect(text).toContain("JSON.parse(input)");
+    expect(text).not.toContain("typia.json.assertParse");
+    // Should add a TODO
+    expect(report.todos.some((t) => t.message.includes("assertParse"))).toBe(true);
+  });
+
   it("adds TODO for tags.TagBase usage", () => {
     const file = createFile(
       `
@@ -861,6 +1129,104 @@ export class CodeDto {
 });
 
 // ──────────────────────────────────────────────────────────────────────
+// baseUrl import rewriting
+// ──────────────────────────────────────────────────────────────────────
+
+describe("rewriteBaseUrlImports", () => {
+  it("rewrites src/-prefixed imports to relative paths", () => {
+    const file = createFile(
+      `
+import { UserDto } from 'src/users/dto/user.dto';
+import { AuthService } from 'src/auth/auth.service';
+import { Controller } from '@nestjs/common';
+
+@Controller('test')
+export class TestController {}
+`,
+      "/project/src/test/test.controller.ts",
+    );
+    // Mock: pretend these files exist
+    const existingFiles = new Set([
+      "/project/src/users/dto/user.dto.ts",
+      "/project/src/auth/auth.service.ts",
+    ]);
+    const count = rewriteBaseUrlImports(file, "/project", report, (p) => existingFiles.has(p));
+    expect(count).toBe(2);
+
+    const text = normalize(file.getFullText());
+    expect(text).toContain("from '../users/dto/user.dto'");
+    expect(text).toContain("from '../auth/auth.service'");
+    expect(text).not.toContain("from 'src/");
+    // @nestjs/common should be untouched
+    expect(text).toContain("from '@nestjs/common'");
+  });
+
+  it("skips relative imports", () => {
+    const file = createFile(
+      `
+import { Foo } from './foo';
+import { Bar } from '../bar';
+`,
+      "/project/src/test.ts",
+    );
+    const count = rewriteBaseUrlImports(file, "/project", report, () => false);
+    expect(count).toBe(0);
+  });
+
+  it("skips scoped packages", () => {
+    const file = createFile(
+      `
+import { Controller } from '@nestjs/common';
+import { tags } from '@tsgonest/types';
+`,
+      "/project/src/test.ts",
+    );
+    const count = rewriteBaseUrlImports(file, "/project", report, () => false);
+    expect(count).toBe(0);
+  });
+
+  it("skips non-project imports (unresolvable)", () => {
+    const file = createFile(
+      `
+import { Injectable } from '@nestjs/common';
+import * as path from 'path';
+import express from 'express';
+`,
+      "/project/src/test.ts",
+    );
+    // No files exist → nothing resolves
+    const count = rewriteBaseUrlImports(file, "/project", report, () => false);
+    expect(count).toBe(0);
+  });
+
+  it("handles same-directory rewrites with ./ prefix", () => {
+    const file = createFile(
+      `
+import { Helper } from 'src/utils/helper';
+`,
+      "/project/src/utils/main.ts",
+    );
+    const existingFiles = new Set(["/project/src/utils/helper.ts"]);
+    const count = rewriteBaseUrlImports(file, "/project", report, (p) => existingFiles.has(p));
+    expect(count).toBe(1);
+    expect(normalize(file.getFullText())).toContain("from './helper'");
+  });
+
+  it("resolves index files", () => {
+    const file = createFile(
+      `
+import { Utils } from 'src/utils';
+`,
+      "/project/src/test.ts",
+    );
+    const existingFiles = new Set(["/project/src/utils/index.ts"]);
+    const count = rewriteBaseUrlImports(file, "/project", report, (p) => existingFiles.has(p));
+    expect(count).toBe(1);
+    expect(normalize(file.getFullText())).toContain("from './utils'");
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────────
 // import cleanup
 // ──────────────────────────────────────────────────────────────────────
 
@@ -896,6 +1262,38 @@ export class TestController {}
     cleanupImports(file);
     const text = normalize(file.getFullText());
     expect(text).toContain("reflect-metadata");
+  });
+
+  it("prunes unused named imports from class-validator/class-transformer", () => {
+    const file = createFile(
+      `
+import { Expose } from 'class-transformer';
+import { Controller } from '@nestjs/common';
+
+@Controller()
+export class TestController {}
+`,
+      "/test/src/test.controller.ts",
+    );
+    cleanupImports(file);
+    const text = normalize(file.getFullText());
+    // Expose is not used anywhere → import should be removed entirely
+    expect(text).not.toContain("class-transformer");
+  });
+
+  it("keeps class-transformer import if specifiers are still referenced", () => {
+    const file = createFile(
+      `
+import { plainToInstance } from 'class-transformer';
+
+const x = plainToInstance(Cls, data);
+`,
+      "/test/src/util.ts",
+    );
+    cleanupImports(file);
+    const text = normalize(file.getFullText());
+    expect(text).toContain("plainToInstance");
+    expect(text).toContain("class-transformer");
   });
 
   it("preserves namespace imports", () => {

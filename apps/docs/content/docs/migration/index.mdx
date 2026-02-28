@@ -1,0 +1,82 @@
+---
+title: Migration Overview
+description: Migrate from class-validator, Nestia, Typia, and @nestjs/swagger to tsgonest with a single command.
+---
+
+`tsgonest migrate` is an AST-based codemod that rewrites your NestJS project to use tsgonest. It handles decorator replacement, class-to-interface conversion, branded type insertion, import cleanup, and dependency management — all in one pass.
+
+## Supported Migration Sources
+
+| Source | What gets migrated |
+| --- | --- |
+| **class-validator** | Class DTOs → interfaces with branded types (`tags.Email`, `tags.MinLength<N>`, etc.) |
+| **class-transformer** | `@Type(() => Number)` → `tags.Coerce`, `@Transform` trim/case → `tags.Trim`/`tags.ToLowerCase` |
+| **@nestjs/swagger** | Removes redundant decorators (`@ApiProperty`, `@ApiTags`, etc.), auto-detects security schemes |
+| **Nestia** | `@TypedRoute.Get()` → `@Get()`, `@TypedBody()` → `@Body()`, `@TypedFormData.Body()` → `@FormDataBody()` |
+| **Typia** | `import { tags } from 'typia'` → `import { tags } from '@tsgonest/types'`, removes `typia.assert<T>()` calls |
+
+## Quick Start
+
+### 1. Preview changes (dry-run)
+
+```bash
+npx tsgonest migrate
+```
+
+This scans your project and shows a diff of all proposed changes without modifying any files.
+
+### 2. Apply changes (interactive)
+
+```bash
+npx tsgonest migrate --apply
+```
+
+You'll be prompted for each migration step (dependency removal, script updates, config generation).
+
+### 3. Apply changes (non-interactive)
+
+```bash
+npx tsgonest migrate --apply --yes
+```
+
+Accepts all defaults and writes all changes. Best for CI or when you trust the migration output.
+
+## CLI Flags
+
+| Flag | Description |
+| --- | --- |
+| `--apply` | Write changes to disk (default: dry-run preview) |
+| `--include <glob>` | Glob pattern for files to migrate (repeatable). Default: `src/**/*.ts` |
+| `--tsconfig <path>` | Path to tsconfig.json. Default: `tsconfig.json` |
+| `--cwd <path>` | Working directory. Default: current directory |
+| `--force` | Run even if git working directory has uncommitted changes |
+| `--yes`, `-y` | Accept all prompts (non-interactive mode) |
+
+## What Happens During Migration
+
+1. **Git check** — Requires a clean working directory (use `--force` to skip)
+2. **Detection** — Scans imports to determine which sources are present
+3. **Migration plan** — In interactive mode, asks for confirmation on each step
+4. **baseUrl import rewriting** — If `tsconfig.json` has `baseUrl`, bare imports like `src/users/dto/user.dto` are rewritten to relative paths before `baseUrl` is removed
+5. **Source transforms** — Runs AST codemods for each detected source
+6. **Import cleanup** — Removes empty/unused imports left by transforms
+7. **Dependency management** — Removes old packages, adds tsgonest packages
+8. **Script updates** — Updates `build` and `dev` scripts in `package.json`
+9. **Config generation** — Creates `tsgonest.config.ts` with auto-detected settings
+10. **tsconfig cleanup** — Removes `baseUrl` and compiler plugins
+
+## Migration Report
+
+After `--apply`, a `tsgonest-migrate-report.md` file is written to your project root. It contains:
+
+- **Summary** — Transform counts by category
+- **Auto-generated changes** — Config files created, tsconfig modifications
+- **Package changes** — Dependencies added/removed, scripts updated
+- **Manual TODOs** — Items that need human review (custom validators, `@Exclude`, `SwaggerModule`, etc.)
+- **Warnings** — Non-critical issues (packages still imported, parse errors)
+
+## Guides
+
+- [class-validator Migration](/docs/migration/class-validator) — Decorator mapping, class-to-interface conversion, entity handling
+- [Nestia/Typia Migration](/docs/migration/nestia-typia) — Route decorators, parameter decorators, branded types
+- [Post-Migration Checklist](/docs/migration/post-migration) — Steps to complete after running migrate

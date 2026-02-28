@@ -9,6 +9,7 @@
     "serialization-runtime",
     "openapi",
     "rules",
+    "migration",
     "---",
     "comparisons",
     "---",

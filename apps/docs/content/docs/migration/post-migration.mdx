@@ -1,0 +1,151 @@
+---
+title: Post-Migration Checklist
+description: Steps to complete after running tsgonest migrate.
+---
+
+After running `tsgonest migrate --apply`, follow this checklist to verify your project builds and runs correctly.
+
+## 1. Install Dependencies
+
+The migration adds `tsgonest`, `@tsgonest/runtime`, and `@tsgonest/types` to your `package.json` and removes old packages. Sync your lockfile:
+
+```bash
+npm install
+# or
+pnpm install
+# or
+yarn install
+```
+
+## 2. Review the Migration Report
+
+Open `tsgonest-migrate-report.md` in your project root. Pay attention to:
+
+- **Manual TODOs** — These items need human action. Common ones:
+  - `@Exclude()` properties that need manual type restructuring
+  - `SwaggerModule.setup()` calls to remove from `main.ts`
+  - Custom validators (`@MyValidator()`) that need manual migration
+  - Complex `@Transform()` patterns
+  - `tags.TagBase<>` custom validators from Typia
+- **Warnings** — Dependencies that were kept because they're still imported somewhere
+
+## 3. Verify tsconfig.json
+
+The migration removes `baseUrl` and compiler plugins. Check that:
+
+- Path aliases still work — if you were using `paths` with `baseUrl`, the path mappings should still resolve via tsgonest's built-in path alias support
+- No leftover `ts-patch` or `typia` plugin entries remain in `compilerOptions.plugins`
+
+## 4. Verify tsgonest.config.ts
+
+A `tsgonest.config.ts` file was generated with auto-detected settings:
+
+```ts
+import { defineConfig } from "@tsgonest/runtime";
+
+export default defineConfig({
+  controllers: { include: ["src/**/*.controller.ts"] },
+  transforms: { validation: true, serialization: true },
+  openapi: {
+    output: "dist/openapi.json",
+    // Security schemes auto-detected from @ApiBearerAuth, etc.
+  },
+});
+```
+
+Review the settings and adjust as needed. See [Configuration](/docs/config) for all options.
+
+## 5. Remove SwaggerModule Setup
+
+If your `main.ts` had Swagger UI setup, remove it:
+
+```ts
+// Remove all of this from main.ts:
+const config = new DocumentBuilder()
+  .setTitle('My API')
+  .addBearerAuth()
+  .build();
+const document = SwaggerModule.createDocument(app, config);
+SwaggerModule.setup('api', app, document);
+```
+
+tsgonest generates OpenAPI at build time. To serve the spec, configure `openapi.output` in `tsgonest.config.ts` and serve the generated JSON file statically or use a tool like [Swagger UI](https://swagger.io/tools/swagger-ui/) pointed at the output file.
+
+## 6. Remove Old Pipes and Interceptors
+
+If you had validation pipes or serialization interceptors from Nestia or class-validator:
+
+```ts
+// Remove these from main.ts:
+app.useGlobalPipes(new ValidationPipe({ transform: true }));
+app.useGlobalInterceptors(new ClassSerializerInterceptor(app.get(Reflector)));
+```
+
+tsgonest injects validation and serialization at compile time — no runtime pipes or interceptors are needed for `@Body()`, `@Query()`, `@Param()`, and `@Headers()` parameters.
+
+## 7. Build and Test
+
+```bash
+# Build with tsgonest
+npx tsgonest build
+
+# Or if scripts were updated:
+npm run build
+```
+
+Fix any type errors that surface. Common issues:
+
+### Import errors after baseUrl removal
+
+If you see module-not-found errors for bare imports like `src/users/dto/user.dto`, the migration should have rewritten these to relative paths. If any were missed:
+
+```ts
+// Change this:
+import { UserDto } from 'src/users/dto/user.dto';
+
+// To this:
+import { UserDto } from '../users/dto/user.dto';
+```
+
+### Entity files with class-validator decorators
+
+Entity classes (`@Entity()`, `@Schema()`, etc.) are intentionally skipped by the migration. If you have class-validator decorators on entity properties, they'll remain. This is expected — entity validation is typically handled by the ORM, not by tsgonest.
+
+### Mapped types still importing from @nestjs/swagger
+
+If `OmitType`, `PickType`, `PartialType`, or `IntersectionType` are your only imports from `@nestjs/swagger`, the migration rewrites the import source to `@nestjs/mapped-types`. Make sure `@nestjs/mapped-types` is installed:
+
+```bash
+npm install @nestjs/mapped-types
+```
+
+### class-transformer still imported
+
+If `plainToInstance()`, `instanceToPlain()`, or other runtime class-transformer utilities are still used in your code, the `class-transformer` package is kept in `package.json`. Remove the remaining usages manually if you want to fully uninstall it.
+
+## 8. Run Your Test Suite
+
+```bash
+npm test
+```
+
+The migration changes DTOs from classes to interfaces, which may affect:
+
+- Tests that use `new CreateUserDto()` — interfaces can't be instantiated. Use object literals instead:
+  ```ts
+  // Before
+  const dto = new CreateUserDto();
+  dto.email = 'test@example.com';
+
+  // After
+  const dto: CreateUserDto = { email: 'test@example.com', password: '123456' };
+  ```
+- Tests that use `instanceof CreateUserDto` — interfaces don't exist at runtime. Use type guards or duck typing instead.
+- Tests that use `plainToInstance(CreateUserDto, data)` — replace with plain object assignment.
+
+## Next Steps
+
+- [Configuration Reference](/docs/config) — Fine-tune tsgonest settings
+- [Validation](/docs/validation) — How tsgonest validates `@Body()`, `@Query()`, etc.
+- [OpenAPI](/docs/openapi) — Configure OpenAPI generation
+- [Rules & Limitations](/docs/rules) — What tsgonest can and cannot analyze at compile time

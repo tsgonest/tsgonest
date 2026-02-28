@@ -26,6 +26,7 @@ export interface TransformStats {
   classValidator: number;
   classTransformer: number;
   swagger: number;
+  baseUrlRewrites: number;
 }
 
 export interface PackageJsonChanges {
@@ -43,6 +44,7 @@ export class MigrateReport {
     classValidator: 0,
     classTransformer: 0,
     swagger: 0,
+    baseUrlRewrites: 0,
   };
   filesChanged = new Set<string>();
   packageJsonChanges: PackageJsonChanges = {
@@ -80,7 +82,8 @@ export class MigrateReport {
       this.stats.typia +
       this.stats.classValidator +
       this.stats.classTransformer +
-      this.stats.swagger
+      this.stats.swagger +
+      this.stats.baseUrlRewrites
     );
   }
 
@@ -103,6 +106,7 @@ export class MigrateReport {
     if (this.stats.classValidator > 0) console.log(`    class-validator → tsgonest: ${this.stats.classValidator}`);
     if (this.stats.classTransformer > 0) console.log(`    class-transformer → tsgonest: ${this.stats.classTransformer}`);
     if (this.stats.swagger > 0) console.log(`    @nestjs/swagger cleanup:    ${this.stats.swagger}`);
+    if (this.stats.baseUrlRewrites > 0) console.log(`    baseUrl import rewrites:    ${this.stats.baseUrlRewrites}`);
     console.log(`    total:                      ${this.totalTransforms}`);
     console.log(`    files changed:              ${this.filesChanged.size}`);
 
@@ -155,6 +159,7 @@ export class MigrateReport {
     if (this.stats.classValidator > 0) lines.push(`| class-validator → tsgonest | ${this.stats.classValidator} |`);
     if (this.stats.classTransformer > 0) lines.push(`| class-transformer → tsgonest | ${this.stats.classTransformer} |`);
     if (this.stats.swagger > 0) lines.push(`| @nestjs/swagger cleanup | ${this.stats.swagger} |`);
+    if (this.stats.baseUrlRewrites > 0) lines.push(`| baseUrl import rewrites | ${this.stats.baseUrlRewrites} |`);
     lines.push(`| **Total** | **${this.totalTransforms}** |`);
     lines.push(`| Files changed | ${this.filesChanged.size} |`);
     lines.push("");

@@ -32,119 +32,126 @@ const NON_CLASS_VALIDATOR_DECORATORS = new Set([
   "Property", "Enum", "Formula",
   // Sequelize
   "AllowNull", "Default", "ForeignKey", "BelongsTo", "HasMany",
+  // Typegoose / Mongoose
+  "Prop", "prop",
 ]);
 
-/** Map class-validator decorator → branded type expression (or null to just remove). */
+/** Map class-validator decorator → branded type expressions (or empty to just remove). */
 function decoratorToBrandedType(
   decorator: Decorator,
-): { tag: string | null; makeOptional: boolean; known: boolean } {
+): { tags: string[]; makeOptional: boolean; known: boolean } {
   const name = decorator.getName();
   const args = decorator.getArguments().map((a) => a.getText());
 
   switch (name) {
     // Constraints → branded types
     case "Min":
-      return { tag: args[0] ? `tags.Minimum<${args[0]}>` : null, makeOptional: false, known: true };
+      return { tags: args[0] ? [`tags.Minimum<${args[0]}>`] : [], makeOptional: false, known: true };
     case "Max":
-      return { tag: args[0] ? `tags.Maximum<${args[0]}>` : null, makeOptional: false, known: true };
+      return { tags: args[0] ? [`tags.Maximum<${args[0]}>`] : [], makeOptional: false, known: true };
     case "MinLength":
-      return { tag: args[0] ? `tags.MinLength<${args[0]}>` : null, makeOptional: false, known: true };
+      return { tags: args[0] ? [`tags.MinLength<${args[0]}>`] : [], makeOptional: false, known: true };
     case "MaxLength":
-      return { tag: args[0] ? `tags.MaxLength<${args[0]}>` : null, makeOptional: false, known: true };
+      return { tags: args[0] ? [`tags.MaxLength<${args[0]}>`] : [], makeOptional: false, known: true };
     case "IsEmail":
-      return { tag: "tags.Email", makeOptional: false, known: true };
+      return { tags: ["tags.Email"], makeOptional: false, known: true };
     case "IsUUID":
-      return { tag: "tags.Uuid", makeOptional: false, known: true };
+      return { tags: ["tags.Uuid"], makeOptional: false, known: true };
     case "IsUrl":
     case "IsURL":
-      return { tag: "tags.Url", makeOptional: false, known: true };
+      return { tags: ["tags.Url"], makeOptional: false, known: true };
     case "Matches": {
       if (args[0]) {
         const pattern = args[0].replace(/^\/|\/[gimsuy]*$/g, "");
-        return { tag: `tags.Pattern<${JSON.stringify(pattern)}>`, makeOptional: false, known: true };
+        return { tags: [`tags.Pattern<${JSON.stringify(pattern)}>`], makeOptional: false, known: true };
       }
-      return { tag: null, makeOptional: false, known: true };
+      return { tags: [], makeOptional: false, known: true };
     }
     case "IsDateString":
-      return { tag: `tags.Format<"date-time">`, makeOptional: false, known: true };
+      return { tags: [`tags.Format<"date-time">`], makeOptional: false, known: true };
     case "IsNotEmpty":
-      return { tag: "tags.MinLength<1>", makeOptional: false, known: true };
+      return { tags: ["tags.MinLength<1>"], makeOptional: false, known: true };
     case "IsPositive":
-      return { tag: "tags.Positive", makeOptional: false, known: true };
+      return { tags: ["tags.Positive"], makeOptional: false, known: true };
     case "IsNegative":
-      return { tag: "tags.Negative", makeOptional: false, known: true };
+      return { tags: ["tags.Negative"], makeOptional: false, known: true };
     case "IsInt":
-      return { tag: "tags.Int", makeOptional: false, known: true };
+      return { tags: ["tags.Int"], makeOptional: false, known: true };
     case "ArrayMinSize":
-      return { tag: args[0] ? `tags.MinItems<${args[0]}>` : null, makeOptional: false, known: true };
+      return { tags: args[0] ? [`tags.MinItems<${args[0]}>`] : [], makeOptional: false, known: true };
     case "ArrayMaxSize":
-      return { tag: args[0] ? `tags.MaxItems<${args[0]}>` : null, makeOptional: false, known: true };
+      return { tags: args[0] ? [`tags.MaxItems<${args[0]}>`] : [], makeOptional: false, known: true };
 
     // Additional built-in class-validator decorators with branded type equivalents
     case "ArrayNotEmpty":
-      return { tag: "tags.MinItems<1>", makeOptional: false, known: true };
+      return { tags: ["tags.MinItems<1>"], makeOptional: false, known: true };
     case "IsDate":
-      return { tag: `tags.Format<"date-time">`, makeOptional: false, known: true };
+      return { tags: [`tags.Format<"date-time">`], makeOptional: false, known: true };
     case "IsISO8601":
-      return { tag: `tags.Format<"date-time">`, makeOptional: false, known: true };
+      return { tags: [`tags.Format<"date-time">`], makeOptional: false, known: true };
     case "IsJSON":
-      return { tag: null, makeOptional: false, known: true }; // TS type handles this
+      return { tags: [], makeOptional: false, known: true }; // TS type handles this
     case "IsIn": {
       // @IsIn(['a', 'b']) — can't easily express as branded type, flag for manual
-      return { tag: null, makeOptional: false, known: false };
+      return { tags: [], makeOptional: false, known: false };
     }
     case "IsTimeZone":
-      return { tag: null, makeOptional: false, known: true }; // No branded type equivalent, but recognized
+      return { tags: [], makeOptional: false, known: true }; // No branded type equivalent, but recognized
     case "IsIP":
-      return { tag: `tags.Format<"ipv4">`, makeOptional: false, known: true };
+      return { tags: [`tags.Format<"ipv4">`], makeOptional: false, known: true };
     case "IsCreditCard":
-      return { tag: null, makeOptional: false, known: true };
+      return { tags: [], makeOptional: false, known: true };
     case "IsPhoneNumber":
-      return { tag: null, makeOptional: false, known: true };
+      return { tags: [], makeOptional: false, known: true };
     case "IsHexColor":
-      return { tag: null, makeOptional: false, known: true };
+      return { tags: [], makeOptional: false, known: true };
     case "IsMACAddress":
-      return { tag: null, makeOptional: false, known: true };
+      return { tags: [], makeOptional: false, known: true };
     case "IsPort":
-      return { tag: null, makeOptional: false, known: true };
+      return { tags: [], makeOptional: false, known: true };
     case "IsMimeType":
-      return { tag: null, makeOptional: false, known: true };
+      return { tags: [], makeOptional: false, known: true };
     case "IsSemVer":
-      return { tag: null, makeOptional: false, known: true };
+      return { tags: [], makeOptional: false, known: true };
     case "IsAlpha":
-      return { tag: null, makeOptional: false, known: true };
+      return { tags: [], makeOptional: false, known: true };
     case "IsAlphanumeric":
-      return { tag: null, makeOptional: false, known: true };
+      return { tags: [], makeOptional: false, known: true };
     case "IsNumberString":
-      return { tag: null, makeOptional: false, known: true };
+      return { tags: [], makeOptional: false, known: true };
     case "IsBase64":
-      return { tag: null, makeOptional: false, known: true };
+      return { tags: [], makeOptional: false, known: true };
     case "IsMongoId":
-      return { tag: null, makeOptional: false, known: true };
+      return { tags: [], makeOptional: false, known: true };
     case "IsCurrency":
-      return { tag: null, makeOptional: false, known: true };
+      return { tags: [], makeOptional: false, known: true };
     case "Contains":
-      return { tag: null, makeOptional: false, known: true };
+      return { tags: [], makeOptional: false, known: true };
     case "NotContains":
-      return { tag: null, makeOptional: false, known: true };
+      return { tags: [], makeOptional: false, known: true };
     case "IsHash":
-      return { tag: null, makeOptional: false, known: true };
+      return { tags: [], makeOptional: false, known: true };
     case "IsLatitude":
-      return { tag: null, makeOptional: false, known: true };
+      return { tags: [], makeOptional: false, known: true };
     case "IsLongitude":
-      return { tag: null, makeOptional: false, known: true };
+      return { tags: [], makeOptional: false, known: true };
     case "IsLatLong":
-      return { tag: null, makeOptional: false, known: true };
-    case "Length":
-      return { tag: args[0] ? `tags.MinLength<${args[0]}>` : null, makeOptional: false, known: true };
+      return { tags: [], makeOptional: false, known: true };
+    case "Length": {
+      // @Length(min, max) → both tags.MinLength<min> and tags.MaxLength<max>
+      const result: string[] = [];
+      if (args[0]) result.push(`tags.MinLength<${args[0]}>`);
+      if (args[1]) result.push(`tags.MaxLength<${args[1]}>`);
+      return { tags: result, makeOptional: false, known: true };
+    }
 
     // Optional marker
     case "IsOptional":
-      return { tag: null, makeOptional: true, known: true };
+      return { tags: [], makeOptional: true, known: true };
 
     // Validation group / conditional — just remove
     case "Allow":
-      return { tag: null, makeOptional: false, known: true };
+      return { tags: [], makeOptional: false, known: true };
 
     // Type validators — redundant with TS types, just remove
     case "IsString":
@@ -162,21 +169,19 @@ function decoratorToBrandedType(
     case "Equals":
     case "NotEquals":
     case "IsInstance":
-      return { tag: null, makeOptional: false, known: true };
+      return { tags: [], makeOptional: false, known: true };
 
     default:
-      return { tag: null, makeOptional: false, known: false };
+      return { tags: [], makeOptional: false, known: false };
   }
 }
 
 /**
  * Transform class-validator DTOs to interfaces with branded types.
- * Only processes *.dto.ts files.
+ * Processes any file that imports from class-validator. Skips NestJS framework
+ * classes and entity/ORM classes via decorator detection.
  */
 export function transformClassValidator(file: SourceFile, report: MigrateReport): number {
-  // Only transform DTO files
-  if (!file.getFilePath().endsWith(".dto.ts")) return 0;
-
   const cvImport = file.getImportDeclaration(
     (d) => d.getModuleSpecifierValue() === "class-validator",
   );
@@ -189,15 +194,85 @@ export function transformClassValidator(file: SourceFile, report: MigrateReport)
   // Track unknown decorators for TODOs
   const unknownDecorators = new Set<string>();
 
+  // NestJS mapped-type helper functions — when a class extends one of these,
+  // it cannot be converted to an interface (interfaces can't extend function calls).
+  const MAPPED_TYPE_HELPERS = new Set([
+    "OmitType", "PickType", "PartialType", "IntersectionType",
+  ]);
+
   // Process each class in the file
   const classes = file.getClasses();
   for (const cls of classes) {
-    // Skip if it looks like a controller/module/injectable (not a DTO)
+    // Skip NestJS framework classes and entity/ORM classes (not DTOs)
     const classDecorators = cls.getDecorators();
-    const isNestClass = classDecorators.some((d) =>
-      ["Controller", "Module", "Injectable", "Guard", "Interceptor", "Pipe", "Filter"].includes(d.getName()),
+    const isNestOrEntityClass = classDecorators.some((d) =>
+      [
+        // NestJS framework classes
+        "Controller", "Module", "Injectable", "Guard", "Interceptor", "Pipe", "Filter",
+        // ORM entity decorators — these classes have their own lifecycle
+        "Entity", "Schema", "Table", "Document", "Model",
+        "ViewEntity", "ChildEntity", "Embeddable",
+      ].includes(d.getName()),
     );
-    if (isNestClass) continue;
+    if (isNestOrEntityClass) continue;
+
+    // Check if the class extends a mapped type helper (OmitType, PickType, etc.)
+    // These can't become interfaces — keep as class, just remove decorators in-place.
+    const extendsExpr = cls.getExtends();
+    const extendsMappedType = extendsExpr && MAPPED_TYPE_HELPERS.has(
+      extendsExpr.getExpression().getText().split("(")[0].trim(),
+    );
+
+    if (extendsMappedType) {
+      // In-place decorator removal: strip class-validator decorators and update types
+      for (const prop of cls.getProperties()) {
+        const brandedTypes: string[] = [];
+        let isOptional = prop.hasQuestionToken();
+        const decoratorsToRemove: Decorator[] = [];
+
+        for (const dec of prop.getDecorators()) {
+          const decName = dec.getName();
+          if (decName.startsWith("Api")) continue;
+          if (NON_CLASS_VALIDATOR_DECORATORS.has(decName)) continue;
+
+          const result = decoratorToBrandedType(dec);
+          if (result.tags.length > 0) {
+            brandedTypes.push(...result.tags);
+            needsTagsImport = true;
+          }
+          if (result.makeOptional) isOptional = true;
+          if (!result.known) {
+            unknownDecorators.add(decName);
+            continue; // Don't remove unknown decorators — they may be from other libraries
+          }
+          decoratorsToRemove.push(dec);
+        }
+
+        // Remove decorators in reverse to preserve positions
+        for (const dec of decoratorsToRemove.reverse()) {
+          dec.remove();
+          count++;
+        }
+
+        // Update type with branded types
+        if (brandedTypes.length > 0) {
+          const currentType = prop.getTypeNode()?.getText() ?? "any";
+          prop.setType(`${currentType} & ${brandedTypes.join(" & ")}`);
+        }
+        if (isOptional && !prop.hasQuestionToken()) {
+          prop.setHasQuestionToken(true);
+        }
+      }
+
+      const className = cls.getName();
+      if (className) {
+        report.info(filePath, "class-validator",
+          `Stripped decorators from class ${className} (kept as class — extends mapped type)`,
+        );
+        count++;
+      }
+      continue;
+    }
 
     const properties = cls.getProperties();
     const interfaceProps: string[] = [];
@@ -217,8 +292,8 @@ export function transformClassValidator(file: SourceFile, report: MigrateReport)
         if (NON_CLASS_VALIDATOR_DECORATORS.has(decName)) continue;
 
         const result = decoratorToBrandedType(dec);
-        if (result.tag) {
-          brandedTypes.push(result.tag);
+        if (result.tags.length > 0) {
+          brandedTypes.push(...result.tags);
           needsTagsImport = true;
         }
         if (result.makeOptional) {
@@ -266,7 +341,6 @@ export function transformClassValidator(file: SourceFile, report: MigrateReport)
       interfaceText = `interface ${className}`;
     }
 
-    const extendsExpr = cls.getExtends();
     if (extendsExpr) {
       interfaceText += ` extends ${extendsExpr.getText()}`;
     }
