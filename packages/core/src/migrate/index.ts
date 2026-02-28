@@ -18,7 +18,7 @@
  */
 
 import { Project, SourceFile } from "ts-morph";
-import { resolve, relative, join } from "path";
+import { resolve, relative, join, dirname } from "path";
 import { readFileSync, writeFileSync, existsSync } from "fs";
 import { parse as parseJsonc, modify, applyEdits, type ModificationOptions } from "jsonc-parser";
 import { transformNestia } from "./transforms/nestia.js";
@@ -27,6 +27,7 @@ import { transformClassValidator } from "./transforms/class-validator.js";
 import { transformClassTransformer } from "./transforms/class-transformer.js";
 import { transformSwagger } from "./transforms/swagger.js";
 import { cleanupImports } from "./transforms/imports.js";
+import { rewriteBaseUrlImports } from "./transforms/baseurl-imports.js";
 import { BOLD, RED, GREEN, YELLOW, CYAN, RESET } from "./colors.js";
 import { MigrateReport } from "./report.js";
 import { isGitRepo, isGitClean, getGitStatus } from "./git.js";
@@ -465,6 +466,29 @@ async function main(): Promise<void> {
   const report = new MigrateReport();
 
   if (plan.transformSources && sources.length > 0) {
+    // Phase 0: Rewrite baseUrl-relative imports before any other transforms.
+    // fixTsconfig() removes baseUrl, so we must fix imports first while we still
+    // know what baseUrl was.
+    const tsconfigForBaseUrl = resolve(cwd, opts.tsconfig);
+    let baseUrl: string | undefined;
+    try {
+      const tscText = readFileSync(tsconfigForBaseUrl, "utf-8");
+      const tsc = parseJsonc(tscText, [], { allowTrailingComma: true });
+      if (tsc?.compilerOptions?.baseUrl) {
+        baseUrl = tsc.compilerOptions.baseUrl;
+      }
+    } catch {
+      // tsconfig not readable — skip baseUrl rewriting
+    }
+
+    if (baseUrl) {
+      const baseDir = resolve(dirname(tsconfigForBaseUrl), baseUrl);
+      for (const file of files) {
+        report.stats.baseUrlRewrites += rewriteBaseUrlImports(file, baseDir, report);
+      }
+    }
+
+    // Phase 1: Run all transforms
     for (const file of files) {
       if (detected.hasNestia) {
         report.stats.nestia += transformNestia(file, report);
@@ -482,6 +506,49 @@ async function main(): Promise<void> {
         report.stats.swagger += transformSwagger(file, report);
       }
       cleanupImports(file);
+    }
+  }
+
+  // ── Step 5b: Post-transform check — don't remove packages still imported ──
+  // After transforms, scan for remaining imports. If packages are still imported
+  // (e.g., in entity files, custom decorator utilities, runtime usage), skip removal.
+  const stillImported = new Set<string>();
+  for (const file of files) {
+    for (const imp of file.getImportDeclarations()) {
+      stillImported.add(imp.getModuleSpecifierValue());
+    }
+  }
+
+  if (plan.removeClassDeps) {
+    const stillUsed = pkgInfo.classDeps.filter((d) => stillImported.has(d));
+    if (stillUsed.length > 0) {
+      pkgInfo.classDeps = pkgInfo.classDeps.filter((d) => !stillUsed.includes(d));
+      plan.removeClassDeps = pkgInfo.classDeps.length > 0;
+      report.warn("package.json", "general",
+        `Kept ${stillUsed.join(", ")} in package.json — still imported in source files.`,
+      );
+    }
+  }
+
+  if (plan.removeSwaggerDeps) {
+    const stillUsed = pkgInfo.swaggerDeps.filter((d) => stillImported.has(d));
+    if (stillUsed.length > 0) {
+      pkgInfo.swaggerDeps = pkgInfo.swaggerDeps.filter((d) => !stillUsed.includes(d));
+      plan.removeSwaggerDeps = pkgInfo.swaggerDeps.length > 0;
+      report.warn("package.json", "general",
+        `Kept ${stillUsed.join(", ")} in package.json — still imported in source files (e.g., custom decorators).`,
+      );
+    }
+  }
+
+  if (plan.removeNestiaDeps) {
+    const stillUsed = pkgInfo.nestiaDeps.filter((d) => stillImported.has(d));
+    if (stillUsed.length > 0) {
+      pkgInfo.nestiaDeps = pkgInfo.nestiaDeps.filter((d) => !stillUsed.includes(d));
+      plan.removeNestiaDeps = pkgInfo.nestiaDeps.length > 0;
+      report.warn("package.json", "general",
+        `Kept ${stillUsed.join(", ")} in package.json — still imported in source files.`,
+      );
     }
   }
 

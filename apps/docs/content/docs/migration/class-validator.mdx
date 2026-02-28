@@ -1,0 +1,152 @@
+---
+title: class-validator Migration
+description: How tsgonest migrate converts class-validator DTOs to interfaces with branded types.
+---
+
+`tsgonest migrate` converts class-validator DTO classes into TypeScript interfaces with branded types from `@tsgonest/types`. This page explains how each decorator is handled and what to watch for.
+
+## Class-to-Interface Conversion
+
+Any file that imports from `class-validator` is processed. Each class (that isn't a NestJS framework class or ORM entity) is converted to an interface.
+
+### Before
+
+```ts
+import { IsEmail, IsNotEmpty, MinLength, IsOptional } from 'class-validator';
+
+export class CreateUserDto {
+  @IsEmail()
+  @IsNotEmpty()
+  email: string;
+
+  @MinLength(6)
+  password: string;
+
+  @IsOptional()
+  @IsNotEmpty()
+  nickname?: string;
+}
+```
+
+### After
+
+```ts
+import { tags } from '@tsgonest/types';
+
+export interface CreateUserDto {
+  email: string & tags.Email & tags.MinLength<1>;
+  password: string & tags.MinLength<6>;
+  nickname?: string & tags.MinLength<1>;
+}
+```
+
+## Decorator Mapping Table
+
+### Constraint Decorators (mapped to branded types)
+
+| class-validator | tsgonest branded type |
+| --- | --- |
+| `@Min(n)` | `tags.Minimum<n>` |
+| `@Max(n)` | `tags.Maximum<n>` |
+| `@MinLength(n)` | `tags.MinLength<n>` |
+| `@MaxLength(n)` | `tags.MaxLength<n>` |
+| `@Length(min, max)` | `tags.MinLength<min> & tags.MaxLength<max>` |
+| `@IsEmail()` | `tags.Email` |
+| `@IsUUID()` | `tags.Uuid` |
+| `@IsUrl()` / `@IsURL()` | `tags.Url` |
+| `@Matches(/pattern/)` | `tags.Pattern<"pattern">` |
+| `@IsNotEmpty()` | `tags.MinLength<1>` |
+| `@IsDateString()` | `tags.Format<"date-time">` |
+| `@IsDate()` | `tags.Format<"date-time">` |
+| `@IsISO8601()` | `tags.Format<"date-time">` |
+| `@IsPositive()` | `tags.Positive` |
+| `@IsNegative()` | `tags.Negative` |
+| `@IsInt()` | `tags.Int` |
+| `@IsIP()` | `tags.Format<"ipv4">` |
+| `@ArrayMinSize(n)` | `tags.MinItems<n>` |
+| `@ArrayMaxSize(n)` | `tags.MaxItems<n>` |
+| `@ArrayNotEmpty()` | `tags.MinItems<1>` |
+
+### Behavior Decorators (removed, functionality handled by tsgonest)
+
+| class-validator | Action |
+| --- | --- |
+| `@IsOptional()` | Adds `?` to the property |
+| `@IsString()`, `@IsNumber()`, `@IsBoolean()`, `@IsArray()` | Removed (redundant with TS types) |
+| `@IsObject()`, `@IsEnum()`, `@IsDefined()` | Removed |
+| `@ValidateNested()`, `@ValidateIf()`, `@Validate()` | Removed |
+| `@Allow()` | Removed silently |
+| `@IsNotEmptyObject()`, `@IsEmpty()`, `@Equals()`, `@NotEquals()` | Removed |
+| `@IsInstance()` | Removed |
+
+### Recognized but no branded type equivalent
+
+These decorators are removed without adding a branded type. The validation is recognized but has no direct `@tsgonest/types` counterpart:
+
+`@IsJSON`, `@IsTimeZone`, `@IsCreditCard`, `@IsPhoneNumber`, `@IsHexColor`, `@IsMACAddress`, `@IsPort`, `@IsMimeType`, `@IsSemVer`, `@IsAlpha`, `@IsAlphanumeric`, `@IsNumberString`, `@IsBase64`, `@IsMongoId`, `@IsCurrency`, `@Contains`, `@NotContains`, `@IsHash`, `@IsLatitude`, `@IsLongitude`, `@IsLatLong`
+
+### Unknown decorators
+
+Custom validators (e.g., `@IsUniqueName()`) are flagged as TODOs in the migration report. The decorator is left in place so your code still compiles.
+
+## class-transformer Handling
+
+`tsgonest migrate` also processes `class-transformer` decorators found on properties:
+
+| class-transformer | tsgonest branded type | Notes |
+| --- | --- | --- |
+| `@Type(() => Number)` | `tags.Coerce` | Enables string-to-number coercion for `@Query`/`@Param` |
+| `@Type(() => Boolean)` | `tags.Coerce` | Enables string-to-boolean coercion |
+| `@Type(() => Date)` | `tags.Coerce` | Enables string-to-date coercion |
+| `@Transform(({ value }) => value?.trim())` | `tags.Trim` | Whitespace trimming |
+| `@Transform(({ value }) => value?.toLowerCase())` | `tags.ToLowerCase` | Case conversion |
+| `@Transform(({ value }) => value?.toUpperCase())` | `tags.ToUpperCase` | Case conversion |
+| `@Exclude()` | Removed + TODO | Manual review needed — use TypeScript `Omit<>` or separate types |
+| `@Expose()` | Removed | All properties are exposed by default in tsgonest |
+| Other `@Transform(...)` | Removed + TODO | Complex transforms need manual migration |
+
+## Mapped Types (OmitType, PickType, etc.)
+
+Classes that extend `OmitType()`, `PickType()`, `PartialType()`, or `IntersectionType()` **cannot** be converted to interfaces — interfaces can't extend function calls. These classes are kept as classes, but their class-validator decorators are still stripped and branded types are added.
+
+```ts
+// Before
+export class UpdateUserDto extends PickType(CreateUserDto, ['email']) {
+  @IsNotEmpty()
+  email: string;
+}
+
+// After — remains a class, decorators stripped, types updated
+export class UpdateUserDto extends PickType(CreateUserDto, ['email']) {
+  email: string & tags.MinLength<1>;
+}
+```
+
+The `@nestjs/swagger` import for mapped-type helpers is automatically rewritten to `@nestjs/mapped-types` when no other swagger imports remain.
+
+## Skipped Classes
+
+The following classes are detected and **skipped** entirely (not converted):
+
+### NestJS Framework Classes
+
+Classes with any of these decorators are skipped: `@Controller`, `@Module`, `@Injectable`, `@Guard`, `@Interceptor`, `@Pipe`, `@Filter`
+
+### ORM Entity Classes
+
+Classes with any of these decorators are skipped: `@Entity`, `@Schema`, `@Table`, `@Document`, `@Model`, `@ViewEntity`, `@ChildEntity`, `@Embeddable`
+
+Entity classes often use class-validator decorators alongside ORM decorators. Since entities have their own lifecycle and aren't DTOs, they're left unchanged.
+
+### Non-class-validator Files
+
+Files that don't import from `class-validator` are skipped entirely.
+
+## What Needs Manual Review
+
+After migration, check the `tsgonest-migrate-report.md` for:
+
+- **Unknown decorators** — Custom validators that couldn't be mapped automatically
+- **`@Exclude` properties** — Decide whether to use `Omit<>`, separate types, or `@tsgonest/types` exclusion
+- **Complex `@Transform` patterns** — Only `trim()`, `toLowerCase()`, and `toUpperCase()` are auto-mapped
+- **`@IsIn(['a', 'b'])` constraints** — Consider using TypeScript union types (`'a' | 'b'`) instead
