@@ -7,6 +7,7 @@ import (
 	"github.com/microsoft/typescript-go/shim/ast"
 	shimcompiler "github.com/microsoft/typescript-go/shim/compiler"
 	"github.com/tsgonest/tsgonest/internal/analyzer"
+	"github.com/tsgonest/tsgonest/internal/metadata"
 )
 
 // --- Decorator Parsing Tests (AST-based) ---
@@ -3290,6 +3291,372 @@ func TestControllerAnalyzer_EventStreamDecorator_MixedWithRegularRoutes(t *testi
 	}
 	if len(sseRoute.SSEEventVariants) != 1 {
 		t.Errorf("expected 1 SSE event variant, got %d", len(sseRoute.SSEEventVariants))
+	}
+}
+
+// --- @Returns decorator import-source filtering tests ---
+
+// TestControllerAnalyzer_Returns_DirectImport verifies that @Returns<T>()
+// imported directly from @tsgonest/runtime is recognized.
+func TestControllerAnalyzer_Returns_DirectImport(t *testing.T) {
+	env := setupWalkerMultiFile(t, map[string]string{
+		"tsgonest-runtime.d.ts": `
+			declare module "@tsgonest/runtime" {
+				export function Returns<T>(options?: { contentType?: string; description?: string; status?: number }): MethodDecorator;
+			}
+		`,
+		"controller.ts": `
+			function Controller(path: string): ClassDecorator { return (target) => target; }
+			function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+			function Res(): ParameterDecorator { return () => {}; }
+
+			import { Returns } from "@tsgonest/runtime";
+
+			interface UserDto { id: string; name: string; }
+
+			@Controller("users")
+			export class UserController {
+				@Returns<UserDto>()
+				@Get(":id")
+				async getUser(@Res() res: any): Promise<void> {}
+			}
+		`,
+	}, "controller.ts")
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 || len(controllers[0].Routes) != 1 {
+		t.Fatalf("expected 1 controller with 1 route, got %d controllers", len(controllers))
+	}
+
+	route := controllers[0].Routes[0]
+	// @Returns<UserDto>() should have been recognized → return type should be an object with properties
+	if route.ReturnType.Kind == metadata.KindVoid {
+		t.Error("expected non-void return type from @Returns<UserDto>(), got void — import-source filtering may have rejected a valid tsgonest import")
+	}
+}
+
+// TestControllerAnalyzer_Returns_AliasedImport verifies that import { Returns as R }
+// from @tsgonest/runtime is recognized.
+func TestControllerAnalyzer_Returns_AliasedImport(t *testing.T) {
+	env := setupWalkerMultiFile(t, map[string]string{
+		"tsgonest-runtime.d.ts": `
+			declare module "@tsgonest/runtime" {
+				export function Returns<T>(options?: { contentType?: string; description?: string; status?: number }): MethodDecorator;
+			}
+		`,
+		"controller.ts": `
+			function Controller(path: string): ClassDecorator { return (target) => target; }
+			function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+			function Res(): ParameterDecorator { return () => {}; }
+
+			import { Returns as TypedReturns } from "@tsgonest/runtime";
+
+			interface ProductDto { id: string; price: number; }
+
+			@Controller("products")
+			export class ProductController {
+				@TypedReturns<ProductDto>()
+				@Get(":id")
+				async getProduct(@Res() res: any): Promise<void> {}
+			}
+		`,
+	}, "controller.ts")
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 || len(controllers[0].Routes) != 1 {
+		t.Fatalf("expected 1 controller with 1 route")
+	}
+
+	route := controllers[0].Routes[0]
+	if route.ReturnType.Kind == metadata.KindVoid {
+		t.Error("expected non-void return type from aliased @TypedReturns<ProductDto>(), got void")
+	}
+}
+
+// TestControllerAnalyzer_Returns_NamespaceImport verifies that
+// import * as rt from '@tsgonest/runtime'; @rt.Returns<T>() is recognized.
+func TestControllerAnalyzer_Returns_NamespaceImport(t *testing.T) {
+	env := setupWalkerMultiFile(t, map[string]string{
+		"tsgonest-runtime.d.ts": `
+			declare module "@tsgonest/runtime" {
+				export function Returns<T>(options?: { contentType?: string; description?: string; status?: number }): MethodDecorator;
+			}
+		`,
+		"controller.ts": `
+			function Controller(path: string): ClassDecorator { return (target) => target; }
+			function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+			function Res(): ParameterDecorator { return () => {}; }
+
+			import * as rt from "@tsgonest/runtime";
+
+			interface OrderDto { id: string; total: number; }
+
+			@Controller("orders")
+			export class OrderController {
+				@rt.Returns<OrderDto>()
+				@Get(":id")
+				async getOrder(@Res() res: any): Promise<void> {}
+			}
+		`,
+	}, "controller.ts")
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 || len(controllers[0].Routes) != 1 {
+		t.Fatalf("expected 1 controller with 1 route")
+	}
+
+	route := controllers[0].Routes[0]
+	if route.ReturnType.Kind == metadata.KindVoid {
+		t.Error("expected non-void return type from namespace @rt.Returns<OrderDto>(), got void")
+	}
+}
+
+// TestControllerAnalyzer_Returns_NonTsgonestModule verifies that @Returns from
+// a non-tsgonest module is ignored (not treated as tsgonest's @Returns).
+func TestControllerAnalyzer_Returns_NonTsgonestModule(t *testing.T) {
+	env := setupWalkerMultiFile(t, map[string]string{
+		"other-lib.d.ts": `
+			declare module "some-other-lib" {
+				export function Returns<T>(options?: any): MethodDecorator;
+			}
+		`,
+		"controller.ts": `
+			function Controller(path: string): ClassDecorator { return (target) => target; }
+			function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+			function Res(): ParameterDecorator { return () => {}; }
+
+			import { Returns } from "some-other-lib";
+
+			interface UserDto { id: string; }
+
+			@Controller("users")
+			export class UserController {
+				@Returns<UserDto>()
+				@Get(":id")
+				async getUser(@Res() res: any): Promise<void> {}
+			}
+		`,
+	}, "controller.ts")
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 || len(controllers[0].Routes) != 1 {
+		t.Fatalf("expected 1 controller with 1 route")
+	}
+
+	route := controllers[0].Routes[0]
+	// @Returns from "some-other-lib" should be IGNORED → return type should be void (because @Res())
+	if route.ReturnType.Kind != metadata.KindVoid {
+		t.Errorf("expected void return type (non-tsgonest @Returns should be ignored), got kind=%v", route.ReturnType.Kind)
+	}
+}
+
+// TestControllerAnalyzer_Returns_LocalFunction verifies that a locally defined
+// Returns function is ignored (not treated as tsgonest's @Returns).
+func TestControllerAnalyzer_Returns_LocalFunction(t *testing.T) {
+	env := setupWalkerMultiFile(t, map[string]string{
+		"controller.ts": `
+			function Controller(path: string): ClassDecorator { return (target) => target; }
+			function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+			function Res(): ParameterDecorator { return () => {}; }
+			function Returns<T>(options?: any): MethodDecorator { return (t, k, d) => d; }
+
+			interface UserDto { id: string; }
+
+			@Controller("users")
+			export class UserController {
+				@Returns<UserDto>()
+				@Get(":id")
+				async getUser(@Res() res: any): Promise<void> {}
+			}
+		`,
+	}, "controller.ts")
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 || len(controllers[0].Routes) != 1 {
+		t.Fatalf("expected 1 controller with 1 route")
+	}
+
+	route := controllers[0].Routes[0]
+	// Locally defined Returns should be IGNORED → return type should be void (because @Res())
+	if route.ReturnType.Kind != metadata.KindVoid {
+		t.Errorf("expected void return type (locally defined @Returns should be ignored), got kind=%v", route.ReturnType.Kind)
+	}
+}
+
+// TestControllerAnalyzer_Returns_TsgonestPackage verifies that @Returns from
+// the "tsgonest" package (not scoped) is also recognized.
+func TestControllerAnalyzer_Returns_TsgonestPackage(t *testing.T) {
+	env := setupWalkerMultiFile(t, map[string]string{
+		"tsgonest.d.ts": `
+			declare module "tsgonest" {
+				export function Returns<T>(options?: { contentType?: string; description?: string; status?: number }): MethodDecorator;
+			}
+		`,
+		"controller.ts": `
+			function Controller(path: string): ClassDecorator { return (target) => target; }
+			function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+			function Res(): ParameterDecorator { return () => {}; }
+
+			import { Returns } from "tsgonest";
+
+			interface ItemDto { id: string; }
+
+			@Controller("items")
+			export class ItemController {
+				@Returns<ItemDto>()
+				@Get(":id")
+				async getItem(@Res() res: any): Promise<void> {}
+			}
+		`,
+	}, "controller.ts")
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 || len(controllers[0].Routes) != 1 {
+		t.Fatalf("expected 1 controller with 1 route")
+	}
+
+	route := controllers[0].Routes[0]
+	if route.ReturnType.Kind == metadata.KindVoid {
+		t.Error("expected non-void return type from @Returns<ItemDto>() imported from 'tsgonest', got void")
+	}
+}
+
+// --- Namespace import tests for NestJS decorators ---
+
+// TestControllerAnalyzer_NamespaceImport_Get verifies that @nest.Get() from
+// import * as nest from "./decorators" is correctly resolved as a GET route.
+func TestControllerAnalyzer_NamespaceImport_Get(t *testing.T) {
+	env := setupWalkerMultiFile(t, map[string]string{
+		"decorators.ts": `
+			export function Controller(path: string): ClassDecorator { return (target) => target; }
+			export function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+		`,
+		"controller.ts": `
+			import * as nest from "./decorators";
+
+			@nest.Controller("items")
+			export class ItemController {
+				@nest.Get()
+				findAll(): string { return ""; }
+			}
+		`,
+	}, "controller.ts")
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 {
+		t.Fatalf("expected 1 controller, got %d", len(controllers))
+	}
+	if controllers[0].Name != "ItemController" {
+		t.Errorf("expected Name='ItemController', got %q", controllers[0].Name)
+	}
+	if controllers[0].Path != "items" {
+		t.Errorf("expected Path='items', got %q", controllers[0].Path)
+	}
+	if len(controllers[0].Routes) != 1 {
+		t.Fatalf("expected 1 route, got %d", len(controllers[0].Routes))
+	}
+	if controllers[0].Routes[0].Method != "GET" {
+		t.Errorf("expected Method='GET', got %q", controllers[0].Routes[0].Method)
+	}
+}
+
+// TestControllerAnalyzer_NamespaceImport_Body verifies that @nest.Body()
+// from import * as nest is correctly resolved as a body parameter.
+func TestControllerAnalyzer_NamespaceImport_Body(t *testing.T) {
+	env := setupWalkerMultiFile(t, map[string]string{
+		"decorators.ts": `
+			export function Controller(path: string): ClassDecorator { return (target) => target; }
+			export function Post(path?: string): MethodDecorator { return (t, k, d) => d; }
+			export function Body(): ParameterDecorator { return (target, key, index) => {}; }
+		`,
+		"controller.ts": `
+			import * as nest from "./decorators";
+
+			interface CreateDto { name: string; }
+
+			@nest.Controller("items")
+			export class ItemController {
+				@nest.Post()
+				create(@nest.Body() dto: CreateDto): string { return ""; }
+			}
+		`,
+	}, "controller.ts")
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 || len(controllers[0].Routes) != 1 {
+		t.Fatalf("expected 1 controller with 1 route")
+	}
+
+	route := controllers[0].Routes[0]
+	if route.Method != "POST" {
+		t.Errorf("expected Method='POST', got %q", route.Method)
+	}
+	if len(route.Parameters) != 1 {
+		t.Fatalf("expected 1 parameter, got %d", len(route.Parameters))
+	}
+	param := route.Parameters[0]
+	if param.Category != "body" {
+		t.Errorf("expected Category='body', got %q", param.Category)
+	}
+}
+
+// --- ResolveDecoratorOrigin unit tests ---
+
+func TestIsTsgonestModule(t *testing.T) {
+	tests := []struct {
+		moduleSpec string
+		want       bool
+	}{
+		{"tsgonest", true},
+		{"@tsgonest/runtime", true},
+		{"@tsgonest/types", true},
+		{"@tsgonest/cli-darwin-arm64", true},
+		{"@nestjs/common", false},
+		{"some-other-lib", false},
+		{"", false},
+		{"tsgonest-extra", false}, // not a tsgonest package
+		{"@tsgonest/", false},     // empty scoped name — technically invalid
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.moduleSpec, func(t *testing.T) {
+			got := analyzer.IsTsgonestModule(tt.moduleSpec)
+			if got != tt.want {
+				t.Errorf("IsTsgonestModule(%q) = %v, want %v", tt.moduleSpec, got, tt.want)
+			}
+		})
 	}
 }
 

@@ -103,9 +103,9 @@ func CreateDiagnosticReporter(w io.Writer, cwd string, pretty bool) DiagnosticRe
 // file(line,col): error TS2322: message
 func writePlainDiagnostic(w io.Writer, d *ast.Diagnostic, cwd string) {
 	if d.File() != nil {
-		line, char := shimscanner.GetECMALineAndCharacterOfPosition(d.File(), d.Pos())
+		line, char := shimscanner.GetECMALineAndUTF16CharacterOfPosition(d.File(), d.Pos())
 		fileName := relativePath(d.File().FileName(), cwd)
-		fmt.Fprintf(w, "%s(%d,%d): ", fileName, line+1, char+1)
+		fmt.Fprintf(w, "%s(%d,%d): ", fileName, line+1, int(char)+1)
 	}
 
 	cat := DiagnosticCategory(shimast.Diagnostic_Category(d))
@@ -119,13 +119,13 @@ func writePrettyDiagnostic(w io.Writer, d *ast.Diagnostic, cwd string) {
 	cat := DiagnosticCategory(shimast.Diagnostic_Category(d))
 
 	if d.File() != nil {
-		line, char := shimscanner.GetECMALineAndCharacterOfPosition(d.File(), d.Pos())
+		line, char := shimscanner.GetECMALineAndUTF16CharacterOfPosition(d.File(), d.Pos())
 		fileName := relativePath(d.File().FileName(), cwd)
 		// file:line:col colored like tsgo
 		fmt.Fprintf(w, "%s%s%s:%s%d%s:%s%d%s",
 			colorCyan, fileName, colorReset,
 			colorYellow, line+1, colorReset,
-			colorYellow, char+1, colorReset)
+			colorYellow, int(char)+1, colorReset)
 		fmt.Fprint(w, " - ")
 	}
 
@@ -146,11 +146,13 @@ func writePrettyDiagnostic(w io.Writer, d *ast.Diagnostic, cwd string) {
 // writeCodeSnippet writes the source code context with gutter line numbers and squiggles.
 // Mirrors tsgo's diagnosticwriter.writeCodeSnippet.
 func writeCodeSnippet(w io.Writer, file *ast.SourceFile, start int, length int, squiggleColor string) {
-	firstLine, firstLineChar := shimscanner.GetECMALineAndCharacterOfPosition(file, start)
-	lastLine, lastLineChar := shimscanner.GetECMALineAndCharacterOfPosition(file, start+length)
+	firstLine, firstLineCharU16 := shimscanner.GetECMALineAndUTF16CharacterOfPosition(file, start)
+	lastLine, lastLineCharU16 := shimscanner.GetECMALineAndUTF16CharacterOfPosition(file, start+length)
 	if length == 0 {
-		lastLineChar++
+		lastLineCharU16++
 	}
+	firstLineChar := int(firstLineCharU16)
+	lastLineChar := int(lastLineCharU16)
 
 	text := file.Text()
 	lastLineOfFile := shimscanner.GetECMALineOfPosition(file, len(text))
@@ -168,10 +170,10 @@ func writeCodeSnippet(w io.Writer, file *ast.SourceFile, start int, length int, 
 			i = lastLine - 1
 		}
 
-		lineStart := shimscanner.GetECMAPositionOfLineAndCharacter(file, i, 0)
+		lineStart := shimscanner.GetECMAPositionOfLineAndByteOffset(file, i, 0)
 		var lineEnd int
 		if i < lastLineOfFile {
-			lineEnd = shimscanner.GetECMAPositionOfLineAndCharacter(file, i+1, 0)
+			lineEnd = shimscanner.GetECMAPositionOfLineAndByteOffset(file, i+1, 0)
 		} else {
 			lineEnd = len(text)
 		}

@@ -27,10 +27,8 @@ func (c *Config) ValidateDetailed() *ValidationResult {
 		}
 	}
 
-	// OpenAPI
-	if c.OpenAPI.Output == "" {
-		result.Errors = append(result.Errors, "openapi.output: must not be empty")
-	} else {
+	// OpenAPI — output is optional (empty means "no OpenAPI generation")
+	if c.OpenAPI.Output != "" {
 		ext := filepath.Ext(c.OpenAPI.Output)
 		if ext != ".json" && ext != ".yaml" && ext != ".yml" {
 			result.Warnings = append(result.Warnings,

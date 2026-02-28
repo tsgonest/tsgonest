@@ -421,9 +421,14 @@ func (a *ControllerAnalyzer) analyzeMethod(methodNode *ast.Node, controllerPath 
 			continue
 		}
 
+		// Resolve the full origin (original name + module specifier) once per decorator.
+		// This handles aliased imports (import { Body as B }) and namespace imports
+		// (import * as nest from '...'; @nest.Get()).
+		origin := a.resolveDecoratorOrigin(dec)
+
 		decName := info.Name
-		if origName := a.resolveDecoratorOriginalName(dec); origName != "" {
-			decName = origName
+		if origin != nil && origin.Name != "" {
+			decName = origin.Name
 		}
 
 		switch decName {
@@ -520,7 +525,11 @@ func (a *ControllerAnalyzer) analyzeMethod(methodNode *ast.Node, controllerPath 
 			}
 			redirect = &RedirectInfo{URL: url, StatusCode: code}
 		case "Returns":
-			returnsDecoratorInfos = append(returnsDecoratorInfos, info)
+			// @Returns<T>() is only recognized from tsgonest packages to avoid
+			// collisions with other libraries that may define a decorator with the same name.
+			if origin != nil && IsTsgonestModule(origin.ModuleSpecifier) {
+				returnsDecoratorInfos = append(returnsDecoratorInfos, info)
+			}
 		}
 	}
 
@@ -535,6 +544,27 @@ func (a *ControllerAnalyzer) analyzeMethod(methodNode *ast.Node, controllerPath 
 
 	// Build full path
 	fullPath := CombinePaths(controllerPath, subPath)
+
+	// Set walker root context for diagnostic warnings (e.g., anonymous type args).
+	// This is the "consumer" shown in warnings so users know which route to fix.
+	{
+		ctx := operationID + "()"
+		if className != "" {
+			ctx = className + "." + ctx
+		}
+		if nameNode := methodDecl.Name(); nameNode != nil {
+			if sf := ast.GetSourceFileOfNode(methodNode); sf != nil {
+				line := shimscanner.GetECMALineOfPosition(sf, nameNode.Pos())
+				ctx = fmt.Sprintf("%s (%s:%d)", ctx, sourceFile, line+1)
+			} else if sourceFile != "" {
+				ctx = fmt.Sprintf("%s (%s)", ctx, sourceFile)
+			}
+		} else if sourceFile != "" {
+			ctx = fmt.Sprintf("%s (%s)", ctx, sourceFile)
+		}
+		a.walker.SetRootContext(ctx)
+	}
+	defer a.walker.SetRootContext("")
 
 	// Extract parameters, detecting @Res()/@Response() usage
 	var params []RouteParameter
@@ -677,9 +707,13 @@ func (a *ControllerAnalyzer) analyzeMethod(methodNode *ast.Node, controllerPath 
 		if className != "" {
 			warnLocation = className + "." + warnLocation
 		}
-		if sf := ast.GetSourceFileOfNode(methodNode); sf != nil {
-			line, _ := shimscanner.GetECMALineAndCharacterOfPosition(sf, methodNode.Pos())
-			warnLocation = fmt.Sprintf("%s (%s:%d)", warnLocation, sourceFile, line+1)
+		if nameNode := methodDecl.Name(); nameNode != nil {
+			if sf := ast.GetSourceFileOfNode(methodNode); sf != nil {
+				line := shimscanner.GetECMALineOfPosition(sf, nameNode.Pos())
+				warnLocation = fmt.Sprintf("%s (%s:%d)", warnLocation, sourceFile, line+1)
+			} else if sourceFile != "" {
+				warnLocation = fmt.Sprintf("%s (%s)", warnLocation, sourceFile)
+			}
 		} else if sourceFile != "" {
 			warnLocation = fmt.Sprintf("%s (%s)", warnLocation, sourceFile)
 		}
@@ -853,8 +887,13 @@ func (a *ControllerAnalyzer) warnUnsupportedRuntimeController(classNode *ast.Nod
 	}
 
 	loc := sourceFile
-	if sf := ast.GetSourceFileOfNode(classNode); sf != nil {
-		line, _ := shimscanner.GetECMALineAndCharacterOfPosition(sf, classNode.Pos())
+	if nameNode := classNode.AsClassDeclaration().Name(); nameNode != nil {
+		if sf := ast.GetSourceFileOfNode(classNode); sf != nil {
+			line := shimscanner.GetECMALineOfPosition(sf, nameNode.Pos())
+			loc = fmt.Sprintf("%s:%d", sourceFile, line+1)
+		}
+	} else if sf := ast.GetSourceFileOfNode(classNode); sf != nil {
+		line := shimscanner.GetECMALineOfPosition(sf, classNode.Pos())
 		loc = fmt.Sprintf("%s:%d", sourceFile, line+1)
 	}
 
@@ -868,8 +907,13 @@ func (a *ControllerAnalyzer) warnUnsupportedDynamicControllerPath(classNode *ast
 	}
 
 	loc := sourceFile
-	if sf := ast.GetSourceFileOfNode(classNode); sf != nil {
-		line, _ := shimscanner.GetECMALineAndCharacterOfPosition(sf, classNode.Pos())
+	if nameNode := classNode.AsClassDeclaration().Name(); nameNode != nil {
+		if sf := ast.GetSourceFileOfNode(classNode); sf != nil {
+			line := shimscanner.GetECMALineOfPosition(sf, nameNode.Pos())
+			loc = fmt.Sprintf("%s:%d", sourceFile, line+1)
+		}
+	} else if sf := ast.GetSourceFileOfNode(classNode); sf != nil {
+		line := shimscanner.GetECMALineOfPosition(sf, classNode.Pos())
 		loc = fmt.Sprintf("%s:%d", sourceFile, line+1)
 	}
 	if className != "" {
@@ -889,9 +933,13 @@ func (a *ControllerAnalyzer) warnUnsupportedDynamicRoutePath(methodNode *ast.Nod
 	if className != "" {
 		loc = className + "." + loc
 	}
-	if sf := ast.GetSourceFileOfNode(methodNode); sf != nil {
-		line, _ := shimscanner.GetECMALineAndCharacterOfPosition(sf, methodNode.Pos())
-		loc = fmt.Sprintf("%s (%s:%d)", loc, sourceFile, line+1)
+	if nameNode := methodNode.AsMethodDeclaration().Name(); nameNode != nil {
+		if sf := ast.GetSourceFileOfNode(methodNode); sf != nil {
+			line := shimscanner.GetECMALineOfPosition(sf, nameNode.Pos())
+			loc = fmt.Sprintf("%s (%s:%d)", loc, sourceFile, line+1)
+		} else if sourceFile != "" {
+			loc = fmt.Sprintf("%s (%s)", loc, sourceFile)
+		}
 	} else if sourceFile != "" {
 		loc = fmt.Sprintf("%s (%s)", loc, sourceFile)
 	}
@@ -1359,46 +1407,24 @@ func (a *ControllerAnalyzer) resolveDecoratorIn(dec *ast.Node) string {
 }
 
 // resolveDecoratorOriginalName resolves the original name of an imported decorator
-// when it has been aliased (e.g., `import { Body as NestBody }`).
-// Returns the original name if aliased, empty string otherwise.
+// when it has been aliased or accessed through a namespace.
+// Handles:
+//   - Aliased imports:   import { Body as NestBody } → returns "Body"
+//   - Namespace imports: import * as nest from '...' with @nest.Get() → returns "Get"
+//
+// Returns the original name if resolved, empty string otherwise.
 func (a *ControllerAnalyzer) resolveDecoratorOriginalName(dec *ast.Node) string {
-	if dec.Kind != ast.KindDecorator {
+	origin := ResolveDecoratorOrigin(dec, a.checker)
+	if origin == nil {
 		return ""
 	}
-	expr := dec.AsDecorator().Expression
+	return origin.Name
+}
 
-	// Get the callee expression (the identifier before the call)
-	var calleeNode *ast.Node
-	switch expr.Kind {
-	case ast.KindIdentifier:
-		calleeNode = expr
-	case ast.KindCallExpression:
-		calleeNode = expr.AsCallExpression().Expression
-	default:
-		return ""
-	}
-
-	if calleeNode == nil || calleeNode.Kind != ast.KindIdentifier {
-		return ""
-	}
-
-	sym := a.checker.GetSymbolAtLocation(calleeNode)
-	if sym == nil {
-		return ""
-	}
-
-	// Check if this is an alias symbol
-	if sym.Flags&ast.SymbolFlagsAlias == 0 {
-		return ""
-	}
-
-	// Resolve the aliased (original) symbol
-	original := a.checker.GetAliasedSymbol(sym)
-	if original == nil || original.Name == "" {
-		return ""
-	}
-
-	return original.Name
+// resolveDecoratorOrigin resolves the full origin (name + module specifier) of a decorator.
+// Convenience method that delegates to the package-level ResolveDecoratorOrigin.
+func (a *ControllerAnalyzer) resolveDecoratorOrigin(dec *ast.Node) *DecoratorOrigin {
+	return ResolveDecoratorOrigin(dec, a.checker)
 }
 
 // extractInTag reads JSDoc from a node (or its ancestor VariableStatement)
@@ -1545,9 +1571,9 @@ func (a *ControllerAnalyzer) inferReturnType(methodNode *ast.Node, className str
 			location = className + "." + location
 		}
 
-		// Get line number from the method node position
+		// Get line number from the method name position (not methodNode.Pos() which includes leading trivia/decorators)
 		if sf := ast.GetSourceFileOfNode(methodNode); sf != nil {
-			line, _ := shimscanner.GetECMALineAndCharacterOfPosition(sf, methodNode.Pos())
+			line := shimscanner.GetECMALineOfPosition(sf, nameNode.Pos())
 			// line is 0-indexed, display as 1-indexed
 			location = fmt.Sprintf("%s (%s:%d)", location, sourceFile, line+1)
 		} else if sourceFile != "" {

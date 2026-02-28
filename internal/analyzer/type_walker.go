@@ -50,6 +50,11 @@ type TypeWalker struct {
 	// warnedGenericNames tracks generic type base names that have already emitted
 	// a warning, to avoid flooding the output with duplicate messages.
 	warnedGenericNames map[string]bool
+	// currentRootContext identifies the top-level type currently being walked
+	// (e.g., "AbandonedCartResponse (/src/dto.ts:45)"). Set by callers via
+	// SetRootContext before invoking Walk*. Included in warnings so users can
+	// trace which of their types consumes a generic with anonymous args.
+	currentRootContext string
 }
 
 // NewTypeWalker creates a new TypeWalker.
@@ -75,21 +80,41 @@ func (w *TypeWalker) Registry() *metadata.TypeRegistry {
 	return w.registry
 }
 
+// SetRootContext sets the context for the type currently being walked
+// (e.g., "CreateUserDto (/src/users/dto.ts:12)"). Included in warnings
+// so users can trace which of their types is the consumer. Call with ""
+// to clear after the walk.
+func (w *TypeWalker) SetRootContext(ctx string) {
+	w.currentRootContext = ctx
+}
+
 // Warnings returns actionable diagnostics collected during type walking.
 func (w *TypeWalker) Warnings() []string {
 	return w.warnings
 }
 
-// warnAnonymousTypeArgs emits a deduplicated warning about a generic type
-// whose type arguments cannot be named for OpenAPI schema registration.
+// warnAnonymousTypeArgs emits a deduplicated warning when a generic type
+// is used with anonymous type arguments that can't be named for OpenAPI.
+// The warning points at the consumer type (currentRootName) so the user
+// knows which of their types needs attention.
 func (w *TypeWalker) warnAnonymousTypeArgs(baseName string) {
 	if w.warnedGenericNames[baseName] {
 		return
 	}
 	w.warnedGenericNames[baseName] = true
+
+	ctx := w.currentRootContext
+	if ctx == "" {
+		w.warnings = append(w.warnings, fmt.Sprintf(
+			"%s is used with anonymous type arguments that cannot be named in OpenAPI — the type will be inlined instead of a named $ref",
+			baseName,
+		))
+		return
+	}
+
 	w.warnings = append(w.warnings, fmt.Sprintf(
-		"generic type %s has anonymous type arguments that cannot be named in OpenAPI — consider creating a named type alias (e.g., type My%s = %s<...>)",
-		baseName, baseName, baseName,
+		"%s uses %s with anonymous type arguments — the type will be inlined in OpenAPI instead of a named $ref",
+		ctx, baseName,
 	))
 }
 

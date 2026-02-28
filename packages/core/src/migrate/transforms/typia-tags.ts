@@ -103,6 +103,21 @@ export function transformTypiaTags(file: SourceFile, report: MigrateReport): num
         count++;
       }
     }
+
+    // typia.json.assertParse<T>(input) → JSON.parse(input)
+    if (expr.startsWith("typia.json.assertParse") || expr.startsWith("typia.json.parse")) {
+      const args = node.getArguments();
+      if (args.length === 1) {
+        const argText = args[0].getText();
+        const line = node.getStartLineNumber();
+        node.replaceWithText(`JSON.parse(${argText})`);
+        report.todo(filePath, "typia",
+          "Replaced typia.json.assertParse() with JSON.parse(). Add manual validation if needed.",
+          line,
+        );
+        count++;
+      }
+    }
   });
 
   // 4. Remove default typia import if no longer referenced

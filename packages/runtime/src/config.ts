@@ -27,6 +27,20 @@ export interface OpenAPISecurityScheme {
   description?: string;
 }
 
+/** Tag with an optional description for the OpenAPI document. */
+export interface OpenAPITag {
+  name: string;
+  description?: string;
+}
+
+/** TypeScript SDK generation settings. */
+export interface SDKConfig {
+  /** Output directory for generated SDK (default: "./sdk"). */
+  output?: string;
+  /** Path to OpenAPI JSON input (defaults to openapi.output). */
+  input?: string;
+}
+
 /** API versioning settings. */
 export interface VersioningConfig {
   /** Versioning strategy: "URI" (default), "HEADER", "MEDIA_TYPE", "CUSTOM". */
@@ -55,15 +69,24 @@ export interface TsgonestConfig {
     validation?: boolean;
     /** Generate serialization companion files. */
     serialization?: boolean;
+    /** Generate Standard Schema v1 wrappers for 60+ framework interop. */
+    standardSchema?: boolean;
+    /**
+     * Controls type checking on response serialization.
+     * - "safe" (default): full validation before serialization, throws with detailed errors
+     * - "guard": lightweight boolean type guard check before serialization
+     * - "none": no runtime check, serialize directly (maximum performance)
+     */
+    responseTypeCheck?: 'safe' | 'guard' | 'none';
     /** Glob patterns for source files to generate companions for (e.g., ["src/**\/*.dto.ts"]). */
     include?: string[];
     /** Type name patterns to exclude from codegen (e.g., "Legacy*", "SomeInternalDto"). */
     exclude?: string[];
   };
 
-  /** OpenAPI document generation settings. */
+  /** OpenAPI document generation settings. Omit or set output to "" to disable. */
   openapi?: {
-    /** Output path for the generated OpenAPI document. */
+    /** Output path for the generated OpenAPI document. Empty string disables generation. */
     output?: string;
     /** API title for the OpenAPI info section. */
     title?: string;
@@ -79,7 +102,20 @@ export interface TsgonestConfig {
     servers?: OpenAPIServer[];
     /** Named security schemes for the OpenAPI document. */
     securitySchemes?: Record<string, OpenAPISecurityScheme>;
+    /**
+     * Global security requirements applied to all operations.
+     * Routes with @public JSDoc opt out.
+     * @example [{ bearer: [] }]
+     */
+    security?: Array<Record<string, string[]>>;
+    /** Tag descriptions for the OpenAPI document. Tags referenced by controllers are auto-collected. */
+    tags?: OpenAPITag[];
+    /** URL to the API terms of service. */
+    termsOfService?: string;
   };
+
+  /** TypeScript SDK generation settings. */
+  sdk?: SDKConfig;
 
   /** NestJS-specific settings. */
   nestjs?: {

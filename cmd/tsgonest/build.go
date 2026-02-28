@@ -216,7 +216,7 @@ func runBuild(args []string) int {
 
 	// Step 2: Create program with the (possibly modified) config.
 	programStart := time.Now()
-	program, programDiags, err := compiler.CreateProgramFromConfig(true, parsedConfig, host)
+	program, programDiags, err := compiler.CreateProgramFromConfig(false, parsedConfig, host)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		return 1
@@ -316,34 +316,12 @@ func runBuild(args []string) int {
 		// Build source→output map (needed before emit for companion path computation)
 		sourceToOutput := buildSourceToOutputMapFromConfig(program, opts.RootDir, opts.OutDir)
 
-		// ── Pre-register type aliases ────────────────────────────────────
-		// Walk all type aliases with WalkNamedType before controller analysis.
-		// This populates the typeIdToName cache so that when the controller
-		// analyzer walks return types, sub-field type aliases are resolved
-		// to KindRef (instead of being inlined as anonymous objects).
-		// Without this, types like Address used as properties of
-		// UserResponse would be inlined rather than extracted as
-		// named $ref schemas in OpenAPI.
-		for _, sf := range program.GetSourceFiles() {
-			if sf.IsDeclarationFile {
-				continue
-			}
-			for _, stmt := range sf.Statements.Nodes {
-				if stmt.Kind == ast.KindTypeAliasDeclaration {
-					decl := stmt.AsTypeAliasDeclaration()
-					// Skip generic type aliases (e.g., TypedOmit<T, K>, Pick<T, K>).
-					// Their resolved types are abstract and produce empty/incorrect schemas.
-					if decl.TypeParameters != nil {
-						continue
-					}
-					name := decl.Name().Text()
-					resolvedType := shimchecker.Checker_getTypeFromTypeNode(sharedChecker, decl.Type)
-					sharedWalker.WalkNamedType(name, resolvedType)
-				}
-			}
-		}
-
 		// ── Step 1: Analyze controllers to discover needed types ─────────
+		// No blanket pre-registration pass — the walker discovers and registers
+		// sub-field type aliases on-the-fly via Type_alias recovery (depth > 1).
+		// This keeps the walk scope controller-driven: only types reachable from
+		// the API surface are walked, preventing transitive crawls into
+		// node_modules (e.g., Zod, AI SDK, React types).
 		controllerStart := time.Now()
 		if needControllers {
 			ca := analyzer.NewControllerAnalyzerWithWalker(program, sharedChecker, sharedWalker)
@@ -372,7 +350,7 @@ func runBuild(args []string) int {
 			// When transforms.include is set, generate for ALL matching types (nil = no filter)
 			neededTypes = nil
 		} else {
-			neededTypes = collectNeededTypes(controllers, markerCalls)
+			neededTypes = collectNeededTypes(controllers, markerCalls, cfg.Transforms.Exclude)
 		}
 
 		// Collect query/param DTO type names that need coercion

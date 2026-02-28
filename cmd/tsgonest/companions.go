@@ -11,6 +11,7 @@ import (
 	"github.com/microsoft/typescript-go/shim/ast"
 	shimchecker "github.com/microsoft/typescript-go/shim/checker"
 	shimcompiler "github.com/microsoft/typescript-go/shim/compiler"
+	shimscanner "github.com/microsoft/typescript-go/shim/scanner"
 	"github.com/tsgonest/tsgonest/internal/analyzer"
 	"github.com/tsgonest/tsgonest/internal/codegen"
 	"github.com/tsgonest/tsgonest/internal/config"
@@ -38,7 +39,7 @@ func collectCoercionTypes(controllers []analyzer.ControllerInfo) map[string]bool
 	return types
 }
 
-func collectNeededTypes(controllers []analyzer.ControllerInfo, markerCalls map[string][]rewrite.MarkerCall) map[string]bool {
+func collectNeededTypes(controllers []analyzer.ControllerInfo, markerCalls map[string][]rewrite.MarkerCall, excludePatterns []string) map[string]bool {
 	needed := make(map[string]bool)
 
 	// Types from controller routes:
@@ -74,6 +75,15 @@ func collectNeededTypes(controllers []analyzer.ControllerInfo, markerCalls map[s
 		for _, call := range calls {
 			if call.TypeName != "" {
 				needed[call.TypeName] = true
+			}
+		}
+	}
+
+	// Filter out excluded type name patterns
+	if len(excludePatterns) > 0 {
+		for name := range needed {
+			if analyzer.MatchesTypeNamePattern(name, excludePatterns) {
+				delete(needed, name)
 			}
 		}
 	}
@@ -155,29 +165,42 @@ func generateCompanionsInMemory(program *shimcompiler.Program, cfg *config.Confi
 			case ast.KindTypeAliasDeclaration:
 				decl := stmt.AsTypeAliasDeclaration()
 				name := decl.Name().Text()
-				// Always walk type aliases with WalkNamedType so they are
-				// registered in the TypeRegistry and typeIdToName cache.
-				// This ensures sub-field type aliases encountered during
-				// property walking of other types resolve to $refs instead
-				// of being inlined.
-				resolvedType := shimchecker.Checker_getTypeFromTypeNode(checker, decl.Type)
-				m := walker.WalkNamedType(name, resolvedType)
-				// Only collect for companion generation if needed.
-				if neededTypes == nil || neededTypes[name] {
-					types[name] = &m
+				// Skip types matching exclude patterns
+				if len(cfg.Transforms.Exclude) > 0 && analyzer.MatchesTypeNamePattern(name, cfg.Transforms.Exclude) {
+					continue
 				}
-			case ast.KindInterfaceDeclaration:
-				decl := stmt.AsInterfaceDeclaration()
-				name := decl.Name().Text()
+				// Only walk types referenced by controllers or marker calls.
+				// Sub-field type aliases (e.g., Address inside UserDto) are
+				// discovered and registered on-the-fly by the walker's
+				// Type_alias recovery at depth > 1 — no blanket pre-walk needed.
 				if neededTypes != nil && !neededTypes[name] {
 					continue
 				}
+				line := shimscanner.GetECMALineOfPosition(sf, decl.Name().Pos())
+				walker.SetRootContext(fmt.Sprintf("%s (%s:%d)", name, sf.FileName(), line+1))
+				resolvedType := shimchecker.Checker_getTypeFromTypeNode(checker, decl.Type)
+				m := walker.WalkNamedType(name, resolvedType)
+				walker.SetRootContext("")
+				types[name] = &m
+			case ast.KindInterfaceDeclaration:
+				decl := stmt.AsInterfaceDeclaration()
+				name := decl.Name().Text()
+				// Skip types matching exclude patterns
+				if len(cfg.Transforms.Exclude) > 0 && analyzer.MatchesTypeNamePattern(name, cfg.Transforms.Exclude) {
+					continue
+				}
+				if neededTypes != nil && !neededTypes[name] {
+					continue
+				}
+				line := shimscanner.GetECMALineOfPosition(sf, decl.Name().Pos())
+				walker.SetRootContext(fmt.Sprintf("%s (%s:%d)", name, sf.FileName(), line+1))
 				sym := checker.GetSymbolAtLocation(decl.Name())
 				if sym != nil {
 					resolvedType := shimchecker.Checker_getDeclaredTypeOfSymbol(checker, sym)
 					m := walker.WalkType(resolvedType)
 					types[name] = &m
 				}
+				walker.SetRootContext("")
 			}
 		}
 
@@ -215,8 +238,9 @@ func generateCompanionsInMemory(program *shimcompiler.Program, cfg *config.Confi
 	codegenStart := time.Now()
 	registry := walker.Registry()
 	companionOpts := codegen.CompanionOptions{
-		ModuleFormat:   moduleFormat,
-		StandardSchema: cfg.Transforms.StandardSchema,
+		ModuleFormat:      moduleFormat,
+		StandardSchema:    cfg.Transforms.StandardSchema,
+		ResponseTypeCheck: cfg.Transforms.ResponseTypeCheck,
 	}
 
 	type codegenResult struct {
