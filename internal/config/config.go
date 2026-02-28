@@ -276,14 +276,13 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("controllers.include must have at least one pattern")
 	}
 
-	if c.OpenAPI.Output == "" {
-		return fmt.Errorf("openapi.output must not be empty")
-	}
-
-	// Ensure the output path has a .json extension
-	ext := filepath.Ext(c.OpenAPI.Output)
-	if ext != ".json" {
-		return fmt.Errorf("openapi.output must have a .json extension, got %q", ext)
+	// OpenAPI output is optional — empty string means "no OpenAPI generation".
+	// When set, ensure the output path has a .json extension.
+	if c.OpenAPI.Output != "" {
+		ext := filepath.Ext(c.OpenAPI.Output)
+		if ext != ".json" {
+			return fmt.Errorf("openapi.output must have a .json extension, got %q", ext)
+		}
 	}
 
 	// Validate responseTypeCheck

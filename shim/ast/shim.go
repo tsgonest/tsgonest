@@ -234,6 +234,12 @@ type ForStatement = ast.ForStatement
 type FunctionDeclaration = ast.FunctionDeclaration
 type FunctionDeclarationNode = ast.FunctionDeclarationNode
 type FunctionExpression = ast.FunctionExpression
+type FunctionFlags = ast.FunctionFlags
+const FunctionFlagsAsync = ast.FunctionFlagsAsync
+const FunctionFlagsAsyncGenerator = ast.FunctionFlagsAsyncGenerator
+const FunctionFlagsGenerator = ast.FunctionFlagsGenerator
+const FunctionFlagsInvalid = ast.FunctionFlagsInvalid
+const FunctionFlagsNormal = ast.FunctionFlagsNormal
 type FunctionLikeBase = ast.FunctionLikeBase
 type FunctionLikeDeclaration = ast.FunctionLikeDeclaration
 type FunctionLikeWithBodyBase = ast.FunctionLikeWithBodyBase
@@ -298,6 +304,8 @@ func GetExternalModuleName(node *ast.Node) *ast.Expression
 func GetFirstConstructorWithBody(node *ast.Node) *ast.Node
 //go:linkname GetFirstIdentifier github.com/microsoft/typescript-go/internal/ast.GetFirstIdentifier
 func GetFirstIdentifier(node *ast.Node) *ast.Node
+//go:linkname GetFunctionFlags github.com/microsoft/typescript-go/internal/ast.GetFunctionFlags
+func GetFunctionFlags(node *ast.Node) ast.FunctionFlags
 //go:linkname GetHeritageClause github.com/microsoft/typescript-go/internal/ast.GetHeritageClause
 func GetHeritageClause(node *ast.Node, kind ast.Kind) *ast.Node
 //go:linkname GetHeritageElements github.com/microsoft/typescript-go/internal/ast.GetHeritageElements
@@ -1193,6 +1201,8 @@ func IsStringOrNumericLiteralLike(node *ast.Node) bool
 func IsStringTextContainingNode(node *ast.Node) bool
 //go:linkname IsSuperCall github.com/microsoft/typescript-go/internal/ast.IsSuperCall
 func IsSuperCall(node *ast.Node) bool
+//go:linkname IsSuperProperty github.com/microsoft/typescript-go/internal/ast.IsSuperProperty
+func IsSuperProperty(node *ast.Node) bool
 //go:linkname IsSwitchStatement github.com/microsoft/typescript-go/internal/ast.IsSwitchStatement
 func IsSwitchStatement(node *ast.Node) bool
 //go:linkname IsSyntaxList github.com/microsoft/typescript-go/internal/ast.IsSyntaxList

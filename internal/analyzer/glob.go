@@ -34,6 +34,18 @@ func MatchesGlob(filePath string, includePatterns []string, excludePatterns []st
 	return false
 }
 
+// MatchesTypeNamePattern checks if a type name matches any of the given patterns.
+// Patterns support basic glob: * matches any sequence, ? matches one character.
+// For example, "Legacy*" matches "LegacyUser", "LegacyOrder", etc.
+func MatchesTypeNamePattern(typeName string, patterns []string) bool {
+	for _, pattern := range patterns {
+		if matched, _ := filepath.Match(pattern, typeName); matched {
+			return true
+		}
+	}
+	return false
+}
+
 // globMatch matches a path against a glob pattern with ** support.
 // The matching is done against suffixes of the path — if the pattern
 // is "src/**/*.controller.ts", it matches any file under a "src/" directory

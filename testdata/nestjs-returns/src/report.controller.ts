@@ -18,14 +18,8 @@ function HttpCode(code: number): MethodDecorator {
   return (target, key, descriptor) => descriptor;
 }
 
-// Mock @Returns decorator (simulates @tsgonest/runtime)
-function Returns<T>(options?: {
-  contentType?: string;
-  description?: string;
-  status?: number;
-}): MethodDecorator {
-  return (target, key, descriptor) => descriptor;
-}
+// Import @Returns from @tsgonest/runtime (resolved via ambient declare module in tsgonest-runtime.d.ts)
+import { Returns } from "@tsgonest/runtime";
 
 import type { ReportResponse, ReportSummary } from "./report.dto";
 

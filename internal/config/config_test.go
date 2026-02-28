@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -132,8 +133,20 @@ func TestValidateEmptyOpenAPIOutput(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.OpenAPI.Output = ""
 
-	if err := cfg.Validate(); err == nil {
-		t.Fatal("expected validation error for empty openapi output")
+	// Empty openapi.output is valid — it means "no OpenAPI generation"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("unexpected validation error for empty openapi output: %v", err)
+	}
+}
+
+func TestValidateCompanionsOnlyNoOpenAPI(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.OpenAPI.Output = ""
+	cfg.Transforms.Validation = true
+	cfg.Transforms.Serialization = true
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("companions-only config (no OpenAPI) should be valid: %v", err)
 	}
 }
 
@@ -433,6 +446,114 @@ func TestLoadTS_InvalidConfig(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "controllers.include") {
 		t.Fatalf("expected validation error about controllers.include, got: %v", err)
+	}
+}
+
+func TestLoadConfig_TransformsExclude(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "tsgonest.config.json")
+	content := `{
+		"controllers": {
+			"include": ["src/**/*.controller.ts"]
+		},
+		"transforms": {
+			"validation": true,
+			"serialization": true,
+			"exclude": ["Legacy*", "Deprecated*"]
+		},
+		"openapi": {
+			"output": "dist/openapi.json"
+		}
+	}`
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(cfg.Transforms.Exclude) != 2 {
+		t.Fatalf("expected 2 exclude patterns, got %d", len(cfg.Transforms.Exclude))
+	}
+	if cfg.Transforms.Exclude[0] != "Legacy*" {
+		t.Errorf("expected first exclude pattern 'Legacy*', got %q", cfg.Transforms.Exclude[0])
+	}
+	if cfg.Transforms.Exclude[1] != "Deprecated*" {
+		t.Errorf("expected second exclude pattern 'Deprecated*', got %q", cfg.Transforms.Exclude[1])
+	}
+}
+
+func TestLoadConfig_ResponseTypeCheck(t *testing.T) {
+	for _, mode := range []string{"safe", "guard", "none"} {
+		t.Run(mode, func(t *testing.T) {
+			dir := t.TempDir()
+			configPath := filepath.Join(dir, "tsgonest.config.json")
+			content := fmt.Sprintf(`{
+				"controllers": { "include": ["src/**/*.controller.ts"] },
+				"transforms": { "validation": true, "serialization": true, "responseTypeCheck": %q },
+				"openapi": { "output": "dist/openapi.json" }
+			}`, mode)
+			if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			cfg, err := Load(configPath)
+			if err != nil {
+				t.Fatalf("unexpected error for mode %q: %v", mode, err)
+			}
+			if cfg.Transforms.ResponseTypeCheck != mode {
+				t.Errorf("expected responseTypeCheck=%q, got %q", mode, cfg.Transforms.ResponseTypeCheck)
+			}
+		})
+	}
+
+	// Invalid mode should fail
+	t.Run("invalid", func(t *testing.T) {
+		dir := t.TempDir()
+		configPath := filepath.Join(dir, "tsgonest.config.json")
+		content := `{
+			"controllers": { "include": ["src/**/*.controller.ts"] },
+			"transforms": { "validation": true, "serialization": true, "responseTypeCheck": "invalid" },
+			"openapi": { "output": "dist/openapi.json" }
+		}`
+		if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		_, err := Load(configPath)
+		if err == nil {
+			t.Fatal("expected validation error for invalid responseTypeCheck")
+		}
+		if !strings.Contains(err.Error(), "responseTypeCheck") {
+			t.Fatalf("expected error about responseTypeCheck, got: %v", err)
+		}
+	})
+}
+
+func TestLoadConfig_SDKConfig(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "tsgonest.config.json")
+	content := `{
+		"controllers": { "include": ["src/**/*.controller.ts"] },
+		"openapi": { "output": "dist/openapi.json" },
+		"sdk": { "output": "./sdk", "input": "external-openapi.json" }
+	}`
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if cfg.SDK.Output != "./sdk" {
+		t.Errorf("expected sdk.output='./sdk', got %q", cfg.SDK.Output)
+	}
+	if cfg.SDK.Input != "external-openapi.json" {
+		t.Errorf("expected sdk.input='external-openapi.json', got %q", cfg.SDK.Input)
 	}
 }
 
