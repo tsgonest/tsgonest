@@ -44,6 +44,14 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 		isArray    bool
 	}
 
+	// primitiveReturnTransform holds inline serialization info for primitive return types.
+	// Unlike returnTransform (which uses companion files), primitives are serialized inline.
+	type primitiveReturnTransform struct {
+		methodName string
+		atomic     string // "string", "number", or "boolean"
+		nullable   bool
+	}
+
 	// scalarCoercion holds info for inline number/boolean coercion on named scalar params
 	type scalarCoercion struct {
 		methodName string
@@ -53,6 +61,7 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 
 	var validations []bodyValidation
 	var transforms []returnTransform
+	var primitiveTransforms []primitiveReturnTransform
 	var scalarCoercions []scalarCoercion
 	var sseTransforms []sseTransform
 	neededTypes := make(map[string]bool)
@@ -178,6 +187,19 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 			if route.IsSSE {
 				continue
 			}
+
+			// Check for primitive return types first — these are serialized inline
+			// (no companion file needed). This handles string, number, boolean returns.
+			primitiveAtomic, primitiveNullable := resolvePrimitiveReturn(&route.ReturnType)
+			if primitiveAtomic != "" {
+				primitiveTransforms = append(primitiveTransforms, primitiveReturnTransform{
+					methodName: route.MethodName,
+					atomic:     primitiveAtomic,
+					nullable:   primitiveNullable,
+				})
+				continue
+			}
+
 			returnTypeName := resolveReturnTypeName(&route.ReturnType)
 			if returnTypeName == "" {
 				continue
@@ -196,7 +218,7 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 		}
 	}
 
-	if len(validations) == 0 && len(transforms) == 0 && len(scalarCoercions) == 0 && len(sseTransforms) == 0 {
+	if len(validations) == 0 && len(transforms) == 0 && len(primitiveTransforms) == 0 && len(scalarCoercions) == 0 && len(sseTransforms) == 0 {
 		return text
 	}
 
@@ -233,6 +255,11 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 			stringifyFunc := companionFuncName("stringify", tr.typeName)
 			text = wrapReturnsInMethod(text, tr.methodName, stringifyFunc, false)
 		}
+	}
+
+	// Wrap return statements with inline primitive serialization
+	for _, pt := range primitiveTransforms {
+		text = wrapPrimitiveReturns(text, pt.methodName, pt.atomic, pt.nullable)
 	}
 
 	// Inject SSE transform metadata after method-level __decorate calls
@@ -273,8 +300,8 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 	}
 	importLines := companionImports(markerCalls, companionMap, outputFile, moduleFormat)
 
-	// If we have response stringify transforms, inject the serialize interceptor
-	if len(transforms) > 0 {
+	// If we have response stringify transforms (DTO or primitive), inject the serialize interceptor
+	if len(transforms) > 0 || len(primitiveTransforms) > 0 {
 		if moduleFormat == "cjs" {
 			importLines = append(importLines, `const { TsgonestSerializeInterceptor } = require("@tsgonest/runtime");`)
 		} else {
@@ -326,7 +353,8 @@ func resolveParamTypeName(param *analyzer.RouteParameter) string {
 
 // resolveReturnTypeName extracts the DTO type name from a route's return type metadata.
 // For arrays, it returns the element type name.
-// Returns empty string for primitive/any/void types.
+// For primitives (string, number, boolean), returns a synthetic "__type" name.
+// Returns empty string for any/void types.
 func resolveReturnTypeName(m *metadata.Metadata) string {
 	switch m.Kind {
 	case metadata.KindRef:
@@ -337,8 +365,67 @@ func resolveReturnTypeName(m *metadata.Metadata) string {
 		if m.ElementType != nil {
 			return resolveReturnTypeName(m.ElementType)
 		}
+	case metadata.KindAtomic:
+		if m.Atomic == "string" || m.Atomic == "number" || m.Atomic == "boolean" {
+			return "__" + m.Atomic
+		}
 	}
 	return ""
+}
+
+// resolvePrimitiveReturn checks if a return type is a primitive that needs inline serialization.
+// Returns the atomic type name and whether it's nullable.
+// Returns ("", false) if not a primitive return type.
+func resolvePrimitiveReturn(m *metadata.Metadata) (atomic string, nullable bool) {
+	switch m.Kind {
+	case metadata.KindAtomic:
+		if m.Atomic == "string" || m.Atomic == "number" || m.Atomic == "boolean" {
+			return m.Atomic, m.Nullable
+		}
+	case metadata.KindUnion:
+		// Check if it's a union of atomics of the same type (e.g., nullable atomic)
+		var foundAtomic string
+		nullable := m.Nullable
+		for _, member := range m.UnionMembers {
+			if member.Kind == metadata.KindAtomic {
+				if foundAtomic == "" {
+					foundAtomic = member.Atomic
+				} else if foundAtomic != member.Atomic {
+					return "", false // mixed atomic types
+				}
+			} else if member.Kind == metadata.KindLiteral {
+				// Literal unions like 200 | 404 | 500 — treat as number
+				switch member.LiteralValue.(type) {
+				case float64, int, int64:
+					if foundAtomic == "" {
+						foundAtomic = "number"
+					} else if foundAtomic != "number" {
+						return "", false
+					}
+				case string:
+					if foundAtomic == "" {
+						foundAtomic = "string"
+					} else if foundAtomic != "string" {
+						return "", false
+					}
+				case bool:
+					if foundAtomic == "" {
+						foundAtomic = "boolean"
+					} else if foundAtomic != "boolean" {
+						return "", false
+					}
+				default:
+					return "", false
+				}
+			} else {
+				return "", false // non-primitive member
+			}
+		}
+		if foundAtomic != "" {
+			return foundAtomic, nullable
+		}
+	}
+	return "", false
 }
 
 // findBodyParamName finds the parameter name for an unnamed @Body() decorator
@@ -783,4 +870,164 @@ func injectSSETransforms(text string, st sseTransform) string {
 	text = text[:insertPos] + metadataCall + text[insertPos:]
 
 	return text
+}
+
+// wrapPrimitiveReturns wraps return statements in a method with inline primitive
+// JSON serialization. Unlike DTO return transforms which use companion files,
+// primitive types (string, number, boolean) are serialized inline:
+//   - string:  return JSON.stringify(await EXPR);
+//   - number:  return "" + (await EXPR);
+//   - boolean: return (await EXPR) ? "true" : "false";
+// With nullable wrapping when needed.
+func wrapPrimitiveReturns(text string, methodName string, atomic string, nullable bool) string {
+	bodyStart, bodyEnd, found := findMethodBody(text, methodName)
+	if !found {
+		return text
+	}
+
+	// Ensure the method is async
+	methodDecl := text[:bodyStart]
+	isAsync := isMethodAsync(methodDecl, methodName)
+	if !isAsync {
+		text = makeMethodAsync(text, methodName)
+		bodyStart, bodyEnd, found = findMethodBody(text, methodName)
+		if !found {
+			return text
+		}
+	}
+
+	body := text[bodyStart:bodyEnd]
+	newBody := wrapPrimitiveReturnsInBody(body, atomic, nullable)
+	if body == newBody {
+		return text
+	}
+
+	return text[:bodyStart] + newBody + text[bodyEnd:]
+}
+
+// wrapPrimitiveReturnsInBody wraps top-level return statements in a method body
+// with inline primitive serialization expressions.
+func wrapPrimitiveReturnsInBody(body string, atomic string, nullable bool) string {
+	var result strings.Builder
+	i := 0
+	depth := 0
+
+	for i < len(body) {
+		ch := body[i]
+
+		if ch == '{' {
+			depth++
+			result.WriteByte(ch)
+			i++
+			continue
+		}
+		if ch == '}' {
+			depth--
+			result.WriteByte(ch)
+			i++
+			continue
+		}
+		if ch == '"' || ch == '\'' || ch == '`' {
+			end := skipStringLiteral(body, i)
+			result.WriteString(body[i : end+1])
+			i = end + 1
+			continue
+		}
+		if ch == '/' && i+1 < len(body) {
+			if body[i+1] == '/' {
+				start := i
+				for i < len(body) && body[i] != '\n' {
+					i++
+				}
+				result.WriteString(body[start:i])
+				continue
+			}
+			if body[i+1] == '*' {
+				start := i
+				i += 2
+				for i+1 < len(body) {
+					if body[i] == '*' && body[i+1] == '/' {
+						i += 2
+						break
+					}
+					i++
+				}
+				result.WriteString(body[start:i])
+				continue
+			}
+		}
+
+		if depth == 0 && ch == 'r' && i+6 <= len(body) && body[i:i+6] == "return" {
+			if i > 0 && isIdentChar(body[i-1]) {
+				result.WriteByte(ch)
+				i++
+				continue
+			}
+			afterReturn := i + 6
+			if afterReturn < len(body) && isIdentChar(body[afterReturn]) {
+				result.WriteByte(ch)
+				i++
+				continue
+			}
+
+			exprStart := afterReturn
+			for exprStart < len(body) && (body[exprStart] == ' ' || body[exprStart] == '\t' || body[exprStart] == '\n' || body[exprStart] == '\r') {
+				exprStart++
+			}
+
+			if exprStart < len(body) && body[exprStart] == ';' {
+				result.WriteString(body[i : exprStart+1])
+				i = exprStart + 1
+				continue
+			}
+
+			exprEnd := findExpressionEnd(body, exprStart)
+			if exprEnd < 0 {
+				result.WriteByte(ch)
+				i++
+				continue
+			}
+
+			expr := strings.TrimSpace(body[exprStart:exprEnd])
+			if expr == "" {
+				result.WriteString(body[i : exprEnd+1])
+				i = exprEnd + 1
+				continue
+			}
+
+			// Write the wrapped return with inline primitive serialization
+			result.WriteString("return ")
+			awaitExpr := "(await " + expr + ")"
+			if nullable {
+				result.WriteString("((_v) => _v == null ? \"null\" : ")
+				result.WriteString(primitiveSerializeExpr("_v", atomic))
+				result.WriteString(")")
+				result.WriteString(awaitExpr)
+			} else {
+				result.WriteString(primitiveSerializeExpr(awaitExpr, atomic))
+			}
+			result.WriteByte(';')
+			i = exprEnd + 1
+			continue
+		}
+
+		result.WriteByte(ch)
+		i++
+	}
+
+	return result.String()
+}
+
+// primitiveSerializeExpr returns the inline JS expression to serialize a primitive value.
+func primitiveSerializeExpr(expr string, atomic string) string {
+	switch atomic {
+	case "string":
+		return "JSON.stringify(" + expr + ")"
+	case "number":
+		return "(Number.isFinite(" + expr + ") ? \"\" + " + expr + " : \"null\")"
+	case "boolean":
+		return expr + " ? \"true\" : \"false\""
+	default:
+		return "JSON.stringify(" + expr + ")"
+	}
 }

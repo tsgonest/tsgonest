@@ -113,6 +113,14 @@ func parseTsgoFlags(tsgoArgs []string) (*core.CompilerOptions, []string) {
 //	1 = diagnostics present, outputs generated
 //	2 = diagnostics present, outputs skipped (e.g. noEmitOnError)
 func runBuild(args []string) int {
+	return runBuildWithIncr(args, nil, nil)
+}
+
+// runBuildWithIncr is the extended build function for dev mode. It accepts an optional
+// old incremental program for in-memory reuse, bypassing .tsbuildinfo disk reads.
+// If outIncrProgram is non-nil, the created incremental program is stored there for
+// reuse on the next rebuild cycle.
+func runBuildWithIncr(args []string, oldIncrProgram *shimincremental.Program, outIncrProgram **shimincremental.Program) int {
 	flags := parseBuildArgs(args)
 
 	configPath := flags.ConfigPath
@@ -199,17 +207,13 @@ func runBuild(args []string) int {
 
 	// Clean output directory if requested (using parsed OutDir, no re-parsing needed)
 	if clean && opts.OutDir != "" {
-		if cleanErr := cleanDir(opts.OutDir); cleanErr != nil {
+		tsbuildInfoPath := strings.TrimSuffix(resolvedTsconfigPath, ".json") + ".tsbuildinfo"
+		// Smart clean: preserve .tsbuildinfo so incremental compilation can reuse it.
+		// Only the output files and post-processing cache need to be wiped.
+		if cleanErr := smartCleanDir(opts.OutDir, tsbuildInfoPath); cleanErr != nil {
 			fmt.Fprintf(os.Stderr, "warning: clean: %v\n", cleanErr)
 		}
-		// Also delete the .tsbuildinfo file — otherwise the incremental program
-		// thinks nothing changed and won't re-emit the JS files we just deleted.
-		tsbuildInfoPath := strings.TrimSuffix(resolvedTsconfigPath, ".json") + ".tsbuildinfo"
-		if _, err := os.Stat(tsbuildInfoPath); err == nil {
-			os.Remove(tsbuildInfoPath)
-			fmt.Fprintf(os.Stderr, "removed %s\n", filepath.Base(tsbuildInfoPath))
-		}
-		// Also delete the post-processing cache — ensures full rebuild
+		// Delete the post-processing cache — ensures full companion/OpenAPI regeneration
 		buildcache.Delete(postCachePath)
 	}
 	timing.TSConfig = time.Since(tsconfigStart)
@@ -246,7 +250,11 @@ func runBuild(args []string) int {
 	if isIncremental {
 		// Incremental mode: wrap program with incremental state.
 		// ReadBuildInfoProgram reads prior state from .tsbuildinfo (if it exists).
-		incrProgram = compiler.CreateIncrementalProgram(program, nil, host, parsedConfig)
+		incrProgram = compiler.CreateIncrementalProgram(program, oldIncrProgram, host, parsedConfig)
+		// Store the incremental program for dev-mode reuse across rebuilds
+		if outIncrProgram != nil {
+			*outIncrProgram = incrProgram
+		}
 		fmt.Fprintln(os.Stderr, "incremental build enabled")
 
 		diagStart := time.Now()
@@ -611,7 +619,17 @@ func runBuild(args []string) int {
 					fmt.Fprintln(os.Stderr, "SDK up to date, skipping generation")
 					return
 				}
-				if err := sdkgen.Generate(sdkInput, sdkOutput); err != nil {
+				// Build SDK options from config
+			var sdkOpts *sdkgen.GenerateOptions
+			if cfg != nil {
+				sdkOpts = &sdkgen.GenerateOptions{
+					GlobalPrefix: cfg.NestJS.GlobalPrefix,
+				}
+				if cfg.NestJS.Versioning != nil && cfg.NestJS.Versioning.Prefix != "" {
+					sdkOpts.VersionPrefix = cfg.NestJS.Versioning.Prefix
+				}
+			}
+			if err := sdkgen.Generate(sdkInput, sdkOutput, sdkOpts); err != nil {
 					sdkErr = err
 					return
 				}
@@ -673,6 +691,37 @@ func cleanDir(outDir string) error {
 
 	fmt.Fprintf(os.Stderr, "cleaning output directory: %s\n", outDir)
 	return os.RemoveAll(outDir)
+}
+
+// smartCleanDir removes all files in outDir but preserves .tsbuildinfo,
+// so incremental compilation can still reuse cached data from the previous build.
+func smartCleanDir(outDir string, tsbuildInfoPath string) error {
+	if outDir == "/" || outDir == "." || outDir == ".." {
+		return fmt.Errorf("refusing to clean dangerous path: %s", outDir)
+	}
+
+	if _, err := os.Stat(outDir); os.IsNotExist(err) {
+		return nil
+	}
+
+	fmt.Fprintf(os.Stderr, "cleaning output directory: %s (preserving .tsbuildinfo)\n", outDir)
+
+	entries, err := os.ReadDir(outDir)
+	if err != nil {
+		return err
+	}
+	absTsbuildInfo, _ := filepath.Abs(tsbuildInfoPath)
+	for _, entry := range entries {
+		entryPath := filepath.Join(outDir, entry.Name())
+		absEntry, _ := filepath.Abs(entryPath)
+		if absEntry == absTsbuildInfo {
+			continue // preserve .tsbuildinfo
+		}
+		if err := os.RemoveAll(entryPath); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // generateOpenAPIFromControllers generates an OpenAPI 3.1 document from pre-analyzed controllers.

@@ -11,8 +11,14 @@ import (
 
 // openAPIDoc mirrors the subset of OpenAPI 3.x we need for SDK generation.
 type openAPIDoc struct {
+	Info       openAPIInfo                           `json:"info"`
 	Paths      map[string]map[string]json.RawMessage `json:"paths"`
 	Components *openAPIComponents                    `json:"components"`
+}
+
+type openAPIInfo struct {
+	XTsgonestGlobalPrefix  string `json:"x-tsgonest-global-prefix"`
+	XTsgonestVersionPrefix string `json:"x-tsgonest-version-prefix"`
 }
 
 type openAPIComponents struct {
@@ -59,16 +65,26 @@ var versionPrefixRe = regexp.MustCompile(`^/v(\d+)(/|$)`)
 
 // ParseOpenAPI reads an OpenAPI JSON file and transforms it into the SDK IR.
 func ParseOpenAPI(path string) (*SDKDocument, error) {
+	return ParseOpenAPIWithOptions(path, nil)
+}
+
+// ParseOpenAPIWithOptions reads an OpenAPI JSON file with generation options.
+func ParseOpenAPIWithOptions(path string, opts *GenerateOptions) (*SDKDocument, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("reading OpenAPI file: %w", err)
 	}
 
-	return ParseOpenAPIBytes(data)
+	return ParseOpenAPIBytesWithOptions(data, opts)
 }
 
 // ParseOpenAPIBytes parses OpenAPI JSON bytes into the SDK IR.
 func ParseOpenAPIBytes(data []byte) (*SDKDocument, error) {
+	return ParseOpenAPIBytesWithOptions(data, nil)
+}
+
+// ParseOpenAPIBytesWithOptions parses OpenAPI JSON bytes with prefix options.
+func ParseOpenAPIBytesWithOptions(data []byte, opts *GenerateOptions) (*SDKDocument, error) {
 	var doc openAPIDoc
 	if err := json.Unmarshal(data, &doc); err != nil {
 		return nil, fmt.Errorf("parsing OpenAPI JSON: %w", err)
@@ -90,6 +106,25 @@ func ParseOpenAPIBytes(data []byte) (*SDKDocument, error) {
 	resolver := &schemaResolver{schemas: schemas}
 	resolver.initFingerprints()
 
+	// Resolve global prefix: CLI option > OpenAPI extension
+	globalPrefix := ""
+	if opts != nil && opts.GlobalPrefix != "" {
+		globalPrefix = opts.GlobalPrefix
+	} else if doc.Info.XTsgonestGlobalPrefix != "" {
+		globalPrefix = doc.Info.XTsgonestGlobalPrefix
+	}
+
+	// Resolve version prefix: CLI option > OpenAPI extension > default "v"
+	versionPrefix := "v"
+	if opts != nil && opts.VersionPrefix != "" {
+		versionPrefix = opts.VersionPrefix
+	} else if doc.Info.XTsgonestVersionPrefix != "" {
+		versionPrefix = doc.Info.XTsgonestVersionPrefix
+	}
+
+	// Build version regex with the resolved prefix
+	versionRe := regexp.MustCompile(`^/` + regexp.QuoteMeta(versionPrefix) + `(\d+)(/|$)`)
+
 	// version → controller name → *ControllerGroup
 	type versionedCtrl struct {
 		version string
@@ -109,20 +144,27 @@ func ParseOpenAPIBytes(data []byte) (*SDKDocument, error) {
 				return nil, fmt.Errorf("parsing operation %s %s: %w", httpMethod, pathStr, err)
 			}
 
-			// Extract version from path prefix
-			version := extractVersion(pathStr)
+			// Strip global prefix from path before version extraction
+			sdkPath := pathStr
+			if globalPrefix != "" {
+				sdkPath = stripGlobalPrefix(sdkPath, globalPrefix)
+			}
 
-			// Determine controller name
-			ctrlName := resolveControllerName(op, pathStr, version)
+			// Extract version from path prefix (using resolved version prefix)
+			version := extractVersionWithRe(sdkPath, versionRe, versionPrefix)
+
+			// Determine controller name (using prefix-stripped path)
+			ctrlName := resolveControllerName(op, sdkPath, version)
 
 			// Determine method name
 			methodName := resolveMethodName(op, httpMethod, pathStr)
 
-			// Build SDKMethod
+			// Build SDKMethod — use the prefix-stripped path so the SDK
+			// generates request URLs relative to baseUrl (which includes the prefix)
 			sdkMethod := SDKMethod{
 				Name:        methodName,
 				HTTPMethod:  httpMethod,
-				Path:        pathStr,
+				Path:        sdkPath,
 				Summary:     op.Summary,
 				Description: op.Description,
 				Deprecated:  op.Deprecated,
@@ -231,13 +273,35 @@ func ParseOpenAPIBytes(data []byte) (*SDKDocument, error) {
 	}, nil
 }
 
-// extractVersion extracts the version prefix from a path.
+// extractVersion extracts the version prefix from a path using the default "v" prefix.
 // e.g., "/v1/orders" → "v1", "/orders" → ""
 func extractVersion(path string) string {
 	if m := versionPrefixRe.FindStringSubmatch(path); m != nil {
 		return "v" + m[1]
 	}
 	return ""
+}
+
+// extractVersionWithRe extracts the version prefix using a custom regex and prefix string.
+// e.g., with prefix "v": "/v1/orders" → "v1"
+func extractVersionWithRe(path string, re *regexp.Regexp, prefix string) string {
+	if m := re.FindStringSubmatch(path); m != nil {
+		return prefix + m[1]
+	}
+	return ""
+}
+
+// stripGlobalPrefix removes the global prefix from a path.
+// e.g., stripGlobalPrefix("/api/v1/users", "api") → "/v1/users"
+func stripGlobalPrefix(path, prefix string) string {
+	normalized := "/" + strings.Trim(prefix, "/")
+	if strings.HasPrefix(path, normalized+"/") {
+		return path[len(normalized):]
+	}
+	if path == normalized {
+		return "/"
+	}
+	return path
 }
 
 func resolveControllerName(op openAPIOperation, pathStr, version string) string {

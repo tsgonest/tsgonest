@@ -531,6 +531,80 @@ func TestPipeline_InvalidTsgoFlagReportsError(t *testing.T) {
 	}
 }
 
+// --- Fix 3: smartCleanDir tests ---
+
+func TestSmartCleanDir_PreservesTsbuildinfo(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create files in the output directory
+	os.WriteFile(filepath.Join(dir, "main.js"), []byte("console.log('hello')"), 0644)
+	os.WriteFile(filepath.Join(dir, "main.d.ts"), []byte("export {}"), 0644)
+	os.MkdirAll(filepath.Join(dir, "sub"), 0755)
+	os.WriteFile(filepath.Join(dir, "sub", "other.js"), []byte("// other"), 0644)
+
+	// Create the .tsbuildinfo file that should be preserved
+	tsbuildInfoPath := filepath.Join(dir, "tsconfig.tsbuildinfo")
+	os.WriteFile(tsbuildInfoPath, []byte(`{"version": "5.0"}`), 0644)
+
+	// Run smartCleanDir
+	err := smartCleanDir(dir, tsbuildInfoPath)
+	if err != nil {
+		t.Fatalf("smartCleanDir error: %v", err)
+	}
+
+	// .tsbuildinfo should still exist
+	if _, err := os.Stat(tsbuildInfoPath); os.IsNotExist(err) {
+		t.Error(".tsbuildinfo should be preserved after smartCleanDir")
+	}
+
+	// Other files should be removed
+	if _, err := os.Stat(filepath.Join(dir, "main.js")); !os.IsNotExist(err) {
+		t.Error("main.js should be deleted by smartCleanDir")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "main.d.ts")); !os.IsNotExist(err) {
+		t.Error("main.d.ts should be deleted by smartCleanDir")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "sub")); !os.IsNotExist(err) {
+		t.Error("sub/ directory should be deleted by smartCleanDir")
+	}
+}
+
+func TestSmartCleanDir_NonexistentDir(t *testing.T) {
+	// Should not error on a directory that doesn't exist
+	err := smartCleanDir("/tmp/nonexistent-dir-xyz-123", "/tmp/nonexistent.tsbuildinfo")
+	if err != nil {
+		t.Errorf("smartCleanDir on nonexistent dir should not error: %v", err)
+	}
+}
+
+func TestSmartCleanDir_DangerousPath(t *testing.T) {
+	// Should refuse to clean dangerous paths
+	for _, dangerous := range []string{"/", ".", ".."} {
+		err := smartCleanDir(dangerous, "tsconfig.tsbuildinfo")
+		if err == nil {
+			t.Errorf("smartCleanDir(%q) should return error for dangerous path", dangerous)
+		}
+	}
+}
+
+func TestSmartCleanDir_NoTsbuildinfo(t *testing.T) {
+	// When there's no .tsbuildinfo to preserve, all files should be removed
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "main.js"), []byte("// js"), 0644)
+	os.WriteFile(filepath.Join(dir, "main.d.ts"), []byte("// dts"), 0644)
+
+	// Reference a tsbuildinfo that doesn't exist — all files should be removed
+	err := smartCleanDir(dir, filepath.Join(dir, "nonexistent.tsbuildinfo"))
+	if err != nil {
+		t.Fatalf("smartCleanDir error: %v", err)
+	}
+
+	entries, _ := os.ReadDir(dir)
+	if len(entries) != 0 {
+		t.Errorf("expected empty dir after smartCleanDir, got %d entries", len(entries))
+	}
+}
+
 func TestPipeline_FullIntegrationWithTSConfig(t *testing.T) {
 	dir := setupTSProject(t, `{
 		"compilerOptions": {

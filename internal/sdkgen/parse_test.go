@@ -3,6 +3,8 @@ package sdkgen
 import (
 	"encoding/json"
 	"os"
+	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -819,6 +821,195 @@ func TestRawPropFingerprint_ArrayOfRefVsArrayOfInline(t *testing.T) {
 
 	if fp1 == fp2 {
 		t.Errorf("array of $ref and array of inline object should differ\n  fp1: %s\n  fp2: %s", fp1, fp2)
+	}
+}
+
+// --- Fix 4/7: prefix stripping and versioning tests ---
+
+func TestStripGlobalPrefix(t *testing.T) {
+	tests := []struct {
+		path   string
+		prefix string
+		want   string
+	}{
+		{"/api/v1/users", "api", "/v1/users"},
+		{"/api/v1/users", "/api", "/v1/users"},
+		{"/api/v1/users", "/api/", "/v1/users"},
+		{"/my-api/v1/users", "my-api", "/v1/users"},
+		{"/v1/users", "api", "/v1/users"},       // no match, return unchanged
+		{"/api", "api", "/"},                     // exact prefix match
+		{"/api-extra/v1/users", "api", "/api-extra/v1/users"}, // prefix must match full segment
+		{"/users", "", "/users"},                 // empty prefix
+	}
+
+	for _, tt := range tests {
+		got := stripGlobalPrefix(tt.path, tt.prefix)
+		if got != tt.want {
+			t.Errorf("stripGlobalPrefix(%q, %q) = %q, want %q", tt.path, tt.prefix, got, tt.want)
+		}
+	}
+}
+
+func TestExtractVersionWithRe(t *testing.T) {
+	// Default "v" prefix regex
+	defaultRe := versionPrefixRe
+
+	tests := []struct {
+		path    string
+		prefix  string
+		version string
+	}{
+		{"/v1/orders", "v", "v1"},
+		{"/v2/orders/{id}", "v", "v2"},
+		{"/v10/items", "v", "v10"},
+		{"/orders", "v", ""},
+		{"/version/1/orders", "v", ""},
+	}
+
+	for _, tt := range tests {
+		got := extractVersionWithRe(tt.path, defaultRe, tt.prefix)
+		if got != tt.version {
+			t.Errorf("extractVersionWithRe(%q, defaultRe, %q) = %q, want %q", tt.path, tt.prefix, got, tt.version)
+		}
+	}
+
+	// Custom version prefix "ver"
+	customRe := regexp.MustCompile(`^/ver(\d+)(/|$)`)
+	customTests := []struct {
+		path    string
+		version string
+	}{
+		{"/ver1/orders", "ver1"},
+		{"/ver2/orders", "ver2"},
+		{"/v1/orders", ""},  // doesn't match custom prefix
+	}
+
+	for _, tt := range customTests {
+		got := extractVersionWithRe(tt.path, customRe, "ver")
+		if got != tt.version {
+			t.Errorf("extractVersionWithRe(%q, customRe, \"ver\") = %q, want %q", tt.path, got, tt.version)
+		}
+	}
+}
+
+func TestParseOpenAPIBytesWithOptions_GlobalPrefix(t *testing.T) {
+	// Build a minimal OpenAPI doc with paths prefixed by /api
+	doc := `{
+		"openapi": "3.1.0",
+		"info": {"title": "Test", "version": "1.0.0"},
+		"paths": {
+			"/api/v1/users": {
+				"get": {
+					"operationId": "getUsers",
+					"x-tsgonest-controller": "UsersController",
+					"responses": {
+						"200": {
+							"description": "OK",
+							"content": {"application/json": {"schema": {"type": "array", "items": {"type": "string"}}}}
+						}
+					}
+				}
+			},
+			"/api/v2/users": {
+				"get": {
+					"operationId": "getUsersV2",
+					"x-tsgonest-controller": "UsersController",
+					"responses": {
+						"200": {
+							"description": "OK",
+							"content": {"application/json": {"schema": {"type": "string"}}}
+						}
+					}
+				}
+			}
+		}
+	}`
+
+	// Without options: /api/v1/users -> version not detected (v1 not at start after /api prefix)
+	sdkDoc, err := ParseOpenAPIBytes([]byte(doc))
+	if err != nil {
+		t.Fatalf("ParseOpenAPIBytes: %v", err)
+	}
+	// Without prefix stripping, there should be 1 unversioned group
+	hasVersioned := false
+	for _, v := range sdkDoc.Versions {
+		if v.Version != "" {
+			hasVersioned = true
+		}
+	}
+	if hasVersioned {
+		t.Error("without globalPrefix option, expected no versioned groups (v1 not at start)")
+	}
+
+	// With globalPrefix: should properly detect v1 and v2
+	sdkDoc2, err := ParseOpenAPIBytesWithOptions([]byte(doc), &GenerateOptions{GlobalPrefix: "api"})
+	if err != nil {
+		t.Fatalf("ParseOpenAPIBytesWithOptions: %v", err)
+	}
+
+	versions := make(map[string]bool)
+	for _, v := range sdkDoc2.Versions {
+		versions[v.Version] = true
+	}
+	if !versions["v1"] {
+		t.Error("with globalPrefix 'api', expected v1 version group")
+	}
+	if !versions["v2"] {
+		t.Error("with globalPrefix 'api', expected v2 version group")
+	}
+
+	// Verify SDK method paths have prefix stripped
+	for _, ver := range sdkDoc2.Versions {
+		for _, ctrl := range ver.Controllers {
+			for _, m := range ctrl.Methods {
+				if strings.HasPrefix(m.Path, "/api") {
+					t.Errorf("SDK method path should have prefix stripped, got %q", m.Path)
+				}
+			}
+		}
+	}
+}
+
+func TestParseOpenAPIBytesWithOptions_OpenAPIExtensions(t *testing.T) {
+	// OpenAPI doc with x-tsgonest-global-prefix in info
+	doc := `{
+		"openapi": "3.1.0",
+		"info": {
+			"title": "Test",
+			"version": "1.0.0",
+			"x-tsgonest-global-prefix": "api",
+			"x-tsgonest-version-prefix": "v"
+		},
+		"paths": {
+			"/api/v1/items": {
+				"get": {
+					"operationId": "getItems",
+					"x-tsgonest-controller": "ItemsController",
+					"responses": {
+						"200": {
+							"description": "OK",
+							"content": {"application/json": {"schema": {"type": "string"}}}
+						}
+					}
+				}
+			}
+		}
+	}`
+
+	// Parse without explicit options — should pick up extensions from info
+	sdkDoc, err := ParseOpenAPIBytesWithOptions([]byte(doc), nil)
+	if err != nil {
+		t.Fatalf("ParseOpenAPIBytesWithOptions: %v", err)
+	}
+
+	hasV1 := false
+	for _, v := range sdkDoc.Versions {
+		if v.Version == "v1" {
+			hasV1 = true
+		}
+	}
+	if !hasV1 {
+		t.Error("expected v1 version group from x-tsgonest-global-prefix extension")
 	}
 }
 

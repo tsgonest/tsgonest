@@ -220,6 +220,110 @@ func TestHasRequiredOptions_Combinations(t *testing.T) {
 	}
 }
 
+// --- Fix 8: SDK request function override tests ---
+
+func TestBuildOptionsTypeDecl_IncludesOverrideFields(t *testing.T) {
+	method := SDKMethod{
+		Name:       "getUser",
+		HTTPMethod: "GET",
+		Path:       "/users/{id}",
+		PathParams: []SDKParam{
+			{Name: "id", TSType: "string", Required: true},
+		},
+		ResponseType: "User",
+	}
+
+	decl := buildOptionsTypeDecl(method, "GetUserOptions")
+	if decl == "" {
+		t.Fatal("expected non-empty options type declaration")
+	}
+
+	// Should contain responseType override field
+	if !strings.Contains(decl, "responseType?: 'json' | 'blob' | 'text' | 'stream'") {
+		t.Error("options type should include responseType override field")
+	}
+
+	// Should contain contentType override field
+	if !strings.Contains(decl, "contentType?: string") {
+		t.Error("options type should include contentType override field")
+	}
+
+	// Should contain JSDoc comments for overrides
+	if !strings.Contains(decl, "Override the response type handling") {
+		t.Error("options type should include responseType JSDoc")
+	}
+	if !strings.Contains(decl, "Override the request content type") {
+		t.Error("options type should include contentType JSDoc")
+	}
+}
+
+func TestGenerateStandaloneFunction_OverridesInRequestCall(t *testing.T) {
+	method := SDKMethod{
+		Name:       "getUser",
+		HTTPMethod: "GET",
+		Path:       "/users/{id}",
+		PathParams: []SDKParam{
+			{Name: "id", TSType: "string", Required: true},
+		},
+		ResponseType: "User",
+	}
+
+	code := generateStandaloneFunction("UsersController", method)
+
+	// Should spread responseType and contentType overrides into request options
+	if !strings.Contains(code, "options?.responseType && { responseType: options.responseType }") {
+		t.Error("standalone function should spread responseType override into request options")
+	}
+	if !strings.Contains(code, "options?.contentType && { contentType: options.contentType }") {
+		t.Error("standalone function should spread contentType override into request options")
+	}
+}
+
+func TestGenerateStandaloneFunction_NoParamsHasOverrides(t *testing.T) {
+	// Method with no path/query/body params should still have override fields
+	// in the inline options type
+	method := SDKMethod{
+		Name:                "healthCheck",
+		HTTPMethod:          "GET",
+		Path:                "/health",
+		ResponseType:        "string",
+		ResponseContentType: "application/json",
+	}
+
+	code := generateStandaloneFunction("HealthController", method)
+
+	// The inline options type should include responseType and contentType
+	if !strings.Contains(code, "responseType?: 'json' | 'blob' | 'text' | 'stream'") {
+		t.Error("inline options type should include responseType override")
+	}
+	if !strings.Contains(code, "contentType?: string") {
+		t.Error("inline options type should include contentType override")
+	}
+}
+
+func TestGenerateController_InterfaceHasOverrides(t *testing.T) {
+	ctrl := ControllerGroup{
+		Name: "HealthController",
+		Methods: []SDKMethod{
+			{
+				Name:                "check",
+				HTTPMethod:          "GET",
+				Path:                "/health",
+				ResponseType:        "string",
+				ResponseContentType: "application/json",
+			},
+		},
+	}
+	doc := &SDKDocument{Schemas: map[string]*SchemaNode{}}
+
+	code := generateController(ctrl, doc, "")
+
+	// Interface method signature for no-params method should have inline override fields
+	if !strings.Contains(code, "responseType?: 'json' | 'blob' | 'text' | 'stream'") {
+		t.Error("interface should include responseType in inline options type")
+	}
+}
+
 func TestGenerateController_MixedSSEAndJSON(t *testing.T) {
 	doc := &SDKDocument{
 		Schemas: map[string]*SchemaNode{
