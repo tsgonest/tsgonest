@@ -8,12 +8,31 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
+	shimincremental "github.com/microsoft/typescript-go/shim/execute/incremental"
 	"github.com/tsgonest/tsgonest/internal/runner"
 	"github.com/tsgonest/tsgonest/internal/watcher"
 )
+
+// devBuilder holds build state across dev-mode rebuild cycles.
+// It retains the incremental program in memory so subsequent rebuilds
+// can diff against it directly instead of re-reading .tsbuildinfo from disk.
+type devBuilder struct {
+	mu          sync.Mutex
+	incrProgram *shimincremental.Program
+	buildArgs   []string
+}
+
+// Build runs a build cycle with in-memory incremental reuse.
+// It acquires a mutex to prevent concurrent builds (e.g., from watcher + "rs" firing simultaneously).
+func (b *devBuilder) Build() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return runBuildWithIncr(b.buildArgs, b.incrProgram, &b.incrProgram)
+}
 
 // runDev implements the "tsgonest dev" command: build, start, and watch+reload.
 // Mirrors nest start functionality with additional features:
@@ -90,18 +109,36 @@ func runDev(args []string) int {
 	// Check deleteOutDir from config (acts like --clean for initial build)
 	deleteOutDir := cfg != nil && cfg.DeleteOutDir
 
-	// Initial build
-	fmt.Fprintln(os.Stderr, "performing initial build...")
-	buildArgs := []string{}
-	if configPath != "" {
-		buildArgs = append(buildArgs, "--config", configPath)
-	}
-	buildArgs = append(buildArgs, "--project", tsconfigPath)
-	if deleteOutDir {
-		buildArgs = append(buildArgs, "--clean")
+	// Forward auto-discovered config path so runBuild doesn't re-evaluate .ts configs
+	resolvedConfigPath := configPath
+	if resolvedConfigPath == "" && cfgResult.Path != "" {
+		resolvedConfigPath = cfgResult.Path
 	}
 
-	buildResult := runBuild(buildArgs)
+	// Build args for watch rebuilds (no --clean)
+	watchBuildArgs := []string{}
+	if resolvedConfigPath != "" {
+		watchBuildArgs = append(watchBuildArgs, "--config", resolvedConfigPath)
+	}
+	watchBuildArgs = append(watchBuildArgs, "--project", tsconfigPath)
+
+	// Create devBuilder for in-memory incremental reuse across rebuilds.
+	// The builder holds the incremental program state so subsequent builds
+	// diff in-memory instead of re-reading .tsbuildinfo from disk.
+	builder := &devBuilder{buildArgs: watchBuildArgs}
+
+	// Initial build (with --clean if deleteOutDir is set)
+	fmt.Fprintln(os.Stderr, "performing initial build...")
+	initialBuildArgs := append([]string{}, watchBuildArgs...)
+	if deleteOutDir {
+		initialBuildArgs = append(initialBuildArgs, "--clean")
+	}
+
+	// First build uses initialBuildArgs (may include --clean), but stores
+	// the incremental program in the builder for subsequent reuse.
+	builder.mu.Lock()
+	buildResult := runBuildWithIncr(initialBuildArgs, nil, &builder.incrProgram)
+	builder.mu.Unlock()
 	if buildResult != 0 {
 		fmt.Fprintln(os.Stderr, "initial build failed, watching for changes...")
 	} else {
@@ -139,6 +176,12 @@ func runDev(args []string) int {
 		proc = runner.New("node", nodeArgs, cwd)
 	}
 
+	// In dev mode, the parent process owns stdin (for "rs" manual restart).
+	// Prevent the child from consuming stdin input.
+	if proc != nil {
+		proc.DisableStdin = true
+	}
+
 	if proc != nil && buildResult == 0 {
 		if execCmd != "" {
 			fmt.Fprintf(os.Stderr, "starting: %s\n", execCmd)
@@ -167,7 +210,7 @@ func runDev(args []string) int {
 
 		fmt.Fprintf(os.Stderr, "\ndetected %d change(s), rebuilding...\n", len(events))
 
-		result := runBuild(buildArgs)
+		result := builder.Build()
 
 		if result != 0 {
 			fmt.Fprintln(os.Stderr, "build failed, waiting for changes...")
@@ -234,7 +277,7 @@ func runDev(args []string) int {
 				line := strings.TrimSpace(scanner.Text())
 				if line == "rs" {
 					fmt.Fprintln(os.Stderr, "\nmanual restart triggered...")
-					result := runBuild(buildArgs)
+					result := builder.Build()
 					if result != 0 {
 						fmt.Fprintln(os.Stderr, "build failed, waiting for changes...")
 					} else if proc != nil {

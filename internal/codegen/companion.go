@@ -37,9 +37,9 @@ func GenerateCompanionFiles(sourceFileName string, types map[string]*metadata.Me
 			}
 		}
 
-		// Only generate companions for structured types (objects, unions, arrays, intersections)
+		// Only generate companions for structured types and atomics (for primitive return serialization)
 		switch resolved.Kind {
-		case metadata.KindObject, metadata.KindUnion, metadata.KindArray, metadata.KindIntersection:
+		case metadata.KindObject, metadata.KindUnion, metadata.KindArray, metadata.KindIntersection, metadata.KindAtomic:
 			// ok
 		default:
 			continue

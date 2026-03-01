@@ -13,12 +13,16 @@ type Event struct {
 	Op   string // "create", "write", "remove"
 }
 
+// DefaultPollInterval is the default polling interval for file change detection.
+const DefaultPollInterval = 500 * time.Millisecond
+
 // Watcher watches directories for file changes using a polling approach.
 type Watcher struct {
-	dirs       []string
-	extensions []string // e.g., [".ts", ".tsx"]
-	debounce   time.Duration
-	onChange   func(events []Event)
+	dirs         []string
+	extensions   []string // e.g., [".ts", ".tsx"]
+	debounce     time.Duration
+	pollInterval time.Duration
+	onChange     func(events []Event)
 
 	mu      sync.Mutex
 	pending []Event
@@ -29,12 +33,18 @@ type Watcher struct {
 // New creates a new file watcher.
 func New(dirs []string, extensions []string, debounce time.Duration, onChange func(events []Event)) *Watcher {
 	return &Watcher{
-		dirs:       dirs,
-		extensions: extensions,
-		debounce:   debounce,
-		onChange:   onChange,
-		stopCh:     make(chan struct{}),
+		dirs:         dirs,
+		extensions:   extensions,
+		debounce:     debounce,
+		pollInterval: DefaultPollInterval,
+		onChange:     onChange,
+		stopCh:       make(chan struct{}),
 	}
+}
+
+// SetPollInterval sets the polling interval for file change detection.
+func (w *Watcher) SetPollInterval(d time.Duration) {
+	w.pollInterval = d
 }
 
 // Watch starts polling for file changes. This is a blocking call that runs
@@ -44,7 +54,7 @@ func (w *Watcher) Watch() error {
 	// Build initial snapshot
 	snapshot := w.buildSnapshot()
 
-	ticker := time.NewTicker(200 * time.Millisecond)
+	ticker := time.NewTicker(w.pollInterval)
 	defer ticker.Stop()
 
 	for {

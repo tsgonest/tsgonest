@@ -95,7 +95,7 @@ func generateController(ctrl ControllerGroup, doc *SDKDocument, version string) 
 		optionsType := buildOptionsType(method)
 		responseType := buildResponseType(method)
 		if optionsType == "" {
-			sb.WriteString(fmt.Sprintf("  %s(options?: { signal?: AbortSignal; headers?: Record<string, string> }): Promise<SDKResult<%s>>;\n", method.Name, responseType))
+			sb.WriteString(fmt.Sprintf("  %s(options?: { signal?: AbortSignal; headers?: Record<string, string>; responseType?: 'json' | 'blob' | 'text' | 'stream'; contentType?: string }): Promise<SDKResult<%s>>;\n", method.Name, responseType))
 		} else {
 			sb.WriteString(fmt.Sprintf("  %s(options: %s): Promise<SDKResult<%s>>;\n", method.Name, optionsType, responseType))
 		}
@@ -142,7 +142,7 @@ func generateStandaloneFunction(ctrlName string, method SDKMethod) string {
 	optionsType := buildOptionsType(method)
 	responseType := buildResponseType(method)
 	if optionsType == "" {
-		sb.WriteString(fmt.Sprintf("export async function %s(\n  request: RequestFn,\n  options?: { signal?: AbortSignal; headers?: Record<string, string> },\n): Promise<SDKResult<%s>> {\n", qName, responseType))
+		sb.WriteString(fmt.Sprintf("export async function %s(\n  request: RequestFn,\n  options?: { signal?: AbortSignal; headers?: Record<string, string>; responseType?: 'json' | 'blob' | 'text' | 'stream'; contentType?: string },\n): Promise<SDKResult<%s>> {\n", qName, responseType))
 	} else {
 		sb.WriteString(fmt.Sprintf("export async function %s(\n  request: RequestFn,\n  options: %s,\n): Promise<SDKResult<%s>> {\n", qName, optionsType, responseType))
 	}
@@ -225,6 +225,8 @@ func writeRequestOptions(sb *strings.Builder, method SDKMethod, indent string) {
 	}
 	sb.WriteString(indent + "  signal: options?.signal,\n")
 	sb.WriteString(indent + "  headers: options?.headers,\n")
+	sb.WriteString(indent + "  ...(options?.responseType && { responseType: options.responseType }),\n")
+	sb.WriteString(indent + "  ...(options?.contentType && { contentType: options.contentType }),\n")
 }
 
 // buildOptionsType returns the inline type for the options parameter.
@@ -284,9 +286,13 @@ func buildOptionsTypeDecl(method SDKMethod, typeName string) string {
 		sb.WriteString(fmt.Sprintf("  body%s: %s;\n", opt, method.Body.TSType))
 	}
 
-	// Always include optional signal and headers
+	// Always include optional signal, headers, and override fields
 	sb.WriteString("  signal?: AbortSignal;\n")
 	sb.WriteString("  headers?: Record<string, string>;\n")
+	sb.WriteString("  /** Override the response type handling */\n")
+	sb.WriteString("  responseType?: 'json' | 'blob' | 'text' | 'stream';\n")
+	sb.WriteString("  /** Override the request content type */\n")
+	sb.WriteString("  contentType?: string;\n")
 	sb.WriteString("}\n")
 
 	return sb.String()

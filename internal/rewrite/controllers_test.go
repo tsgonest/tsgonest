@@ -914,3 +914,233 @@ class MixedController {
 		t.Errorf("expected TsgonestSseInterceptor import, got:\n%s", result)
 	}
 }
+
+// --- Primitive return type serialization tests ---
+// These tests verify that controller methods returning primitive types (string, number, boolean)
+// get proper JSON serialization wrapping. This is critical because NestJS sets Content-Type to
+// application/json but raw primitives are NOT valid JSON (e.g., a bare string without quotes).
+// See: nestia TypedRoute and typia json.stringify handle this by wrapping primitives.
+
+func TestRewriteController_StringReturn(t *testing.T) {
+	// A controller method returning Promise<string> must have its return value
+	// JSON-encoded (wrapped in quotes). Without this, the response body is raw text
+	// but Content-Type is application/json, breaking SDK clients that call response.json().
+	input := `class AuthController {
+    async forgotPassword(body) {
+        return "If an account exists, a reset link has been sent.";
+    }
+}`
+
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name:       "AuthController",
+			SourceFile: "/src/auth.controller.ts",
+			Routes: []analyzer.Route{
+				{
+					OperationID: "forgotPassword",
+					MethodName:  "forgotPassword",
+					ReturnType:  metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"},
+					Parameters: []analyzer.RouteParameter{
+						{
+							Category:  "body",
+							LocalName: "body",
+							Type:      metadata.Metadata{Kind: metadata.KindRef, Ref: "ForgotPasswordDto"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	companionMap := map[string]string{
+		"ForgotPasswordDto": "/dist/auth.dto.ForgotPasswordDto.tsgonest.js",
+	}
+
+	result := rewriteController(input, "/dist/auth.controller.js", controllers, companionMap, "esm")
+
+	// The return value must be JSON-stringified — a raw string like:
+	//   If an account exists, a reset link has been sent.
+	// is NOT valid JSON. It must become:
+	//   "If an account exists, a reset link has been sent."
+	if !strings.Contains(result, "JSON.stringify(") && !strings.Contains(result, "__s(") {
+		t.Errorf("string return type must be JSON-encoded (wrapped in quotes), got:\n%s", result)
+	}
+}
+
+func TestRewriteController_StringReturnOnly(t *testing.T) {
+	// Even without any body params, a method returning string must be JSON-wrapped.
+	input := `class HealthController {
+    async getVersion() {
+        return "1.0.0";
+    }
+}`
+
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name:       "HealthController",
+			SourceFile: "/src/health.controller.ts",
+			Routes: []analyzer.Route{
+				{
+					OperationID: "getVersion",
+					MethodName:  "getVersion",
+					ReturnType:  metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"},
+				},
+			},
+		},
+	}
+
+	companionMap := map[string]string{}
+
+	result := rewriteController(input, "/dist/health.controller.js", controllers, companionMap, "esm")
+
+	// Must wrap return with JSON encoding for string
+	if !strings.Contains(result, "JSON.stringify(") && !strings.Contains(result, "__s(") {
+		t.Errorf("string return type must be JSON-encoded, got:\n%s", result)
+	}
+}
+
+func TestRewriteController_NumberReturn(t *testing.T) {
+	// A controller returning a plain number must have it serialized to a JSON number string.
+	// typia.json.stringify<number>(42) → "42"
+	input := `class StatsController {
+    async getCount() {
+        return 42;
+    }
+}`
+
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name:       "StatsController",
+			SourceFile: "/src/stats.controller.ts",
+			Routes: []analyzer.Route{
+				{
+					OperationID: "getCount",
+					MethodName:  "getCount",
+					ReturnType:  metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "number"},
+				},
+			},
+		},
+	}
+
+	companionMap := map[string]string{}
+
+	result := rewriteController(input, "/dist/stats.controller.js", controllers, companionMap, "esm")
+
+	// Number returns should be serialized (e.g., "" + value or Number.isFinite check)
+	if !strings.Contains(result, "Number.isFinite") && !strings.Contains(result, "JSON.stringify") {
+		t.Errorf("number return type must be JSON-serialized, got:\n%s", result)
+	}
+}
+
+func TestRewriteController_BooleanReturn(t *testing.T) {
+	// A controller returning boolean must serialize to "true" or "false" JSON string.
+	input := `class FeatureController {
+    async isEnabled() {
+        return true;
+    }
+}`
+
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name:       "FeatureController",
+			SourceFile: "/src/feature.controller.ts",
+			Routes: []analyzer.Route{
+				{
+					OperationID: "isEnabled",
+					MethodName:  "isEnabled",
+					ReturnType:  metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "boolean"},
+				},
+			},
+		},
+	}
+
+	companionMap := map[string]string{}
+
+	result := rewriteController(input, "/dist/feature.controller.js", controllers, companionMap, "esm")
+
+	// Boolean should be serialized
+	if !strings.Contains(result, `"true"`) && !strings.Contains(result, `"false"`) && !strings.Contains(result, "JSON.stringify") {
+		t.Errorf("boolean return type must be JSON-serialized, got:\n%s", result)
+	}
+}
+
+func TestRewriteController_NullableStringReturn(t *testing.T) {
+	// A controller returning string | null must handle the null case
+	input := `class UserController {
+    async getDisplayName() {
+        return null;
+    }
+}`
+
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name:       "UserController",
+			SourceFile: "/src/user.controller.ts",
+			Routes: []analyzer.Route{
+				{
+					OperationID: "getDisplayName",
+					MethodName:  "getDisplayName",
+					ReturnType:  metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string", Nullable: true},
+				},
+			},
+		},
+	}
+
+	companionMap := map[string]string{}
+
+	result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm")
+
+	// Must wrap — nullable string needs null check + JSON encoding
+	if !strings.Contains(result, "null") || result == input {
+		t.Errorf("nullable string return must be JSON-serialized with null handling, got:\n%s", result)
+	}
+}
+
+func TestResolveReturnTypeName_Primitives(t *testing.T) {
+	// resolveReturnTypeName currently returns "" for all atomic types,
+	// which means no return transform is applied. This is the root cause
+	// of the string return type bug.
+	tests := []struct {
+		name     string
+		meta     metadata.Metadata
+		wantName string // what it SHOULD return (non-empty to signal "needs transform")
+	}{
+		{
+			name:     "string",
+			meta:     metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"},
+			wantName: "__string", // synthetic name for primitive stringify
+		},
+		{
+			name:     "number",
+			meta:     metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "number"},
+			wantName: "__number",
+		},
+		{
+			name:     "boolean",
+			meta:     metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "boolean"},
+			wantName: "__boolean",
+		},
+		{
+			name:     "void should remain empty",
+			meta:     metadata.Metadata{Kind: metadata.KindVoid},
+			wantName: "",
+		},
+		{
+			name:     "ref should return ref name",
+			meta:     metadata.Metadata{Kind: metadata.KindRef, Ref: "UserDto"},
+			wantName: "UserDto",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := resolveReturnTypeName(&tt.meta)
+			if tt.wantName == "" && got != "" {
+				t.Errorf("resolveReturnTypeName() = %q, want empty", got)
+			}
+			if tt.wantName != "" && got == "" {
+				t.Errorf("resolveReturnTypeName() = %q, want non-empty (like %q) — primitive return types must be serialized", got, tt.wantName)
+			}
+		})
+	}
+}

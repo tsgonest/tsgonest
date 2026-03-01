@@ -30,6 +30,10 @@ type Info struct {
 	TermsOfService string   `json:"termsOfService,omitempty"`
 	Contact        *Contact `json:"contact,omitempty"`
 	License        *License `json:"license,omitempty"`
+
+	// Vendor extensions for SDK generation
+	XTsgonestGlobalPrefix  string `json:"x-tsgonest-global-prefix,omitempty"`
+	XTsgonestVersionPrefix string `json:"x-tsgonest-version-prefix,omitempty"`
 }
 
 // Contact holds API contact info.
@@ -725,6 +729,14 @@ func (g *Generator) GenerateWithOptions(controllers []analyzer.ControllerInfo, o
 			Version: "1.0.0",
 		},
 		Paths: make(map[string]*PathItem),
+	}
+
+	// Store prefix/versioning info as vendor extensions so SDK generator can strip them
+	if opts != nil && opts.GlobalPrefix != "" {
+		doc.Info.XTsgonestGlobalPrefix = opts.GlobalPrefix
+	}
+	if opts != nil && opts.VersionPrefix != "" {
+		doc.Info.XTsgonestVersionPrefix = opts.VersionPrefix
 	}
 
 	// Collect all unique tags

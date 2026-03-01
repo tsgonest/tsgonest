@@ -2879,6 +2879,104 @@ func TestJsPropAccess(t *testing.T) {
 	}
 }
 
+// --- Primitive type serialization tests ---
+// These tests verify that tsgonest can generate proper JSON serialization for
+// primitive return types (string, number, boolean), matching typia's behavior.
+// typia.json.stringify<string>("hello") → "\"hello\""
+// typia.json.stringify<number>(42) → "42"
+// typia.json.stringify<boolean>(true) → "true"
+
+func TestSerialize_PrimitiveString(t *testing.T) {
+	// typia generates: (input) => __s(input) for json.stringify<string>
+	// tsgonest must be able to generate serialization for a bare string type.
+	// GenerateCompanionSelective handles this correctly — the bug is in the
+	// pipeline (companion.go filter + resolveReturnTypeName).
+	reg := metadata.NewTypeRegistry()
+	meta := &metadata.Metadata{
+		Kind:   metadata.KindAtomic,
+		Atomic: "string",
+	}
+
+	code := GenerateCompanionSelective("__string", meta, reg, false, true)
+	if code == "" {
+		t.Fatal("GenerateCompanionSelective returned empty for string — primitive types must generate serialize/stringify companions")
+	}
+	// The serialize function must wrap the string in JSON quotes
+	assertContains(t, code, "__s(input)")
+}
+
+func TestSerialize_PrimitiveNumber(t *testing.T) {
+	// typia generates: (input) => Number.isFinite(input) ? "" + input : "null"
+	reg := metadata.NewTypeRegistry()
+	meta := &metadata.Metadata{
+		Kind:   metadata.KindAtomic,
+		Atomic: "number",
+	}
+
+	code := GenerateCompanionSelective("__number", meta, reg, false, true)
+	if code == "" {
+		t.Fatal("GenerateCompanionSelective returned empty for number — primitive types must generate serialize/stringify companions")
+	}
+	assertContains(t, code, "Number.isFinite")
+}
+
+func TestSerialize_PrimitiveBoolean(t *testing.T) {
+	// typia generates: (input) => input ? "true" : "false"
+	reg := metadata.NewTypeRegistry()
+	meta := &metadata.Metadata{
+		Kind:   metadata.KindAtomic,
+		Atomic: "boolean",
+	}
+
+	code := GenerateCompanionSelective("__boolean", meta, reg, false, true)
+	if code == "" {
+		t.Fatal("GenerateCompanionSelective returned empty for boolean — primitive types must generate serialize/stringify companions")
+	}
+	assertContains(t, code, `"true"`)
+	assertContains(t, code, `"false"`)
+}
+
+func TestSerialize_PrimitiveNullableString(t *testing.T) {
+	// string | null must serialize to: input == null ? "null" : __s(input)
+	reg := metadata.NewTypeRegistry()
+	meta := &metadata.Metadata{
+		Kind:     metadata.KindAtomic,
+		Atomic:   "string",
+		Nullable: true,
+	}
+
+	code := GenerateCompanionSelective("__nullableString", meta, reg, false, true)
+	if code == "" {
+		t.Fatal("GenerateCompanionSelective returned empty for nullable string")
+	}
+	assertContains(t, code, "null")
+	assertContains(t, code, "__s(")
+}
+
+func TestCompanionFiles_PrimitiveStringNotFiltered(t *testing.T) {
+	// GenerateCompanionFiles currently filters out KindAtomic in companion.go line 41-45.
+	// This test verifies that string types are NOT filtered out when they're needed
+	// for return type serialization.
+	reg := metadata.NewTypeRegistry()
+	types := map[string]*metadata.Metadata{
+		"__string": {Kind: metadata.KindAtomic, Atomic: "string"},
+	}
+
+	files := GenerateCompanionFiles("src/auth.dto.ts", types, reg, CompanionOptions{})
+
+	found := false
+	for _, f := range files {
+		if strings.Contains(f.Path, "__string") {
+			found = true
+			assertContains(t, f.Content, "__s(input)")
+			break
+		}
+	}
+	if !found {
+		t.Error("GenerateCompanionFiles should generate a companion for primitive string types, but none was found")
+	}
+}
+
 func TestHelpersFilePath(t *testing.T) {
 	tests := []struct {
 		outDir   string

@@ -10,9 +10,23 @@ import (
 	"unicode"
 )
 
+// GenerateOptions controls SDK generation behavior.
+type GenerateOptions struct {
+	// GlobalPrefix is the NestJS global prefix (e.g., "api") to strip from paths.
+	// If empty, the prefix is auto-detected from the OpenAPI x-tsgonest-global-prefix extension.
+	GlobalPrefix string
+	// VersionPrefix is the version prefix (e.g., "v") used in URI versioning.
+	// If empty, the prefix is auto-detected from the OpenAPI x-tsgonest-version-prefix extension.
+	VersionPrefix string
+}
+
 // Generate parses an OpenAPI spec and generates a TypeScript SDK.
-func Generate(inputPath, outputDir string) error {
-	doc, err := ParseOpenAPI(inputPath)
+func Generate(inputPath, outputDir string, opts ...*GenerateOptions) error {
+	var o *GenerateOptions
+	if len(opts) > 0 {
+		o = opts[0]
+	}
+	doc, err := ParseOpenAPIWithOptions(inputPath, o)
 	if err != nil {
 		return fmt.Errorf("parsing: %w", err)
 	}

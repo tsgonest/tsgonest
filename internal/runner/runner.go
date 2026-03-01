@@ -12,6 +12,12 @@ type Runner struct {
 	args    []string
 	workDir string
 
+	// DisableStdin prevents the child process from inheriting stdin.
+	// When true, the child's stdin is set to nil (os.DevNull).
+	// This is needed in dev mode so the parent can read stdin for
+	// manual restart ("rs") commands without the child consuming input.
+	DisableStdin bool
+
 	mu   sync.Mutex
 	cmd  *exec.Cmd
 	done chan struct{}
@@ -33,7 +39,9 @@ func (r *Runner) newCmd() *exec.Cmd {
 	}
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	cmd.Stdin = os.Stdin
+	if !r.DisableStdin {
+		cmd.Stdin = os.Stdin
+	}
 	return cmd
 }
 
