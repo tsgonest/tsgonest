@@ -200,10 +200,15 @@ func ParseOpenAPIBytesWithOptions(data []byte, opts *GenerateOptions) (*SDKDocum
 				} else if ct, ok := op.RequestBody.Content["application/json"]; ok {
 					schemaRaw = ct.Schema
 				} else {
-					for ct, media := range op.RequestBody.Content {
-						contentType = ct
-						schemaRaw = media.Schema
-						break
+					// Deterministic: pick the lexicographically first content type
+					var sortedCTs []string
+					for ct := range op.RequestBody.Content {
+						sortedCTs = append(sortedCTs, ct)
+					}
+					sort.Strings(sortedCTs)
+					if len(sortedCTs) > 0 {
+						contentType = sortedCTs[0]
+						schemaRaw = op.RequestBody.Content[sortedCTs[0]].Schema
 					}
 				}
 				tsType := resolver.schemaToTS(schemaRaw)
@@ -368,18 +373,25 @@ func resolveResponse(responses map[string]*openAPIResponse, resolver *schemaReso
 		if ct, ok := resp.Content["application/json"]; ok {
 			return resolvedResponse{resolver.schemaToTS(ct.Schema), status, "application/json", false}
 		}
-		// Map non-JSON content types to appropriate TS types
-		for contentType, media := range resp.Content {
-			tsType := contentTypeToTSType(contentType, media, resolver)
-			return resolvedResponse{tsType, status, contentType, false}
+		// Map non-JSON content types to appropriate TS types (deterministic: sorted)
+		ct := firstSortedKey(resp.Content)
+		if ct != "" {
+			media := resp.Content[ct]
+			tsType := contentTypeToTSType(ct, media, resolver)
+			return resolvedResponse{tsType, status, ct, false}
 		}
 	}
 
-	// Check any 2xx
-	for code, resp := range responses {
-		if !strings.HasPrefix(code, "2") {
-			continue
+	// Check any 2xx (deterministic: sorted codes)
+	var twoCodes []string
+	for code := range responses {
+		if strings.HasPrefix(code, "2") {
+			twoCodes = append(twoCodes, code)
 		}
+	}
+	sort.Strings(twoCodes)
+	for _, code := range twoCodes {
+		resp := responses[code]
 		status := statusCodeToInt(code)
 		if resp.Content == nil || len(resp.Content) == 0 {
 			return resolvedResponse{"void", status, "", true}
@@ -387,9 +399,11 @@ func resolveResponse(responses map[string]*openAPIResponse, resolver *schemaReso
 		if ct, ok := resp.Content["application/json"]; ok {
 			return resolvedResponse{resolver.schemaToTS(ct.Schema), status, "application/json", false}
 		}
-		for contentType, media := range resp.Content {
-			tsType := contentTypeToTSType(contentType, media, resolver)
-			return resolvedResponse{tsType, status, contentType, false}
+		ct := firstSortedKey(resp.Content)
+		if ct != "" {
+			media := resp.Content[ct]
+			tsType := contentTypeToTSType(ct, media, resolver)
+			return resolvedResponse{tsType, status, ct, false}
 		}
 	}
 
@@ -535,6 +549,19 @@ func statusCodeToInt(code string) int {
 	return n
 }
 
+// firstSortedKey returns the lexicographically first key from a map, or "" if empty.
+func firstSortedKey[V any](m map[string]V) string {
+	if len(m) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys[0]
+}
+
 // schemaResolver converts raw JSON schema references to TypeScript type strings.
 type schemaResolver struct {
 	schemas      map[string]*SchemaNode
@@ -542,12 +569,16 @@ type schemaResolver struct {
 }
 
 // initFingerprints builds a lookup table of schema fingerprints for inline object matching.
+// When two schemas share the same fingerprint, the lexicographically first name wins
+// for deterministic output across runs.
 func (r *schemaResolver) initFingerprints() {
 	r.fingerprints = make(map[string]string)
 	for name, node := range r.schemas {
 		if node.Type == "object" && len(node.Properties) > 0 {
 			fp := schemaFingerprint(node)
-			r.fingerprints[fp] = name
+			if existing, ok := r.fingerprints[fp]; !ok || name < existing {
+				r.fingerprints[fp] = name
+			}
 		}
 	}
 }

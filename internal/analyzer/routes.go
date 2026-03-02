@@ -454,8 +454,8 @@ func (a *ControllerAnalyzer) analyzeMethod(methodNode *ast.Node, controllerPath 
 				return nil
 			}
 			// @All() expands to all standard HTTP methods
-			httpMethods = []string{"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"}
-			httpMethod = "GET" // placeholder for validation below
+			httpMethods = AllHttpMethods
+			httpMethod = string(MethodGet) // placeholder for validation below
 			if hasPathArg {
 				if len(pathArgs) > 1 {
 					subPaths = pathArgs
@@ -471,7 +471,7 @@ func (a *ControllerAnalyzer) analyzeMethod(methodNode *ast.Node, controllerPath 
 				a.warnUnsupportedDynamicRoutePath(methodNode, sourceFile, className, operationID, decName)
 				return nil
 			}
-			httpMethod = "GET"
+			httpMethod = string(MethodGet)
 			isSSE = true
 			if hasPathArg {
 				subPath = pathArg
@@ -485,7 +485,7 @@ func (a *ControllerAnalyzer) analyzeMethod(methodNode *ast.Node, controllerPath 
 				a.warnUnsupportedDynamicRoutePath(methodNode, sourceFile, className, operationID, "EventStream")
 				return nil
 			}
-			httpMethod = "GET"
+			httpMethod = string(MethodGet)
 			isSSE = true
 			isEventStream = true
 			if hasPathArg {
@@ -690,7 +690,7 @@ func (a *ControllerAnalyzer) analyzeMethod(methodNode *ast.Node, controllerPath 
 	// 2. Auto-detect: string body → text/plain
 	// 3. Default: application/json (empty string means default)
 	for i := range params {
-		if params[i].Category == "body" {
+		if params[i].Category == string(CategoryBody) {
 			if contentType != "" {
 				params[i].ContentType = contentType
 			} else if params[i].Type.Kind == metadata.KindAtomic && params[i].Type.Atomic == "string" {
@@ -725,8 +725,8 @@ func (a *ControllerAnalyzer) analyzeMethod(methodNode *ast.Node, controllerPath 
 		// Warn when @Res()/@Response() is used WITHOUT @Returns — return type cannot be determined statically.
 		// When @Returns<T>() is present, we have the type info and no warning is needed.
 		// When @tsgonest-ignore uses-raw-response is in JSDoc, suppress the warning.
-		if usesRawResponse && len(returnsDecoratorInfos) == 0 && !ignoreWarnings["uses-raw-response"] {
-			a.warnings.Add(sourceFile, "uses-raw-response",
+		if usesRawResponse && len(returnsDecoratorInfos) == 0 && !ignoreWarnings[string(WarnUsesRawResponse)] {
+			a.warnings.Add(sourceFile, string(WarnUsesRawResponse),
 				fmt.Sprintf("%s — uses @Res()/@Response(); response type cannot be determined statically. "+
 					"The OpenAPI response will be empty (void). "+
 					"To fix: add @Returns<YourType>() decorator, or suppress with /** @tsgonest-ignore uses-raw-response */", warnLocation))
@@ -897,7 +897,7 @@ func (a *ControllerAnalyzer) warnUnsupportedRuntimeController(classNode *ast.Nod
 		loc = fmt.Sprintf("%s:%d", sourceFile, line+1)
 	}
 
-	a.warnings.Add(sourceFile, "unsupported-runtime-controller",
+	a.warnings.Add(sourceFile, string(WarnUnsupportedRuntimeController),
 		fmt.Sprintf("%s — runtime-generated controller detected (non-top-level @Controller class). tsgonest uses static analysis; routes are excluded from OpenAPI", loc))
 }
 
@@ -920,7 +920,7 @@ func (a *ControllerAnalyzer) warnUnsupportedDynamicControllerPath(classNode *ast
 		loc = className + " (" + loc + ")"
 	}
 
-	a.warnings.Add(sourceFile, "unsupported-dynamic-controller-path",
+	a.warnings.Add(sourceFile, string(WarnUnsupportedDynamicControllerPath),
 		fmt.Sprintf("%s — dynamic @Controller() path is not supported by static analysis; controller is excluded from OpenAPI", loc))
 }
 
@@ -944,7 +944,7 @@ func (a *ControllerAnalyzer) warnUnsupportedDynamicRoutePath(methodNode *ast.Nod
 		loc = fmt.Sprintf("%s (%s)", loc, sourceFile)
 	}
 
-	a.warnings.Add(sourceFile, "unsupported-dynamic-route-path",
+	a.warnings.Add(sourceFile, string(WarnUnsupportedDynamicRoutePath),
 		fmt.Sprintf("%s — dynamic @%s() path argument is not supported by static analysis; route is excluded from OpenAPI", loc, decoratorName))
 }
 
@@ -1150,28 +1150,36 @@ func (a *ControllerAnalyzer) analyzeParameter(paramNode *ast.Node, className str
 			continue
 		}
 
-		switch info.Name {
+		// Resolve the canonical decorator name: use the original name from import
+		// alias resolution if available, otherwise use the local name.
+		// This eliminates the duplicate switch that previously existed in the default case.
+		decName := info.Name
+		if origName := a.resolveDecoratorOriginalName(dec); origName != "" {
+			decName = origName
+		}
+
+		switch decName {
 		case "Body":
-			category = "body"
+			category = string(CategoryBody)
 			if len(info.Args) > 0 {
 				paramName = info.Args[0]
 			}
 		case "FormDataBody":
-			category = "body"
+			category = string(CategoryBody)
 			isFormData = true
 			// FormDataBody uses a multer factory arg, not a field name — no paramName to extract
 		case "Query":
-			category = "query"
+			category = string(CategoryQuery)
 			if len(info.Args) > 0 {
 				paramName = info.Args[0]
 			}
 		case "Param":
-			category = "param"
+			category = string(CategoryParam)
 			if len(info.Args) > 0 {
 				paramName = info.Args[0]
 			}
 		case "Headers":
-			category = "headers"
+			category = string(CategoryHeaders)
 			if len(info.Args) > 0 {
 				paramName = info.Args[0]
 			}
@@ -1179,39 +1187,14 @@ func (a *ControllerAnalyzer) analyzeParameter(paramNode *ast.Node, className str
 			// Skip — raw request/response objects, not API parameters
 			return nil
 		default:
-			// Try resolving import alias first
-			if origName := a.resolveDecoratorOriginalName(dec); origName != "" {
-				switch origName {
-				case "Body":
-					category = "body"
-				case "FormDataBody":
-					category = "body"
-					isFormData = true
-				case "Query":
-					category = "query"
-				case "Param":
-					category = "param"
-				case "Headers":
-					category = "headers"
-				case "Req", "Request", "Res", "Response":
-					return nil
+			// Try @in JSDoc on the decorator's declaration site
+			if resolved := a.resolveDecoratorIn(dec); resolved != "" {
+				category = resolved
+				if len(info.Args) > 0 {
+					paramName = info.Args[0]
 				}
-				if category != "" {
-					if len(info.Args) > 0 {
-						paramName = info.Args[0]
-					}
-				}
-			}
-			// If alias didn't resolve, try @in JSDoc on the decorator's declaration site
-			if category == "" {
-				if resolved := a.resolveDecoratorIn(dec); resolved != "" {
-					category = resolved
-					if len(info.Args) > 0 {
-						paramName = info.Args[0]
-					}
-				} else {
-					unresolvedDecorators = append(unresolvedDecorators, info.Name)
-				}
+			} else {
+				unresolvedDecorators = append(unresolvedDecorators, info.Name)
 			}
 		}
 	}
@@ -1244,7 +1227,7 @@ func (a *ControllerAnalyzer) analyzeParameter(paramNode *ast.Node, className str
 
 	// Auto-enable coercion for query, path, and FormData body parameters that
 	// are typed as number or boolean. These arrive as strings from HTTP and need coercion.
-	if category == "param" || category == "query" || (category == "body" && isFormData) {
+	if category == string(CategoryParam) || category == string(CategoryQuery) || (category == string(CategoryBody) && isFormData) {
 		AutoEnableCoercion(&paramType)
 	}
 
@@ -1262,7 +1245,7 @@ func (a *ControllerAnalyzer) analyzeParameter(paramNode *ast.Node, className str
 	// For inline body types (no named DTO), synthesize a TypeName so that
 	// companion generation and validation injection can work.
 	// E.g., @FormDataBody() body: {file: File, id: string} → "__UploadController_upload_Body"
-	if category == "body" && paramTypeName == "" && paramType.Kind == metadata.KindObject && len(paramType.Properties) > 0 {
+	if category == string(CategoryBody) && paramTypeName == "" && paramType.Kind == metadata.KindObject && len(paramType.Properties) > 0 {
 		paramTypeName = "__" + className + "_" + methodName + "_Body"
 		paramType.Name = paramTypeName
 	}
@@ -1466,7 +1449,7 @@ func findInTag(jsdocNode *ast.Node) string {
 		if strings.ToLower(tagName) == "in" {
 			cat := strings.TrimSpace(strings.ToLower(comment))
 			switch cat {
-			case "param", "query", "body", "headers":
+			case string(CategoryParam), string(CategoryQuery), string(CategoryBody), string(CategoryHeaders):
 				return cat
 			}
 		}
@@ -1587,7 +1570,7 @@ func (a *ControllerAnalyzer) inferReturnType(methodNode *ast.Node, className str
 		} else if sourceFile != "" {
 			location = fmt.Sprintf("%s (%s)", location, sourceFile)
 		}
-		a.warnings.Add(sourceFile, "unresolvable-return-type",
+		a.warnings.Add(sourceFile, string(WarnUnresolvableReturnType),
 			fmt.Sprintf("%s has no explicit return type and the inferred type could not be resolved — add an explicit return type annotation like Promise<YourDto>.",
 				location))
 	}
@@ -1608,7 +1591,7 @@ func (a *ControllerAnalyzer) inferReturnType(methodNode *ast.Node, className str
 			location = fmt.Sprintf("%s (%s)", location, sourceFile)
 		}
 
-		a.warnings.Add(sourceFile, "slow-return-type-inference",
+		a.warnings.Add(sourceFile, string(WarnSlowReturnTypeInference),
 			fmt.Sprintf("%s return type inference took %dms — consider adding an explicit return type annotation for better build performance.",
 				location, elapsed.Milliseconds()))
 	}
@@ -1762,19 +1745,19 @@ func extractSseEventVariantFromObject(m metadata.Metadata, registry *metadata.Ty
 func httpMethodForDecorator(name string) string {
 	switch name {
 	case "Get":
-		return "GET"
+		return string(MethodGet)
 	case "Post":
-		return "POST"
+		return string(MethodPost)
 	case "Put":
-		return "PUT"
+		return string(MethodPut)
 	case "Delete":
-		return "DELETE"
+		return string(MethodDelete)
 	case "Patch":
-		return "PATCH"
+		return string(MethodPatch)
 	case "Head":
-		return "HEAD"
+		return string(MethodHead)
 	case "Options":
-		return "OPTIONS"
+		return string(MethodOptions)
 	default:
 		return ""
 	}
@@ -1783,7 +1766,7 @@ func httpMethodForDecorator(name string) string {
 // defaultStatusCode returns the default HTTP status code for a method.
 func defaultStatusCode(method string) int {
 	switch method {
-	case "POST":
+	case string(MethodPost):
 		return 201
 	default:
 		return 200
@@ -1817,22 +1800,22 @@ func ValidateParameterType(param *RouteParameter, wc *WarningCollector, registry
 		return
 	}
 	switch param.Category {
-	case "param":
+	case string(CategoryParam):
 		// Path params must be scalar (string, number). Warn if arrays/objects are used.
 		if param.Type.Kind == metadata.KindObject || param.Type.Kind == metadata.KindArray || param.Type.Kind == metadata.KindRef {
-			wc.Add(sourceFile, "param-non-scalar",
+			wc.Add(sourceFile, string(WarnParamNonScalar),
 				fmt.Sprintf("%s — path parameter %q has non-scalar type %q; only string/number are valid in URL path segments",
 					location, param.Name, param.Type.Kind))
 		}
 		// Path params cannot be any — no type info for URL segment.
 		if param.Type.Kind == metadata.KindAny {
-			wc.Add(sourceFile, "param-any",
+			wc.Add(sourceFile, string(WarnParamAny),
 				fmt.Sprintf("%s — path parameter %q has type 'any'; add a type annotation (string or number)",
 					location, param.Name))
 		}
 		// Path params cannot be optional or nullable — URL segments can't be missing.
 		if param.Type.Optional || param.Type.Nullable {
-			wc.Add(sourceFile, "param-optional",
+			wc.Add(sourceFile, string(WarnParamOptional),
 				fmt.Sprintf("%s — path parameter %q is optional/nullable; URL path segments cannot be missing",
 					location, param.Name))
 		}
@@ -1843,46 +1826,46 @@ func ValidateParameterType(param *RouteParameter, wc *WarningCollector, registry
 				kinds[m.Kind] = true
 			}
 			if len(kinds) > 1 {
-				wc.Add(sourceFile, "param-union",
+				wc.Add(sourceFile, string(WarnParamUnion),
 					fmt.Sprintf("%s — path parameter %q is a union of different types; path params should be a single scalar type",
 						location, param.Name))
 			}
 		}
 		// @Param() without a field name — nestia errors on this, we warn.
 		if param.Name == "" {
-			wc.Add(sourceFile, "param-no-name",
+			wc.Add(sourceFile, string(WarnParamNoName),
 				fmt.Sprintf("%s — @Param() used without a field name; use @Param('id') to name the path parameter",
 					location))
 			// Whole-object @Param() should not have nested objects.
 			if hasNestedObjects(&param.Type, registry) {
-				wc.Add(sourceFile, "param-complex-type",
+				wc.Add(sourceFile, string(WarnParamComplexType),
 					fmt.Sprintf("%s — param object has nested object type; path params should be flat (no nested objects)",
 						location))
 			}
 		}
-	case "query":
+	case string(CategoryQuery):
 		// Query params should be flat (no deeply nested objects).
 		if hasNestedObjects(&param.Type, registry) {
-			wc.Add(sourceFile, "query-complex-type",
+			wc.Add(sourceFile, string(WarnQueryComplexType),
 				fmt.Sprintf("%s — query parameter %q has nested object type; query params should be flat (no nested objects)",
 					location, param.Name))
 		}
 		// Whole-object query params should not be nullable.
 		if param.Name == "" && param.Type.Nullable {
-			wc.Add(sourceFile, "query-nullable",
+			wc.Add(sourceFile, string(WarnQueryNullable),
 				fmt.Sprintf("%s — query object is nullable; query parameters cannot be null",
 					location))
 		}
-	case "headers":
+	case string(CategoryHeaders):
 		// Headers shouldn't be null.
 		if param.Type.Nullable {
-			wc.Add(sourceFile, "header-null",
+			wc.Add(sourceFile, string(WarnHeaderNull),
 				fmt.Sprintf("%s — header parameter %q is nullable; HTTP header values cannot be null",
 					location, param.Name))
 		}
 		// Whole-object headers should not have nested objects.
 		if param.Name == "" && hasNestedObjects(&param.Type, registry) {
-			wc.Add(sourceFile, "header-complex-type",
+			wc.Add(sourceFile, string(WarnHeaderComplexType),
 				fmt.Sprintf("%s — header object has nested object type; headers should be flat (no nested objects)",
 					location))
 		}
