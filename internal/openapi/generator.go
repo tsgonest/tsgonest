@@ -861,12 +861,21 @@ func (g *Generator) GenerateWithOptions(controllers []analyzer.ControllerInfo, o
 // e.g., "/users/:id" → "/users/{id}"
 func convertPath(path string) string {
 	parts := strings.Split(path, "/")
-	for i, part := range parts {
+	var cleaned []string
+	for _, part := range parts {
+		if part == "" {
+			continue
+		}
 		if strings.HasPrefix(part, ":") {
-			parts[i] = "{" + part[1:] + "}"
+			cleaned = append(cleaned, "{"+part[1:]+"}")
+		} else {
+			cleaned = append(cleaned, part)
 		}
 	}
-	return strings.Join(parts, "/")
+	if len(cleaned) == 0 {
+		return "/"
+	}
+	return "/" + strings.Join(cleaned, "/")
 }
 
 // pathParamRe matches OpenAPI-style path parameters like {id} or {workspaceID}.
@@ -922,8 +931,14 @@ func statusDescription(code int) string {
 		return "OK"
 	case 201:
 		return "Created"
+	case 202:
+		return "Accepted"
 	case 204:
 		return "No Content"
+	case 205:
+		return "Reset Content"
+	case 206:
+		return "Partial Content"
 	case 301:
 		return "Moved Permanently"
 	case 302:
@@ -942,6 +957,18 @@ func statusDescription(code int) string {
 		return "Forbidden"
 	case 404:
 		return "Not Found"
+	case 409:
+		return "Conflict"
+	case 410:
+		return "Gone"
+	case 413:
+		return "Payload Too Large"
+	case 415:
+		return "Unsupported Media Type"
+	case 422:
+		return "Unprocessable Entity"
+	case 429:
+		return "Too Many Requests"
 	case 500:
 		return "Internal Server Error"
 	default:

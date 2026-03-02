@@ -915,6 +915,147 @@ class MixedController {
 	}
 }
 
+// --- FormData body validation tests ---
+
+func TestRewriteController_FormDataBodyValidation(t *testing.T) {
+	// @FormDataBody() params should get assert validation injection,
+	// just like regular @Body() params. Multer parses the multipart request,
+	// but the DTO fields still need validation (and string→number/boolean coercion).
+	input := `class UploadController {
+    async upload(body) {
+        return this.service.upload(body);
+    }
+}`
+
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name:       "UploadController",
+			SourceFile: "/src/upload.controller.ts",
+			Routes: []analyzer.Route{
+				{
+					OperationID: "upload",
+					MethodName:  "upload",
+					Parameters: []analyzer.RouteParameter{
+						{
+							Category:    "body",
+							LocalName:   "body",
+							TypeName:    "UploadDto",
+							ContentType: "multipart/form-data",
+							Type:        metadata.Metadata{Kind: metadata.KindRef, Ref: "UploadDto"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	companionMap := map[string]string{
+		"UploadDto": "/dist/upload.dto.UploadDto.tsgonest.js",
+	}
+
+	result := rewriteController(input, "/dist/upload.controller.js", controllers, companionMap, "esm")
+
+	if !strings.Contains(result, "assertUploadDto(body)") {
+		t.Errorf("expected assert call injection for @FormDataBody(), got:\n%s", result)
+	}
+}
+
+func TestRewriteController_FormDataBody_InlineTypeWithSyntheticName(t *testing.T) {
+	// When the analyzer assigns a synthetic TypeName to an inline FormData body type,
+	// the rewriter should inject validation just like a named DTO.
+	// The synthetic name (e.g., "__UploadController_upload_Body") comes from the analyzer.
+	input := `class UploadController {
+    async upload(body) {
+        return this.service.upload(body);
+    }
+}`
+
+	// Simulate what the analyzer should produce for an inline type:
+	// TypeName is synthesized, Type is KindObject with inlined properties
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name:       "UploadController",
+			SourceFile: "/src/upload.controller.ts",
+			Routes: []analyzer.Route{
+				{
+					OperationID: "upload",
+					MethodName:  "upload",
+					Parameters: []analyzer.RouteParameter{
+						{
+							Category:    "body",
+							LocalName:   "body",
+							TypeName:    "__UploadController_upload_Body",
+							ContentType: "multipart/form-data",
+							Type: metadata.Metadata{
+								Kind: metadata.KindObject,
+								Name: "__UploadController_upload_Body",
+								Properties: []metadata.Property{
+									{Name: "file", Type: metadata.Metadata{Kind: metadata.KindNative, NativeType: "File"}},
+									{Name: "id", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	companionMap := map[string]string{
+		"__UploadController_upload_Body": "/dist/upload.controller.__UploadController_upload_Body.tsgonest.js",
+	}
+
+	result := rewriteController(input, "/dist/upload.controller.js", controllers, companionMap, "esm")
+
+	if !strings.Contains(result, "assert__UploadController_upload_Body(body)") {
+		t.Errorf("expected assert call for inline FormData body with synthetic name, got:\n%s", result)
+	}
+	if !strings.Contains(result, "import") && !strings.Contains(result, "assert__UploadController_upload_Body") {
+		t.Errorf("expected companion import for synthetic type, got:\n%s", result)
+	}
+}
+
+func TestRewriteController_FormDataBodyWithCompanionImport(t *testing.T) {
+	// Verify ESM import statement is generated for the FormData body type's companion
+	input := `class UploadController {
+    async upload(body) {
+        return this.service.upload(body);
+    }
+}`
+
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name:       "UploadController",
+			SourceFile: "/src/upload.controller.ts",
+			Routes: []analyzer.Route{
+				{
+					OperationID: "upload",
+					MethodName:  "upload",
+					Parameters: []analyzer.RouteParameter{
+						{
+							Category:    "body",
+							LocalName:   "body",
+							TypeName:    "UploadDto",
+							ContentType: "multipart/form-data",
+							Type:        metadata.Metadata{Kind: metadata.KindRef, Ref: "UploadDto"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	companionMap := map[string]string{
+		"UploadDto": "/dist/upload.dto.UploadDto.tsgonest.js",
+	}
+
+	result := rewriteController(input, "/dist/upload.controller.js", controllers, companionMap, "esm")
+
+	if !strings.Contains(result, `import { assertUploadDto } from "./upload.dto.UploadDto.tsgonest.js"`) {
+		t.Errorf("expected companion import for FormData body type, got:\n%s", result)
+	}
+}
+
 // --- Primitive return type serialization tests ---
 // These tests verify that controller methods returning primitive types (string, number, boolean)
 // get proper JSON serialization wrapping. This is critical because NestJS sets Content-Type to

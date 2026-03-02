@@ -81,10 +81,6 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 			for _, param := range route.Parameters {
 				switch param.Category {
 				case "body":
-					// Skip validation for multipart/form-data — multer handles parsing
-					if param.ContentType == "multipart/form-data" {
-						continue
-					}
 					typeName := resolveParamTypeName(&param)
 					if typeName == "" {
 						continue
@@ -234,11 +230,11 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 		var coercionCode string
 		switch sc.atomic {
 		case "number":
-			coercionCode = fmt.Sprintf("    %s = +%s; if (Number.isNaN(%s)) throw new __e([{path:\"%s\",expected:\"number\",received:typeof %s}]);",
-				sc.paramName, sc.paramName, sc.paramName, sc.paramName, sc.paramName)
+			coercionCode = fmt.Sprintf("    if (%s === \"\") throw new __e([{path:\"%s\",expected:\"number\",received:\"string\"}]); %s = +%s; if (Number.isNaN(%s)) throw new __e([{path:\"%s\",expected:\"number\",received:typeof %s}]);",
+				sc.paramName, sc.paramName, sc.paramName, sc.paramName, sc.paramName, sc.paramName, sc.paramName)
 		case "boolean":
-			coercionCode = fmt.Sprintf("    if (%s === \"true\" || %s === \"1\") %s = true; else if (%s === \"false\" || %s === \"0\") %s = false;",
-				sc.paramName, sc.paramName, sc.paramName, sc.paramName, sc.paramName, sc.paramName)
+			coercionCode = fmt.Sprintf("    if (%s === \"true\" || %s === \"1\") %s = true; else if (%s === \"false\" || %s === \"0\") %s = false; else throw new __e([{path:\"%s\",expected:\"boolean\",received:typeof %s}]);",
+				sc.paramName, sc.paramName, sc.paramName, sc.paramName, sc.paramName, sc.paramName, sc.paramName, sc.paramName)
 		}
 		if coercionCode != "" {
 			text = injectAtMethodStart(text, sc.methodName, coercionCode)
@@ -388,6 +384,11 @@ func resolvePrimitiveReturn(m *metadata.Metadata) (atomic string, nullable bool)
 		nullable := m.Nullable
 		for _, member := range m.UnionMembers {
 			if member.Kind == metadata.KindAtomic {
+				// Recognize null/undefined as nullable markers, not as the atomic type
+				if member.Atomic == "null" || member.Atomic == "undefined" {
+					nullable = true
+					continue
+				}
 				if foundAtomic == "" {
 					foundAtomic = member.Atomic
 				} else if foundAtomic != member.Atomic {
@@ -437,7 +438,12 @@ func findBodyParamName(text string, methodName string) string {
 	if len(match) < 2 {
 		return ""
 	}
-	return strings.TrimSpace(match[1])
+	name := strings.TrimSpace(match[1])
+	// Reject destructured parameters like { id } or [a, b]
+	if strings.ContainsAny(name, "{}[]") {
+		return ""
+	}
+	return name
 }
 
 // injectAtMethodStart inserts a line of code at the beginning of a method body.
@@ -511,8 +517,9 @@ func wrapReturnsInMethod(text string, methodName string, transformFunc string, i
 // Handles both `methodName(` and indented declarations like `    methodName(`.
 func makeMethodAsync(text string, methodName string) string {
 	// Find the method declaration: methodName( preceded by whitespace/newline
-	// but NOT already preceded by `async`
-	pattern := regexp.MustCompile(`(\n[ \t]+)` + regexp.QuoteMeta(methodName) + `\s*\(`)
+	// but NOT already preceded by `async`.
+	// Support: indented (\n\s+method), unindented (\nmethod), and single-line ({ method).
+	pattern := regexp.MustCompile(`(\n[ \t]*|[{;]\s*)` + regexp.QuoteMeta(methodName) + `\s*\(`)
 	loc := pattern.FindStringIndex(text)
 	if loc == nil {
 		return text
@@ -628,24 +635,38 @@ func skipStringLiteral(text string, i int) int {
 // Only wraps returns at brace depth 0 (not inside nested functions/arrows/blocks).
 // When isAsync is false, omits `await` from the wrapping.
 func wrapReturnsInBody(body string, transformFunc string, isArray bool, isAsync bool) string {
-	// We need to find `return EXPR;` patterns at depth 0
-	// Depth tracking: nested { } blocks (if/for/arrow functions) increase depth
+	// We need to find `return EXPR;` patterns that belong to THIS method,
+	// not inside nested function/arrow scopes.
+	// funcDepth tracks nested function bodies only (not control-flow blocks).
+	// A `{` after `)` with a preceding function/arrow context increments funcDepth.
+	// Control-flow blocks (if/for/while/switch/try/catch) do NOT increment funcDepth.
 	var result strings.Builder
 	i := 0
-	depth := 0
+	funcDepth := 0
+	// braceStack tracks whether each '{' is a function body (true) or control-flow (false)
+	var braceStack []bool
 
 	for i < len(body) {
 		ch := body[i]
 
-		// Track brace depth
+		// Track brace depth, distinguishing function bodies from control-flow blocks
 		if ch == '{' {
-			depth++
+			isFuncBody := isFunctionBrace(body, i)
+			braceStack = append(braceStack, isFuncBody)
+			if isFuncBody {
+				funcDepth++
+			}
 			result.WriteByte(ch)
 			i++
 			continue
 		}
 		if ch == '}' {
-			depth--
+			if len(braceStack) > 0 {
+				if braceStack[len(braceStack)-1] {
+					funcDepth--
+				}
+				braceStack = braceStack[:len(braceStack)-1]
+			}
 			result.WriteByte(ch)
 			i++
 			continue
@@ -686,8 +707,8 @@ func wrapReturnsInBody(body string, transformFunc string, isArray bool, isAsync 
 			}
 		}
 
-		// Look for `return` keyword at depth 0
-		if depth == 0 && ch == 'r' && i+6 <= len(body) && body[i:i+6] == "return" {
+		// Look for `return` keyword at funcDepth 0 (this method's scope)
+		if funcDepth == 0 && ch == 'r' && i+6 <= len(body) && body[i:i+6] == "return" {
 			// Check it's a word boundary (not part of a larger identifier)
 			if i > 0 && isIdentChar(body[i-1]) {
 				result.WriteByte(ch)
@@ -701,7 +722,7 @@ func wrapReturnsInBody(body string, transformFunc string, isArray bool, isAsync 
 				continue
 			}
 
-			// Found `return` at depth 0 — extract the expression until `;`
+			// Found `return` at funcDepth 0 — extract the expression until `;`
 			// Skip whitespace after `return`
 			exprStart := afterReturn
 			for exprStart < len(body) && (body[exprStart] == ' ' || body[exprStart] == '\t' || body[exprStart] == '\n' || body[exprStart] == '\r') {
@@ -718,10 +739,14 @@ func wrapReturnsInBody(body string, transformFunc string, isArray bool, isAsync 
 			// Find the end of the expression (the `;`)
 			exprEnd := findExpressionEnd(body, exprStart)
 			if exprEnd < 0 {
-				// No semicolon found; write through and continue
-				result.WriteByte(ch)
-				i++
-				continue
+				// No semicolon found — try ASI: expression ends at newline before `}`
+				// or at the next `}` at current brace depth
+				exprEnd = findExpressionEndASI(body, exprStart)
+				if exprEnd < 0 {
+					result.WriteByte(ch)
+					i++
+					continue
+				}
 			}
 
 			expr := strings.TrimSpace(body[exprStart:exprEnd])
@@ -759,7 +784,7 @@ func wrapReturnsInBody(body string, transformFunc string, isArray bool, isAsync 
 				result.WriteString(")")
 			}
 			result.WriteByte(';')
-			i = exprEnd + 1 // skip past the `;`
+			i = exprEnd + 1 // skip past the `;` or ASI boundary
 			continue
 		}
 
@@ -768,6 +793,158 @@ func wrapReturnsInBody(body string, transformFunc string, isArray bool, isAsync 
 	}
 
 	return result.String()
+}
+
+// isFunctionBrace checks if the `{` at position pos is the start of a
+// function/arrow body (as opposed to a control-flow block).
+// Looks backwards past whitespace for `)` followed by `=>`, or for
+// the `function` keyword pattern.
+func isFunctionBrace(body string, pos int) bool {
+	// Look backwards past whitespace
+	j := pos - 1
+	for j >= 0 && (body[j] == ' ' || body[j] == '\t' || body[j] == '\n' || body[j] == '\r') {
+		j--
+	}
+	if j < 0 {
+		return false
+	}
+
+	// Arrow function: `=> {`
+	if j >= 1 && body[j-1] == '=' && body[j] == '>' {
+		return true
+	}
+
+	// Function/method body: `) {`
+	// We need to distinguish `function foo() {` and `method() {` from `if () {` / `for () {`
+	if body[j] == ')' {
+		// Scan backwards past the balanced parens to find what precedes them
+		parenDepth := 1
+		k := j - 1
+		for k >= 0 && parenDepth > 0 {
+			switch body[k] {
+			case ')':
+				parenDepth++
+			case '(':
+				parenDepth--
+			case '"', '\'', '`':
+				// Skip backwards past string literal (approximate)
+				quoteChar := body[k]
+				k--
+				for k >= 0 && body[k] != quoteChar {
+					if body[k] == '\\' {
+						k--
+					}
+					k--
+				}
+			}
+			k--
+		}
+		// k is now just before the '(' — check what keyword precedes it
+		// Skip whitespace
+		for k >= 0 && (body[k] == ' ' || body[k] == '\t' || body[k] == '\n' || body[k] == '\r') {
+			k--
+		}
+		if k < 0 {
+			return false
+		}
+		// Extract the preceding word
+		wordEnd := k + 1
+		for k >= 0 && isIdentChar(body[k]) {
+			k--
+		}
+		word := body[k+1 : wordEnd]
+
+		// Control-flow keywords — NOT function bodies
+		switch word {
+		case "if", "else", "for", "while", "switch", "catch", "with":
+			return false
+		}
+		// Everything else (function name, method name, "function" keyword) is a function body
+		return true
+	}
+
+	// `else {` without parens — control-flow, not function
+	// `try {`, `finally {` — control-flow
+	// Check the preceding word
+	if isIdentChar(body[j]) {
+		wordEnd := j + 1
+		k := j
+		for k >= 0 && isIdentChar(body[k]) {
+			k--
+		}
+		word := body[k+1 : wordEnd]
+		switch word {
+		case "else", "try", "finally", "do":
+			return false
+		}
+	}
+
+	return false
+}
+
+// findExpressionEndASI finds the end of a return expression when there's no
+// semicolon (Automatic Semicolon Insertion). The expression ends at a newline
+// that is followed (after optional whitespace) by a `}` or another statement.
+func findExpressionEndASI(body string, start int) int {
+	depth := 0
+	for i := start; i < len(body); i++ {
+		ch := body[i]
+		switch ch {
+		case '(':
+			depth++
+		case ')':
+			depth--
+		case '[':
+			depth++
+		case ']':
+			depth--
+		case '{':
+			depth++
+		case '}':
+			if depth == 0 {
+				// End of block — expression ends at the last non-whitespace before this
+				end := i - 1
+				for end >= start && (body[end] == ' ' || body[end] == '\t' || body[end] == '\n' || body[end] == '\r') {
+					end--
+				}
+				if end >= start {
+					return end + 1
+				}
+				return -1
+			}
+			depth--
+		case '"', '\'', '`':
+			i = skipStringLiteral(body, i)
+		case '\n':
+			if depth == 0 {
+				// Newline at depth 0 — potential ASI point
+				// Check if the next non-whitespace is `}` or a new statement keyword
+				k := i + 1
+				for k < len(body) && (body[k] == ' ' || body[k] == '\t' || body[k] == '\r') {
+					k++
+				}
+				if k >= len(body) || body[k] == '}' || body[k] == '\n' {
+					return i
+				}
+				// Check for statement-starting keywords after the newline
+				if isStatementStart(body, k) {
+					return i
+				}
+			}
+		}
+	}
+	return -1
+}
+
+// isStatementStart checks if position k in body starts a new statement keyword.
+func isStatementStart(body string, k int) bool {
+	keywords := []string{"return", "if", "for", "while", "switch", "throw", "try", "const", "let", "var", "break", "continue", "case", "default"}
+	for _, kw := range keywords {
+		if k+len(kw) <= len(body) && body[k:k+len(kw)] == kw && (k+len(kw) >= len(body) || !isIdentChar(body[k+len(kw)])) {
+			return true
+		}
+	}
+	return false
 }
 
 // findExpressionEnd finds the position of the semicolon ending an expression,
@@ -816,6 +993,10 @@ func injectClassInterceptor(text string, controllers []analyzer.ControllerInfo, 
 		pattern := regexp.MustCompile(regexp.QuoteMeta(className) + `\s*=\s*__decorate\(\[`)
 		loc := pattern.FindStringIndex(text)
 		if loc == nil {
+			continue
+		}
+		// Check if the interceptor is already present in the __decorate block
+		if strings.Contains(text[loc[0]:], "UseInterceptors)("+interceptorName+")") {
 			continue
 		}
 		// Find the '[' position
@@ -878,6 +1059,7 @@ func injectSSETransforms(text string, st sseTransform) string {
 //   - string:  return JSON.stringify(await EXPR);
 //   - number:  return "" + (await EXPR);
 //   - boolean: return (await EXPR) ? "true" : "false";
+//
 // With nullable wrapping when needed.
 func wrapPrimitiveReturns(text string, methodName string, atomic string, nullable bool) string {
 	bodyStart, bodyEnd, found := findMethodBody(text, methodName)

@@ -347,4 +347,21 @@ func generateAssertConstraintChecks(e *Emitter, accessor string, pathExpr string
 			e.EndBlock()
 		}
 	}
+
+	// Array constraints
+	if c.MinItems != nil {
+		e.Block("if (Array.isArray(%s) && %s.length < %d)", accessor, accessor, *c.MinItems)
+		emitAssertThrow(e, pathExpr, errMsg("minItems", fmt.Sprintf("minItems %d", *c.MinItems)), fmt.Sprintf("\"length \" + %s.length", accessor))
+		e.EndBlock()
+	}
+	if c.MaxItems != nil {
+		e.Block("if (Array.isArray(%s) && %s.length > %d)", accessor, accessor, *c.MaxItems)
+		emitAssertThrow(e, pathExpr, errMsg("maxItems", fmt.Sprintf("maxItems %d", *c.MaxItems)), fmt.Sprintf("\"length \" + %s.length", accessor))
+		e.EndBlock()
+	}
+	if c.UniqueItems != nil && *c.UniqueItems {
+		e.Block("if (Array.isArray(%s) && new Set(%s).size !== %s.length)", accessor, accessor, accessor)
+		emitAssertThrow(e, pathExpr, errMsg("uniqueItems", "uniqueItems"), "\"duplicate items\"")
+		e.EndBlock()
+	}
 }

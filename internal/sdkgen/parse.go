@@ -464,10 +464,50 @@ func extractSSETypeFromMedia(media openAPIMediaType, resolver *schemaResolver) s
 	if err := json.Unmarshal(media.ItemSchema, &itemSchema); err != nil {
 		return ""
 	}
-	propsRaw, ok := itemSchema["properties"]
-	if !ok {
-		return ""
+
+	// Simple case: top-level properties (non-discriminated SSE)
+	if propsRaw, ok := itemSchema["properties"]; ok {
+		if ts := extractContentSchemaType(propsRaw, resolver); ts != "" {
+			return ts
+		}
 	}
+
+	// oneOf case: discriminated @EventStream variants — collect data types from each variant
+	if oneOfRaw, ok := itemSchema["oneOf"]; ok {
+		var variants []json.RawMessage
+		if err := json.Unmarshal(oneOfRaw, &variants); err != nil {
+			return ""
+		}
+		seen := make(map[string]bool)
+		var types []string
+		for _, variantRaw := range variants {
+			var variant map[string]json.RawMessage
+			if err := json.Unmarshal(variantRaw, &variant); err != nil {
+				continue
+			}
+			propsRaw, ok := variant["properties"]
+			if !ok {
+				continue
+			}
+			ts := extractContentSchemaType(propsRaw, resolver)
+			if ts != "" && !seen[ts] {
+				seen[ts] = true
+				types = append(types, ts)
+			}
+		}
+		if len(types) == 1 {
+			return types[0]
+		}
+		if len(types) > 1 {
+			return strings.Join(types, " | ")
+		}
+	}
+
+	return ""
+}
+
+// extractContentSchemaType extracts the TypeScript type from properties.data.contentSchema.
+func extractContentSchemaType(propsRaw json.RawMessage, resolver *schemaResolver) string {
 	var props map[string]json.RawMessage
 	if err := json.Unmarshal(propsRaw, &props); err != nil {
 		return ""

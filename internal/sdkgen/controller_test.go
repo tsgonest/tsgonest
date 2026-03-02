@@ -324,6 +324,82 @@ func TestGenerateController_InterfaceHasOverrides(t *testing.T) {
 	}
 }
 
+func TestGenerateStandaloneFunction_SSETyped_UsesJSONParse(t *testing.T) {
+	method := SDKMethod{
+		Name:                "streamOrders",
+		HTTPMethod:          "GET",
+		Path:                "/orders/stream",
+		ResponseContentType: "text/event-stream",
+		SSEEventType:        "OrderUpdate",
+	}
+
+	code := generateStandaloneFunction("OrdersController", method)
+
+	// Should use JSON.parse for typed SSE
+	if !strings.Contains(code, "JSON.parse(s)") {
+		t.Error("typed SSE should use JSON.parse parser")
+	}
+	// Should have SSEConnection<OrderUpdate>
+	if !strings.Contains(code, "SSEConnection<OrderUpdate>") {
+		t.Error("expected SSEConnection<OrderUpdate>")
+	}
+	// responseType should be 'sse' (not 'sse-raw')
+	if strings.Contains(code, "sse-raw") {
+		t.Error("typed SSE should use responseType 'sse', not 'sse-raw'")
+	}
+}
+
+func TestGenerateStandaloneFunction_SSEUntyped_UsesRawIdentity(t *testing.T) {
+	method := SDKMethod{
+		Name:                "streamRaw",
+		HTTPMethod:          "GET",
+		Path:                "/raw/stream",
+		ResponseContentType: "text/event-stream",
+		SSEEventType:        "", // untyped
+	}
+
+	code := generateStandaloneFunction("RawController", method)
+
+	// Should use identity parser for untyped SSE
+	if !strings.Contains(code, "(s: string) => s") {
+		t.Error("untyped SSE should use identity parser")
+	}
+	// Should have SSEConnection<string>
+	if !strings.Contains(code, "SSEConnection<string>") {
+		t.Error("expected SSEConnection<string>")
+	}
+	// Should NOT use JSON.parse
+	if strings.Contains(code, "JSON.parse") {
+		t.Error("untyped SSE should not use JSON.parse")
+	}
+	// responseType should be 'sse-raw'
+	if !strings.Contains(code, "sse-raw") {
+		t.Error("untyped SSE should use responseType 'sse-raw'")
+	}
+}
+
+func TestGenerateStandaloneFunction_SSEUnionType_UsesJSONParse(t *testing.T) {
+	// When @EventStream has multiple typed variants, SSEEventType is a union
+	method := SDKMethod{
+		Name:                "streamEvents",
+		HTTPMethod:          "GET",
+		Path:                "/events/stream",
+		ResponseContentType: "text/event-stream",
+		SSEEventType:        "OrderCreated | OrderUpdated",
+	}
+
+	code := generateStandaloneFunction("EventsController", method)
+
+	// Should use JSON.parse for typed union SSE
+	if !strings.Contains(code, "JSON.parse(s)") {
+		t.Error("typed union SSE should use JSON.parse parser")
+	}
+	// Should have SSEConnection<OrderCreated | OrderUpdated>
+	if !strings.Contains(code, "SSEConnection<OrderCreated | OrderUpdated>") {
+		t.Error("expected SSEConnection<OrderCreated | OrderUpdated>")
+	}
+}
+
 func TestGenerateController_MixedSSEAndJSON(t *testing.T) {
 	doc := &SDKDocument{
 		Schemas: map[string]*SchemaNode{

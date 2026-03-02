@@ -33,7 +33,7 @@ func TestWarning_QueryNestedObject(t *testing.T) {
 		Required: false,
 	}
 
-	analyzer.ValidateParameterType(param, wc, "test.ts", "TestController.testMethod() (test.ts:1)")
+	analyzer.ValidateParameterType(param, wc, nil, "test.ts", "TestController.testMethod() (test.ts:1)")
 
 	if len(wc.Warnings) != 1 {
 		t.Fatalf("expected 1 warning, got %d", len(wc.Warnings))
@@ -69,7 +69,7 @@ func TestWarning_QueryFlatObject_NoWarning(t *testing.T) {
 		Required: false,
 	}
 
-	analyzer.ValidateParameterType(param, wc, "test.ts", "TestController.testMethod() (test.ts:1)")
+	analyzer.ValidateParameterType(param, wc, nil, "test.ts", "TestController.testMethod() (test.ts:1)")
 
 	if len(wc.Warnings) != 0 {
 		t.Errorf("expected 0 warnings for flat query object, got %d: %v", len(wc.Warnings), wc.Warnings)
@@ -91,7 +91,7 @@ func TestWarning_ParamNonScalar_Object(t *testing.T) {
 		Required: true,
 	}
 
-	analyzer.ValidateParameterType(param, wc, "test.ts", "TestController.testMethod() (test.ts:1)")
+	analyzer.ValidateParameterType(param, wc, nil, "test.ts", "TestController.testMethod() (test.ts:1)")
 
 	if len(wc.Warnings) != 1 {
 		t.Fatalf("expected 1 warning, got %d", len(wc.Warnings))
@@ -118,7 +118,7 @@ func TestWarning_ParamNonScalar_Array(t *testing.T) {
 		Required: true,
 	}
 
-	analyzer.ValidateParameterType(param, wc, "test.ts", "TestController.testMethod() (test.ts:1)")
+	analyzer.ValidateParameterType(param, wc, nil, "test.ts", "TestController.testMethod() (test.ts:1)")
 
 	if len(wc.Warnings) != 1 {
 		t.Fatalf("expected 1 warning, got %d", len(wc.Warnings))
@@ -139,7 +139,7 @@ func TestWarning_ParamScalar_NoWarning(t *testing.T) {
 		Required: true,
 	}
 
-	analyzer.ValidateParameterType(param, wc, "test.ts", "TestController.testMethod() (test.ts:1)")
+	analyzer.ValidateParameterType(param, wc, nil, "test.ts", "TestController.testMethod() (test.ts:1)")
 
 	if len(wc.Warnings) != 0 {
 		t.Errorf("expected 0 warnings for scalar path param, got %d", len(wc.Warnings))
@@ -156,7 +156,7 @@ func TestWarning_HeaderNull(t *testing.T) {
 		Required: false,
 	}
 
-	analyzer.ValidateParameterType(param, wc, "test.ts", "TestController.testMethod() (test.ts:1)")
+	analyzer.ValidateParameterType(param, wc, nil, "test.ts", "TestController.testMethod() (test.ts:1)")
 
 	if len(wc.Warnings) != 1 {
 		t.Fatalf("expected 1 warning, got %d", len(wc.Warnings))
@@ -180,7 +180,7 @@ func TestWarning_HeaderNonNull_NoWarning(t *testing.T) {
 		Required: true,
 	}
 
-	analyzer.ValidateParameterType(param, wc, "test.ts", "TestController.testMethod() (test.ts:1)")
+	analyzer.ValidateParameterType(param, wc, nil, "test.ts", "TestController.testMethod() (test.ts:1)")
 
 	if len(wc.Warnings) != 0 {
 		t.Errorf("expected 0 warnings for non-null header, got %d", len(wc.Warnings))
@@ -197,7 +197,7 @@ func TestWarning_NilCollector_NoOp(t *testing.T) {
 	}
 
 	// This should not panic
-	analyzer.ValidateParameterType(param, nil, "test.ts", "TestController.testMethod() (test.ts:1)")
+	analyzer.ValidateParameterType(param, nil, nil, "test.ts", "TestController.testMethod() (test.ts:1)")
 }
 
 // --- Phase 2A: Enhanced Path Parameter Validation ---
@@ -210,7 +210,7 @@ func TestWarning_ParamAny(t *testing.T) {
 		Type:     metadata.Metadata{Kind: metadata.KindAny},
 		Required: true,
 	}
-	analyzer.ValidateParameterType(param, wc, "test.ts", "Ctrl.method() (test.ts:1)")
+	analyzer.ValidateParameterType(param, wc, nil, "test.ts", "Ctrl.method() (test.ts:1)")
 	found := false
 	for _, w := range wc.Warnings {
 		if w.Kind == "param-any" {
@@ -230,7 +230,7 @@ func TestWarning_ParamOptional(t *testing.T) {
 		Type:     metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string", Optional: true},
 		Required: false,
 	}
-	analyzer.ValidateParameterType(param, wc, "test.ts", "Ctrl.method() (test.ts:1)")
+	analyzer.ValidateParameterType(param, wc, nil, "test.ts", "Ctrl.method() (test.ts:1)")
 	found := false
 	for _, w := range wc.Warnings {
 		if w.Kind == "param-optional" {
@@ -250,7 +250,7 @@ func TestWarning_ParamNullable(t *testing.T) {
 		Type:     metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string", Nullable: true},
 		Required: false,
 	}
-	analyzer.ValidateParameterType(param, wc, "test.ts", "Ctrl.method() (test.ts:1)")
+	analyzer.ValidateParameterType(param, wc, nil, "test.ts", "Ctrl.method() (test.ts:1)")
 	found := false
 	for _, w := range wc.Warnings {
 		if w.Kind == "param-optional" {
@@ -270,7 +270,7 @@ func TestWarning_ParamNoName(t *testing.T) {
 		Type:     metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"},
 		Required: true,
 	}
-	analyzer.ValidateParameterType(param, wc, "test.ts", "Ctrl.method() (test.ts:1)")
+	analyzer.ValidateParameterType(param, wc, nil, "test.ts", "Ctrl.method() (test.ts:1)")
 	found := false
 	for _, w := range wc.Warnings {
 		if w.Kind == "param-no-name" {
@@ -290,7 +290,7 @@ func TestWarning_ParamRef(t *testing.T) {
 		Type:     metadata.Metadata{Kind: metadata.KindRef, Name: "SomeDto"},
 		Required: true,
 	}
-	analyzer.ValidateParameterType(param, wc, "test.ts", "Ctrl.method() (test.ts:1)")
+	analyzer.ValidateParameterType(param, wc, nil, "test.ts", "Ctrl.method() (test.ts:1)")
 	found := false
 	for _, w := range wc.Warnings {
 		if w.Kind == "param-non-scalar" {
@@ -318,7 +318,7 @@ func TestWarning_QueryNullable(t *testing.T) {
 		},
 		Required: false,
 	}
-	analyzer.ValidateParameterType(param, wc, "test.ts", "Ctrl.method() (test.ts:1)")
+	analyzer.ValidateParameterType(param, wc, nil, "test.ts", "Ctrl.method() (test.ts:1)")
 	found := false
 	for _, w := range wc.Warnings {
 		if w.Kind == "query-nullable" {
@@ -350,7 +350,7 @@ func TestWarning_HeaderNestedObject(t *testing.T) {
 		},
 		Required: false,
 	}
-	analyzer.ValidateParameterType(param, wc, "test.ts", "Ctrl.method() (test.ts:1)")
+	analyzer.ValidateParameterType(param, wc, nil, "test.ts", "Ctrl.method() (test.ts:1)")
 	found := false
 	for _, w := range wc.Warnings {
 		if w.Kind == "header-complex-type" {

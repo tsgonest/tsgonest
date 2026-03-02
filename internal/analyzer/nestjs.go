@@ -67,6 +67,22 @@ func ParseDecorator(node *ast.Node) *DecoratorInfo {
 					if num, err := strconv.ParseFloat(text, 64); err == nil {
 						info.NumericArg = &num
 					}
+				case ast.KindPrefixUnaryExpression:
+					// Handle unary +N or -N (e.g., @HttpCode(-1), @HttpCode(+201))
+					prefix := arg.AsPrefixUnaryExpression()
+					if prefix.Operand != nil && prefix.Operand.Kind == ast.KindNumericLiteral {
+						text := prefix.Operand.Text()
+						if num, err := strconv.ParseFloat(text, 64); err == nil {
+							if prefix.Operator == ast.KindMinusToken {
+								num = -num
+							}
+							info.NumericArg = &num
+						}
+					}
+				case ast.KindTrueKeyword:
+					info.Args = append(info.Args, "true")
+				case ast.KindFalseKeyword:
+					info.Args = append(info.Args, "false")
 				case ast.KindNoSubstitutionTemplateLiteral:
 					info.Args = append(info.Args, arg.Text())
 				case ast.KindObjectLiteralExpression:
@@ -101,23 +117,29 @@ func extractObjectLiteralProps(objLit *ast.Node) map[string]*ast.Node {
 	}
 	props := make(map[string]*ast.Node)
 	for _, prop := range ole.Properties.Nodes {
-		if prop.Kind != ast.KindPropertyAssignment {
-			continue
+		switch prop.Kind {
+		case ast.KindPropertyAssignment:
+			pa := prop.AsPropertyAssignment()
+			if pa.Name() == nil {
+				continue
+			}
+			var name string
+			switch pa.Name().Kind {
+			case ast.KindIdentifier:
+				name = pa.Name().AsIdentifier().Text
+			case ast.KindStringLiteral:
+				name = pa.Name().AsStringLiteral().Text
+			default:
+				continue
+			}
+			props[name] = pa.Initializer
+		case ast.KindShorthandPropertyAssignment:
+			// Shorthand: { contentType } → name is the identifier itself
+			spa := prop.AsShorthandPropertyAssignment()
+			if spa.Name() != nil {
+				props[spa.Name().Text()] = spa.Name()
+			}
 		}
-		pa := prop.AsPropertyAssignment()
-		if pa.Name() == nil {
-			continue
-		}
-		var name string
-		switch pa.Name().Kind {
-		case ast.KindIdentifier:
-			name = pa.Name().AsIdentifier().Text
-		case ast.KindStringLiteral:
-			name = pa.Name().AsStringLiteral().Text
-		default:
-			continue
-		}
-		props[name] = pa.Initializer
 	}
 	return props
 }
@@ -168,9 +190,14 @@ func CombinePaths(prefix, subPath string) string {
 	return "/" + prefix + "/" + subPath
 }
 
-// cleanPath removes leading and trailing slashes.
+// cleanPath normalizes a route path segment by trimming whitespace,
+// stripping all leading/trailing slashes, and collapsing duplicate slashes.
 func cleanPath(p string) string {
-	p = strings.TrimPrefix(p, "/")
-	p = strings.TrimSuffix(p, "/")
+	p = strings.TrimSpace(p)
+	p = strings.Trim(p, "/")
+	// Collapse any remaining duplicate slashes from the middle
+	for strings.Contains(p, "//") {
+		p = strings.ReplaceAll(p, "//", "/")
+	}
 	return p
 }

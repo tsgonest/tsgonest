@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -31,6 +32,10 @@ func collectCoercionTypes(controllers []analyzer.ControllerInfo) map[string]bool
 		for _, route := range ctrl.Routes {
 			for _, param := range route.Parameters {
 				if (param.Category == "query" || param.Category == "param" || param.Category == "headers") && param.Name == "" && param.TypeName != "" {
+					types[param.TypeName] = true
+				}
+				// FormData body params need coercion too — multer parses fields as strings
+				if param.Category == "body" && param.ContentType == "multipart/form-data" && param.TypeName != "" {
 					types[param.TypeName] = true
 				}
 			}
@@ -124,6 +129,36 @@ func collectTypeNamesFromMetadata(m *metadata.Metadata, names map[string]bool) {
 	// by codegen and don't need separate companion files.
 }
 
+// inlineBodyType holds a synthesized inline body type and its source file.
+type inlineBodyType struct {
+	typeName   string
+	sourceFile string
+	meta       *metadata.Metadata
+}
+
+// collectInlineBodyTypes gathers body parameters with inline (synthesized) types
+// that need companion files but won't be found by scanning top-level declarations.
+// These are inline object types like `body: {file: File, id: string}` that the
+// analyzer gave a synthetic name (e.g., "__UploadController_upload_Body").
+func collectInlineBodyTypes(controllers []analyzer.ControllerInfo) []inlineBodyType {
+	var types []inlineBodyType
+	for _, ctrl := range controllers {
+		for _, route := range ctrl.Routes {
+			for _, param := range route.Parameters {
+				if param.Category == "body" && param.TypeName != "" && param.Type.Kind == metadata.KindObject && strings.HasPrefix(param.TypeName, "__") {
+					m := param.Type
+					types = append(types, inlineBodyType{
+						typeName:   param.TypeName,
+						sourceFile: ctrl.SourceFile,
+						meta:       &m,
+					})
+				}
+			}
+		}
+	}
+	return types
+}
+
 // generateCompanionsInMemory generates companion file content in memory without writing to disk.
 // Returns both the companion files and a map of source file → type names found in that file.
 // Only generates companions for types in the neededTypes set.
@@ -134,7 +169,7 @@ type fileTypeInfo struct {
 	types      map[string]*metadata.Metadata
 }
 
-func generateCompanionsInMemory(program *shimcompiler.Program, cfg *config.Config, sourceToOutput map[string]string, checker *shimchecker.Checker, walker *analyzer.TypeWalker, skipFiles map[string]bool, moduleFormat string, neededTypes map[string]bool, coercionTypes map[string]bool) ([]codegen.CompanionFile, map[string][]string, error) {
+func generateCompanionsInMemory(program *shimcompiler.Program, cfg *config.Config, sourceToOutput map[string]string, checker *shimchecker.Checker, walker *analyzer.TypeWalker, skipFiles map[string]bool, moduleFormat string, neededTypes map[string]bool, coercionTypes map[string]bool, inlineTypes []inlineBodyType) ([]codegen.CompanionFile, map[string][]string, error) {
 	typesByFile := make(map[string][]string)
 
 	// ── Phase 1: Walk types (sequential — uses shared checker) ──────────
@@ -230,6 +265,43 @@ func generateCompanionsInMemory(program *shimcompiler.Program, cfg *config.Confi
 		for typeName := range coercionTypes {
 			if m, ok := registry.Types[typeName]; ok {
 				analyzer.AutoEnableCoercion(m)
+			}
+		}
+	}
+
+	// Inject inline body types (synthesized from inline parameter type annotations).
+	// These aren't found by the top-level declaration scan, so we register them
+	// manually and add them to fileInfos for companion generation.
+	if len(inlineTypes) > 0 {
+		reg := walker.Registry()
+		for _, it := range inlineTypes {
+			reg.Register(it.typeName, it.meta)
+			// Apply coercion if needed (FormData inline types always need it)
+			if coercionTypes[it.typeName] {
+				analyzer.AutoEnableCoercion(it.meta)
+			}
+			// Add to fileInfos so a companion file is generated.
+			// Find or create the fileTypeInfo for this source file.
+			outputBase, ok := sourceToOutput[it.sourceFile]
+			if !ok {
+				continue
+			}
+			found := false
+			for i := range fileInfos {
+				if fileInfos[i].sourceName == it.sourceFile {
+					fileInfos[i].types[it.typeName] = it.meta
+					typesByFile[it.sourceFile] = append(typesByFile[it.sourceFile], it.typeName)
+					found = true
+					break
+				}
+			}
+			if !found {
+				fileInfos = append(fileInfos, fileTypeInfo{
+					sourceName: it.sourceFile,
+					outputBase: outputBase,
+					types:      map[string]*metadata.Metadata{it.typeName: it.meta},
+				})
+				typesByFile[it.sourceFile] = []string{it.typeName}
 			}
 		}
 	}

@@ -7025,3 +7025,177 @@ func TestWalkType_BrandedArrayElementConstraints(t *testing.T) {
 		t.Errorf("ids element: expected pattern '^[0-9a-fA-F]{24}$', got %q", *elem.Constraints.Pattern)
 	}
 }
+
+// --- Bug 1: Generic type alias instantiations at depth 1 ---
+
+// TestWalkGenericTypeAlias_DepthOne_UniqueSchemas verifies that walking
+// generic type alias instantiations at depth 1 (via WalkType, as controller
+// return types without Promise wrapping are walked) produces distinct KindRef
+// results with different composite names. Previously, the depth > 1 guard in
+// walkObjectType's alias recovery would skip this at depth 1, causing all
+// instantiations to collapse to a single inlined schema.
+func TestWalkGenericTypeAlias_DepthOne_UniqueSchemas(t *testing.T) {
+	env := setupWalker(t, `
+type PaginatedResponse<T> = {
+  items: T[];
+  totalCount: number;
+  totalPages: number;
+  currentPage: number;
+  pageSize: number;
+};
+
+interface OrderResponse {
+  orderId: string;
+  total: number;
+}
+
+interface CustomerResponse {
+  customerId: string;
+  name: string;
+  email: string;
+}
+
+// Wrapper whose properties simulate walking PaginatedResponse<T> at depth 1
+// (same depth as a controller return type resolved via WalkTypeNode)
+type Wrapper = {
+  orders: PaginatedResponse<OrderResponse>;
+  customers: PaginatedResponse<CustomerResponse>;
+};
+`)
+	defer env.release()
+
+	walker := env.walkAllNamedTypes(t)
+	reg := walker.Registry()
+
+	if !reg.Has("Wrapper") {
+		t.Fatal("Wrapper should be registered")
+	}
+	wrapper := reg.Types["Wrapper"]
+
+	ordersProp := findProperty(t, wrapper.Properties, "orders")
+	customersProp := findProperty(t, wrapper.Properties, "customers")
+
+	// Both should resolve to KindRef
+	if ordersProp.Type.Kind != metadata.KindRef {
+		t.Errorf("orders: expected KindRef, got %s", ordersProp.Type.Kind)
+	}
+	if customersProp.Type.Kind != metadata.KindRef {
+		t.Errorf("customers: expected KindRef, got %s", customersProp.Type.Kind)
+	}
+
+	if ordersProp.Type.Kind == metadata.KindRef && customersProp.Type.Kind == metadata.KindRef {
+		if ordersProp.Type.Ref == customersProp.Type.Ref {
+			t.Errorf("GENERIC COLLAPSE: orders and customers both reference %q — they should be different", ordersProp.Type.Ref)
+		}
+
+		// Verify both registered schemas have correct items element type
+		for _, tc := range []struct {
+			ref     string
+			itemRef string
+		}{
+			{ordersProp.Type.Ref, "OrderResponse"},
+			{customersProp.Type.Ref, "CustomerResponse"},
+		} {
+			if !reg.Has(tc.ref) {
+				t.Errorf("%s should be registered in the registry", tc.ref)
+				continue
+			}
+			m := reg.Types[tc.ref]
+			itemsProp := findProperty(t, m.Properties, "items")
+			if itemsProp.Type.Kind != metadata.KindArray || itemsProp.Type.ElementType == nil {
+				t.Errorf("%s.items: expected KindArray with element type", tc.ref)
+				continue
+			}
+			if itemsProp.Type.ElementType.Kind != metadata.KindRef {
+				t.Errorf("%s.items element: expected KindRef, got %s", tc.ref, itemsProp.Type.ElementType.Kind)
+				continue
+			}
+			if itemsProp.Type.ElementType.Ref != tc.itemRef {
+				t.Errorf("%s.items element: expected ref to %q, got %q", tc.ref, tc.itemRef, itemsProp.Type.ElementType.Ref)
+			}
+		}
+	}
+}
+
+// --- Bug 3: Same-named types from different modules collide ---
+
+// TestWalkNameCollision_DifferentTypes_Disambiguated verifies that two
+// interfaces with the same symbol name but different properties are both
+// registered (the second with a _2 suffix) and a warning is emitted.
+func TestWalkNameCollision_DifferentTypes_Disambiguated(t *testing.T) {
+	env := setupWalkerMultiFile(t, map[string]string{
+		"a.ts": `export interface LeaderboardResponse { rank: number; score: number; }`,
+		"b.ts": `export interface LeaderboardResponse { userId: string; position: number; totalPoints: number; }`,
+		"test.ts": `
+import { LeaderboardResponse as LeaderboardA } from "./a";
+import { LeaderboardResponse as LeaderboardB } from "./b";
+
+type Container = {
+  boardA: LeaderboardA;
+  boardB: LeaderboardB;
+};
+`,
+	}, "test.ts")
+	defer env.release()
+
+	walker := env.walkAllNamedTypes(t)
+	reg := walker.Registry()
+
+	if !reg.Has("Container") {
+		t.Fatal("Container should be registered")
+	}
+
+	container := reg.Types["Container"]
+	boardA := findProperty(t, container.Properties, "boardA")
+	boardB := findProperty(t, container.Properties, "boardB")
+
+	// Both should be KindRef
+	if boardA.Type.Kind != metadata.KindRef {
+		t.Fatalf("boardA: expected KindRef, got %s", boardA.Type.Kind)
+	}
+	if boardB.Type.Kind != metadata.KindRef {
+		t.Fatalf("boardB: expected KindRef, got %s", boardB.Type.Kind)
+	}
+
+	// They should reference DIFFERENT names
+	if boardA.Type.Ref == boardB.Type.Ref {
+		t.Errorf("NAME COLLISION: boardA and boardB both reference %q — they should reference different names", boardA.Type.Ref)
+	}
+
+	// Both names should be registered
+	if !reg.Has(boardA.Type.Ref) {
+		t.Errorf("registry should contain %q", boardA.Type.Ref)
+	}
+	if !reg.Has(boardB.Type.Ref) {
+		t.Errorf("registry should contain %q", boardB.Type.Ref)
+	}
+
+	// Verify the disambiguated name (one should be LeaderboardResponse, other LeaderboardResponse_2)
+	refs := []string{boardA.Type.Ref, boardB.Type.Ref}
+	hasBase := false
+	hasSuffix := false
+	for _, r := range refs {
+		if r == "LeaderboardResponse" {
+			hasBase = true
+		}
+		if r == "LeaderboardResponse_2" {
+			hasSuffix = true
+		}
+	}
+	if !hasBase || !hasSuffix {
+		t.Errorf("expected refs to be [LeaderboardResponse, LeaderboardResponse_2], got %v", refs)
+	}
+
+	// Verify a warning was emitted
+	warnings := walker.Warnings()
+	found := false
+	for _, w := range warnings {
+		if strings.Contains(w, "type-name-collision") && strings.Contains(w, "LeaderboardResponse") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected a type-name-collision warning for LeaderboardResponse, got warnings: %v", warnings)
+	}
+}

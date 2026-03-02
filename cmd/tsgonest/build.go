@@ -364,10 +364,13 @@ func runBuildWithIncr(args []string, oldIncrProgram *shimincremental.Program, ou
 		// Collect query/param DTO type names that need coercion
 		coercionTypes := collectCoercionTypes(controllers)
 
+		// Collect inline body types (synthesized names for anonymous object type params)
+		inlineTypes := collectInlineBodyTypes(controllers)
+
 		// ── Step 4: Generate companions only for needed types ────────────
 		companionStart := time.Now()
 		if needCompanions && (neededTypes == nil || len(neededTypes) > 0) {
-			companions, typesByFile, compErr := generateCompanionsInMemory(program, cfg, sourceToOutput, sharedChecker, sharedWalker, syntaxErrorFiles, modFmt, neededTypes, coercionTypes)
+			companions, typesByFile, compErr := generateCompanionsInMemory(program, cfg, sourceToOutput, sharedChecker, sharedWalker, syntaxErrorFiles, modFmt, neededTypes, coercionTypes, inlineTypes)
 			if compErr != nil {
 				fmt.Fprintf(os.Stderr, "error generating companions: %v\n", compErr)
 				return 1
@@ -620,16 +623,16 @@ func runBuildWithIncr(args []string, oldIncrProgram *shimincremental.Program, ou
 					return
 				}
 				// Build SDK options from config
-			var sdkOpts *sdkgen.GenerateOptions
-			if cfg != nil {
-				sdkOpts = &sdkgen.GenerateOptions{
-					GlobalPrefix: cfg.NestJS.GlobalPrefix,
+				var sdkOpts *sdkgen.GenerateOptions
+				if cfg != nil {
+					sdkOpts = &sdkgen.GenerateOptions{
+						GlobalPrefix: cfg.NestJS.GlobalPrefix,
+					}
+					if cfg.NestJS.Versioning != nil && cfg.NestJS.Versioning.Prefix != "" {
+						sdkOpts.VersionPrefix = cfg.NestJS.Versioning.Prefix
+					}
 				}
-				if cfg.NestJS.Versioning != nil && cfg.NestJS.Versioning.Prefix != "" {
-					sdkOpts.VersionPrefix = cfg.NestJS.Versioning.Prefix
-				}
-			}
-			if err := sdkgen.Generate(sdkInput, sdkOutput, sdkOpts); err != nil {
+				if err := sdkgen.Generate(sdkInput, sdkOutput, sdkOpts); err != nil {
 					sdkErr = err
 					return
 				}

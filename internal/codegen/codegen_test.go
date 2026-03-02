@@ -2996,3 +2996,147 @@ func TestHelpersFilePath(t *testing.T) {
 		})
 	}
 }
+
+// --- Assert array constraint tests ---
+// These tests verify that the assert function (not just validate) includes
+// array constraint checks. The assert function is the one injected by the
+// controller rewriter for @Body()/@FormDataBody() params.
+
+// extractAssertFunction extracts just the assert function from generated companion code.
+// This ensures we test the assert path specifically, not the validate path.
+func extractAssertFunction(code string, typeName string) string {
+	marker := "export function assert" + typeName + "(input)"
+	idx := strings.Index(code, marker)
+	if idx < 0 {
+		return ""
+	}
+	rest := code[idx:]
+	// Find the end: next "export function" or end of string
+	nextExport := strings.Index(rest[1:], "\nexport function ")
+	if nextExport >= 0 {
+		return rest[:nextExport+1]
+	}
+	return rest
+}
+
+func TestAssert_MaxItems(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+	maxItems := 10
+	meta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Properties: []metadata.Property{
+			{
+				Name:     "files",
+				Required: true,
+				Type: metadata.Metadata{
+					Kind:        metadata.KindArray,
+					ElementType: &metadata.Metadata{Kind: metadata.KindNative, NativeType: "File"},
+				},
+				Constraints: &metadata.Constraints{
+					MaxItems: &maxItems,
+				},
+			},
+		},
+	}
+
+	code := GenerateCompanionSelective("UploadDto", meta, reg, true, false)
+	assertFn := extractAssertFunction(code, "UploadDto")
+
+	if assertFn == "" {
+		t.Fatal("assert function not found in generated code")
+	}
+	// Assert function should include MaxItems check (not just validate)
+	assertContains(t, assertFn, ".length > 10")
+	assertContains(t, assertFn, "maxItems 10")
+}
+
+func TestAssert_MinItems(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+	minItems := 1
+	meta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Properties: []metadata.Property{
+			{
+				Name:     "tags",
+				Required: true,
+				Type: metadata.Metadata{
+					Kind:        metadata.KindArray,
+					ElementType: &metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"},
+				},
+				Constraints: &metadata.Constraints{
+					MinItems: &minItems,
+				},
+			},
+		},
+	}
+
+	code := GenerateCompanionSelective("CreateDto", meta, reg, true, false)
+	assertFn := extractAssertFunction(code, "CreateDto")
+
+	if assertFn == "" {
+		t.Fatal("assert function not found in generated code")
+	}
+	assertContains(t, assertFn, ".length < 1")
+	assertContains(t, assertFn, "minItems 1")
+}
+
+func TestAssert_UniqueItems(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+	unique := true
+	meta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Properties: []metadata.Property{
+			{
+				Name:     "ids",
+				Required: true,
+				Type: metadata.Metadata{
+					Kind:        metadata.KindArray,
+					ElementType: &metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "number"},
+				},
+				Constraints: &metadata.Constraints{
+					UniqueItems: &unique,
+				},
+			},
+		},
+	}
+
+	code := GenerateCompanionSelective("UpdateDto", meta, reg, true, false)
+	assertFn := extractAssertFunction(code, "UpdateDto")
+
+	if assertFn == "" {
+		t.Fatal("assert function not found in generated code")
+	}
+	assertContains(t, assertFn, "new Set(")
+	assertContains(t, assertFn, "uniqueItems")
+}
+
+func TestAssert_MaxItems_WithCustomError(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+	maxItems := 5
+	meta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Properties: []metadata.Property{
+			{
+				Name:     "images",
+				Required: true,
+				Type: metadata.Metadata{
+					Kind:        metadata.KindArray,
+					ElementType: &metadata.Metadata{Kind: metadata.KindNative, NativeType: "File"},
+				},
+				Constraints: &metadata.Constraints{
+					MaxItems: &maxItems,
+					Errors:   map[string]string{"maxItems": "Too many files (max 5)"},
+				},
+			},
+		},
+	}
+
+	code := GenerateCompanionSelective("GalleryDto", meta, reg, true, false)
+	assertFn := extractAssertFunction(code, "GalleryDto")
+
+	if assertFn == "" {
+		t.Fatal("assert function not found in generated code")
+	}
+	assertContains(t, assertFn, ".length > 5")
+	assertContains(t, assertFn, "Too many files (max 5)")
+}

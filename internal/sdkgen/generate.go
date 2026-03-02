@@ -214,11 +214,11 @@ func cleanStaleControllerDirs(outputDir string, doc *SDKDocument) {
 
 	// Known top-level generated files (not controller directories)
 	knownFiles := map[string]bool{
-		"types.ts":    true,
-		"client.ts":   true,
-		"sse.ts":      true,
+		"types.ts":     true,
+		"client.ts":    true,
+		"sse.ts":       true,
 		"form-data.ts": true,
-		"index.ts":    true,
+		"index.ts":     true,
 	}
 
 	// Scan the output directory for subdirectories

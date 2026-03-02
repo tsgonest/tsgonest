@@ -47,6 +47,9 @@ type TypeWalker struct {
 	// warnings collects actionable diagnostics emitted during type walking
 	// (e.g., generic types with anonymous type arguments that can't be named).
 	warnings []string
+	// nameToTypeId maps registered type names to their TypeId.
+	// Used to detect name collisions where different types share the same name.
+	nameToTypeId map[string]shimchecker.TypeId
 	// warnedGenericNames tracks generic type base names that have already emitted
 	// a warning, to avoid flooding the output with duplicate messages.
 	warnedGenericNames map[string]bool
@@ -65,6 +68,7 @@ func NewTypeWalker(checker *shimchecker.Checker) *TypeWalker {
 		visiting:           make(map[shimchecker.TypeId]bool),
 		typeIdToName:       make(map[shimchecker.TypeId]string),
 		pendingName:        make(map[shimchecker.TypeId]string),
+		nameToTypeId:       make(map[string]shimchecker.TypeId),
 		warnedGenericNames: make(map[string]bool),
 	}
 }
@@ -175,6 +179,7 @@ func (w *TypeWalker) WalkNamedType(name string, t *shimchecker.Type) metadata.Me
 		m.Name = name
 		w.registry.Register(name, &m)
 		w.typeIdToName[t.Id()] = name
+		w.nameToTypeId[name] = t.Id()
 		return metadata.Metadata{Kind: metadata.KindRef, Ref: name}
 	}
 
@@ -1042,8 +1047,12 @@ func (w *TypeWalker) walkObjectType(t *shimchecker.Type) metadata.Metadata {
 		}
 
 		if w.registry.Has(typeName) {
-			// Already analyzed — return a $ref
-			return metadata.Metadata{Kind: metadata.KindRef, Ref: typeName}
+			if w.nameToTypeId[typeName] == t.Id() || w.nameToTypeId[typeName] == 0 {
+				// Same type — return a $ref
+				return metadata.Metadata{Kind: metadata.KindRef, Ref: typeName}
+			}
+			// Name collision — different type with same name, disambiguate
+			typeName = w.disambiguateName(typeName, t)
 		}
 
 		// Mark as visiting, analyze, register.
@@ -1058,6 +1067,7 @@ func (w *TypeWalker) walkObjectType(t *shimchecker.Type) metadata.Metadata {
 		delete(w.visiting, t.Id())
 		w.totalTypesWalked = savedBreadth // restore parent's counter
 		w.registry.Register(typeName, &result)
+		w.nameToTypeId[typeName] = t.Id()
 		return metadata.Metadata{Kind: metadata.KindRef, Ref: typeName}
 	}
 
@@ -1067,55 +1077,38 @@ func (w *TypeWalker) walkObjectType(t *shimchecker.Type) metadata.Metadata {
 		return metadata.Metadata{Kind: metadata.KindRef, Ref: cachedName}
 	}
 
-	// Type alias encountered as sub-field — derive name from alias symbol.
+	// Generic type alias recovery — works at ANY depth.
 	// Type aliases resolve to anonymous types (ObjectFlagsAnonymous), so
 	// getTypeName returns "". But Type_alias preserves the alias declaration,
-	// letting us recover the original name (e.g., CustomerShippingAddressResponse)
-	// and register it for $ref extraction in OpenAPI.
-	// Only use Type_alias for sub-field types (depth > 1), not the top-level
-	// type being walked. WalkNamedType handles registration for top-level types.
-	// Also skip when being walked by WalkNamedType (has a pendingName entry).
-	// Skip phantom objects (branded type building blocks like tags.Format<"email">)
-	// — they must remain inlinable so tryDetectBranded can detect them.
-	if w.depth > 1 {
+	// letting us recover the original name. Generic instantiations (with type
+	// args) need composite naming at every depth, including depth 0/1 where
+	// controller return types are walked via WalkTypeNode/WalkType. Without
+	// this, all instantiations of e.g. PaginatedResponse<T> collapse to a
+	// single schema because the anonymous type has no name.
+	// Skip when being walked by WalkNamedType (has a pendingName entry).
+	if w.pendingName[t.Id()] == "" {
 		alias := shimchecker.Type_alias(t)
-		if alias != nil && w.pendingName[t.Id()] == "" {
+		if alias != nil {
 			if aliasSym := alias.Symbol(); aliasSym != nil {
 				aliasName := aliasSym.Name
 				if aliasName != "" && aliasName != "__type" && aliasName != "__object" && (len(aliasName) == 0 || aliasName[0] != '\xfe') {
-					// For generic instantiations (e.g., PaginatedResponse<User>, Omit<Product, 'x'>),
-					// build a composite name so each instantiation gets its own schema.
-					// For non-generic aliases, use the bare alias name.
-					registrationName := aliasName
 					aliasTypeArgs := alias.TypeArguments()
 					if len(aliasTypeArgs) > 0 {
-						if compositeName, ok := w.buildGenericInstantiationName(aliasName, aliasTypeArgs); ok {
-							registrationName = compositeName
-						} else {
+						// Generic type alias instantiation (e.g., PaginatedResponse<User>).
+						// Build composite name so each instantiation gets its own schema.
+						compositeName, ok := w.buildGenericInstantiationName(aliasName, aliasTypeArgs)
+						if !ok {
 							// Anonymous type args — skip registration, inline, and warn
 							w.warnAnonymousTypeArgs(aliasName)
 							return w.analyzeObjectProperties(t, "")
 						}
+						return w.registerAnonymousAlias(t, compositeName)
 					}
-
-					if w.registry.Has(registrationName) {
-						return metadata.Metadata{Kind: metadata.KindRef, Ref: registrationName}
+					// Non-generic alias: only recover at depth > 1.
+					// WalkNamedType handles registration for top-level types.
+					if w.depth > 1 {
+						return w.registerAnonymousAlias(t, aliasName)
 					}
-					// Analyze properties first to check if it's a phantom object.
-					// Save and reset breadth counter for the same reason as named objects above.
-					savedBreadth := w.totalTypesWalked
-					w.totalTypesWalked = 0
-					w.visiting[t.Id()] = true
-					result := w.analyzeObjectProperties(t, registrationName)
-					delete(w.visiting, t.Id())
-					w.totalTypesWalked = savedBreadth
-					if isPhantomObject(&result) {
-						// Don't register phantom objects — they're branded type building blocks
-						return result
-					}
-					w.registry.Register(registrationName, &result)
-					w.typeIdToName[t.Id()] = registrationName
-					return metadata.Metadata{Kind: metadata.KindRef, Ref: registrationName}
 				}
 			}
 		}
@@ -1123,6 +1116,54 @@ func (w *TypeWalker) walkObjectType(t *shimchecker.Type) metadata.Metadata {
 
 	// Anonymous object type — inline the properties
 	return w.analyzeObjectProperties(t, "")
+}
+
+// registerAnonymousAlias checks if registrationName is already registered,
+// returning a KindRef if so. Otherwise it analyzes the object properties,
+// skips phantom objects, and registers the type under registrationName.
+// This is shared by both generic and non-generic alias recovery paths.
+func (w *TypeWalker) registerAnonymousAlias(t *shimchecker.Type, registrationName string) metadata.Metadata {
+	if w.registry.Has(registrationName) {
+		if w.nameToTypeId[registrationName] == t.Id() || w.nameToTypeId[registrationName] == 0 {
+			return metadata.Metadata{Kind: metadata.KindRef, Ref: registrationName}
+		}
+		// Name collision — different type with same name, disambiguate
+		registrationName = w.disambiguateName(registrationName, t)
+	}
+	// Save and reset breadth counter so this named type gets its own budget.
+	savedBreadth := w.totalTypesWalked
+	w.totalTypesWalked = 0
+	w.visiting[t.Id()] = true
+	result := w.analyzeObjectProperties(t, registrationName)
+	delete(w.visiting, t.Id())
+	w.totalTypesWalked = savedBreadth
+	if isPhantomObject(&result) {
+		return result
+	}
+	w.registry.Register(registrationName, &result)
+	w.typeIdToName[t.Id()] = registrationName
+	w.nameToTypeId[registrationName] = t.Id()
+	return metadata.Metadata{Kind: metadata.KindRef, Ref: registrationName}
+}
+
+// disambiguateName generates a unique name by appending _2, _3, etc.
+// when two different types share the same symbol name. Emits a warning.
+func (w *TypeWalker) disambiguateName(baseName string, t *shimchecker.Type) string {
+	candidate := baseName
+	for i := 2; w.registry.Has(candidate) && w.nameToTypeId[candidate] != t.Id(); i++ {
+		candidate = fmt.Sprintf("%s_%d", baseName, i)
+	}
+	if !w.warnedGenericNames[baseName+"_collision"] {
+		w.warnedGenericNames[baseName+"_collision"] = true
+		ctx := ""
+		if w.currentRootContext != "" {
+			ctx = " (while walking " + w.currentRootContext + ")"
+		}
+		w.warnings = append(w.warnings, fmt.Sprintf(
+			"type-name-collision: Multiple types named %q with different definitions were found%s — the second was registered as %q. Consider renaming one of them to avoid confusion.",
+			baseName, ctx, candidate))
+	}
+	return candidate
 }
 
 // analyzeObjectProperties extracts properties from an object type.

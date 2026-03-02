@@ -3660,5 +3660,843 @@ func TestIsTsgonestModule(t *testing.T) {
 	}
 }
 
+// --- Bug 1: Generic type alias return types from controllers ---
+
+// TestControllerAnalyzer_GenericTypeAliasReturn_MultipleInstantiations verifies
+// that two controller methods returning PaginatedResponse<A> and
+// PaginatedResponse<B> (without Promise wrapper) where PaginatedResponse is a
+// type alias produce different return type refs (not collapsed to the same schema).
+// This tests the depth-1 scenario where the old depth > 1 guard would skip
+// alias recovery.
+func TestControllerAnalyzer_GenericTypeAliasReturn_MultipleInstantiations(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+
+		type PaginatedResponse<T> = {
+			items: T[];
+			totalCount: number;
+			totalPages: number;
+		};
+
+		interface OrderDto { orderId: string; total: number; }
+		interface CustomerDto { customerId: string; name: string; }
+
+		@Controller("api")
+		export class ApiController {
+			@Get("orders")
+			getOrders(): PaginatedResponse<OrderDto> {
+				return {} as any;
+			}
+
+			@Get("customers")
+			getCustomers(): PaginatedResponse<CustomerDto> {
+				return {} as any;
+			}
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 {
+		t.Fatalf("expected 1 controller, got %d", len(controllers))
+	}
+	if len(controllers[0].Routes) != 2 {
+		t.Fatalf("expected 2 routes, got %d", len(controllers[0].Routes))
+	}
+
+	r0 := controllers[0].Routes[0] // getOrders
+	r1 := controllers[0].Routes[1] // getCustomers
+
+	// Both should resolve to KindRef (not inlined KindObject or KindAny)
+	if r0.ReturnType.Kind != metadata.KindRef {
+		t.Errorf("getOrders: expected return type KindRef, got %s", r0.ReturnType.Kind)
+	}
+	if r1.ReturnType.Kind != metadata.KindRef {
+		t.Errorf("getCustomers: expected return type KindRef, got %s", r1.ReturnType.Kind)
+	}
+
+	// They must reference DIFFERENT schemas
+	if r0.ReturnType.Kind == metadata.KindRef && r1.ReturnType.Kind == metadata.KindRef {
+		if r0.ReturnType.Ref == r1.ReturnType.Ref {
+			t.Errorf("GENERIC COLLAPSE: getOrders and getCustomers both return ref %q — they should be different", r0.ReturnType.Ref)
+		}
+	}
+}
+
+// --- Bug 2: KindAny return type inference warning ---
+
+// TestControllerAnalyzer_InferReturnType_WarnsOnKindAny verifies that when
+// return type inference produces KindAny, an "unresolvable-return-type"
+// warning is emitted so users know to add explicit annotations.
+func TestControllerAnalyzer_InferReturnType_WarnsOnKindAny(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+
+		@Controller("test")
+		export class TestController {
+			@Get()
+			getData() {
+				return undefined as any;
+			}
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 || len(controllers[0].Routes) != 1 {
+		t.Fatalf("expected 1 controller with 1 route")
+	}
+
+	r := controllers[0].Routes[0]
+	if r.ReturnType.Kind != metadata.KindAny {
+		// The method returns `any`, so the inferred return type should be KindAny
+		t.Logf("getData: return type is %s (not KindAny) — warning may not apply", r.ReturnType.Kind)
+	}
+
+	// Check that an "unresolvable-return-type" warning was emitted
+	warnings := ca.Warnings()
+	found := false
+	for _, w := range warnings {
+		if w.Kind == "unresolvable-return-type" {
+			found = true
+			if !strings.Contains(w.Message, "getData") {
+				t.Errorf("warning should mention method name 'getData', got: %s", w.Message)
+			}
+			break
+		}
+	}
+	if r.ReturnType.Kind == metadata.KindAny && !found {
+		t.Error("expected 'unresolvable-return-type' warning when inference produces KindAny")
+	}
+}
+
+// --- @Param / @Query with branded type constraints ---
+
+func TestControllerAnalyzer_ParamNamedWithBrandedConstraint(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+		function Param(name: string): ParameterDecorator { return () => {}; }
+
+		type MaxLength<N extends number> = { readonly __tsgonest_maxLength: N };
+
+		@Controller("items")
+		export class ItemController {
+			@Get(":id")
+			findOne(@Param("id") id: string & MaxLength<10>): string { return ""; }
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 || len(controllers[0].Routes) != 1 {
+		t.Fatalf("expected 1 controller with 1 route")
+	}
+
+	route := controllers[0].Routes[0]
+	if len(route.Parameters) != 1 {
+		t.Fatalf("expected 1 parameter, got %d", len(route.Parameters))
+	}
+	param := route.Parameters[0]
+	if param.Category != "param" {
+		t.Errorf("expected Category='param', got %q", param.Category)
+	}
+	if param.Name != "id" {
+		t.Errorf("expected Name='id', got %q", param.Name)
+	}
+	if param.Type.Kind != metadata.KindAtomic {
+		t.Fatalf("expected KindAtomic, got %q", param.Type.Kind)
+	}
+	if param.Type.Atomic != "string" {
+		t.Errorf("expected Atomic='string', got %q", param.Type.Atomic)
+	}
+	if param.Type.Constraints == nil {
+		t.Fatal("expected constraints on branded @Param('id') id: string & MaxLength<10>")
+	}
+	if param.Type.Constraints.MaxLength == nil || *param.Type.Constraints.MaxLength != 10 {
+		t.Errorf("expected maxLength=10, got %v", param.Type.Constraints.MaxLength)
+	}
+}
+
+func TestControllerAnalyzer_ParamWholeObjectWithBrandedConstraint(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+		function Param(): ParameterDecorator { return () => {}; }
+
+		type MaxLength<N extends number> = { readonly __tsgonest_maxLength: N };
+		type MinLength<N extends number> = { readonly __tsgonest_minLength: N };
+
+		interface FindParams {
+			id: string & MaxLength<10> & MinLength<1>;
+		}
+
+		@Controller("items")
+		export class ItemController {
+			@Get(":id")
+			findOne(@Param() params: FindParams): string { return ""; }
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 || len(controllers[0].Routes) != 1 {
+		t.Fatalf("expected 1 controller with 1 route")
+	}
+
+	route := controllers[0].Routes[0]
+	if len(route.Parameters) != 1 {
+		t.Fatalf("expected 1 parameter, got %d", len(route.Parameters))
+	}
+	param := route.Parameters[0]
+	if param.Category != "param" {
+		t.Errorf("expected Category='param', got %q", param.Category)
+	}
+	if param.Name != "" {
+		t.Errorf("expected empty Name for whole-object @Param(), got %q", param.Name)
+	}
+	if param.TypeName != "FindParams" {
+		t.Errorf("expected TypeName='FindParams', got %q", param.TypeName)
+	}
+
+	// Resolve the type — it may be KindRef or KindObject
+	paramType := param.Type
+	if paramType.Kind == metadata.KindRef {
+		reg := ca.Registry()
+		if resolved, ok := reg.Types[paramType.Ref]; ok && resolved != nil {
+			paramType = *resolved
+		}
+	}
+	if paramType.Kind != metadata.KindObject {
+		t.Fatalf("expected KindObject, got %q", paramType.Kind)
+	}
+
+	// Check that the id property has branded constraints
+	var idProp *metadata.Property
+	for i := range paramType.Properties {
+		if paramType.Properties[i].Name == "id" {
+			idProp = &paramType.Properties[i]
+			break
+		}
+	}
+	if idProp == nil {
+		t.Fatal("expected property 'id' on FindParams")
+	}
+	if idProp.Type.Kind != metadata.KindAtomic || idProp.Type.Atomic != "string" {
+		t.Errorf("expected id to be atomic string, got %s/%s", idProp.Type.Kind, idProp.Type.Atomic)
+	}
+	if idProp.Constraints == nil {
+		t.Fatal("expected constraints on id property from branded type")
+	}
+	if idProp.Constraints.MaxLength == nil || *idProp.Constraints.MaxLength != 10 {
+		t.Errorf("expected maxLength=10, got %v", idProp.Constraints.MaxLength)
+	}
+	if idProp.Constraints.MinLength == nil || *idProp.Constraints.MinLength != 1 {
+		t.Errorf("expected minLength=1, got %v", idProp.Constraints.MinLength)
+	}
+}
+
+func TestControllerAnalyzer_QueryNamedWithBrandedConstraint(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+		function Query(name: string): ParameterDecorator { return () => {}; }
+
+		type MaxLength<N extends number> = { readonly __tsgonest_maxLength: N };
+
+		@Controller("items")
+		export class ItemController {
+			@Get()
+			search(@Query("term") term: string & MaxLength<100>): string { return ""; }
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 || len(controllers[0].Routes) != 1 {
+		t.Fatalf("expected 1 controller with 1 route")
+	}
+
+	route := controllers[0].Routes[0]
+	if len(route.Parameters) != 1 {
+		t.Fatalf("expected 1 parameter, got %d", len(route.Parameters))
+	}
+	param := route.Parameters[0]
+	if param.Category != "query" {
+		t.Errorf("expected Category='query', got %q", param.Category)
+	}
+	if param.Name != "term" {
+		t.Errorf("expected Name='term', got %q", param.Name)
+	}
+	if param.Type.Kind != metadata.KindAtomic {
+		t.Fatalf("expected KindAtomic, got %q", param.Type.Kind)
+	}
+	if param.Type.Atomic != "string" {
+		t.Errorf("expected Atomic='string', got %q", param.Type.Atomic)
+	}
+	if param.Type.Constraints == nil {
+		t.Fatal("expected constraints on branded @Query('term') term: string & MaxLength<100>")
+	}
+	if param.Type.Constraints.MaxLength == nil || *param.Type.Constraints.MaxLength != 100 {
+		t.Errorf("expected maxLength=100, got %v", param.Type.Constraints.MaxLength)
+	}
+}
+
+func TestControllerAnalyzer_QueryWholeObjectWithBrandedConstraint(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+		function Query(): ParameterDecorator { return () => {}; }
+
+		type MaxLength<N extends number> = { readonly __tsgonest_maxLength: N };
+		type Minimum<N extends number> = { readonly __tsgonest_minimum: N };
+		type Maximum<N extends number> = { readonly __tsgonest_maximum: N };
+
+		interface SearchQuery {
+			term: string & MaxLength<100>;
+			page: number & Minimum<1>;
+			limit: number & Minimum<1> & Maximum<100>;
+		}
+
+		@Controller("items")
+		export class ItemController {
+			@Get()
+			search(@Query() query: SearchQuery): string { return ""; }
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 || len(controllers[0].Routes) != 1 {
+		t.Fatalf("expected 1 controller with 1 route")
+	}
+
+	route := controllers[0].Routes[0]
+	if len(route.Parameters) != 1 {
+		t.Fatalf("expected 1 parameter, got %d", len(route.Parameters))
+	}
+	param := route.Parameters[0]
+	if param.Category != "query" {
+		t.Errorf("expected Category='query', got %q", param.Category)
+	}
+	if param.Name != "" {
+		t.Errorf("expected empty Name for whole-object @Query(), got %q", param.Name)
+	}
+	if param.TypeName != "SearchQuery" {
+		t.Errorf("expected TypeName='SearchQuery', got %q", param.TypeName)
+	}
+
+	// Resolve the type
+	paramType := param.Type
+	if paramType.Kind == metadata.KindRef {
+		reg := ca.Registry()
+		if resolved, ok := reg.Types[paramType.Ref]; ok && resolved != nil {
+			paramType = *resolved
+		}
+	}
+	if paramType.Kind != metadata.KindObject {
+		t.Fatalf("expected KindObject, got %q", paramType.Kind)
+	}
+
+	// Check term property — string with maxLength
+	var termProp *metadata.Property
+	for i := range paramType.Properties {
+		if paramType.Properties[i].Name == "term" {
+			termProp = &paramType.Properties[i]
+			break
+		}
+	}
+	if termProp == nil {
+		t.Fatal("expected property 'term' on SearchQuery")
+	}
+	if termProp.Constraints == nil {
+		t.Fatal("expected constraints on term property")
+	}
+	if termProp.Constraints.MaxLength == nil || *termProp.Constraints.MaxLength != 100 {
+		t.Errorf("expected maxLength=100 on term, got %v", termProp.Constraints.MaxLength)
+	}
+
+	// Check page property — number with minimum, should also have coercion
+	var pageProp *metadata.Property
+	for i := range paramType.Properties {
+		if paramType.Properties[i].Name == "page" {
+			pageProp = &paramType.Properties[i]
+			break
+		}
+	}
+	if pageProp == nil {
+		t.Fatal("expected property 'page' on SearchQuery")
+	}
+	if pageProp.Constraints == nil {
+		t.Fatal("expected constraints on page property")
+	}
+	if pageProp.Constraints.Minimum == nil || *pageProp.Constraints.Minimum != 1 {
+		t.Errorf("expected minimum=1 on page, got %v", pageProp.Constraints.Minimum)
+	}
+	// Note: Auto-coercion for whole-object @Query() is applied later during
+	// companion generation (companions.go), not at the analyzer level,
+	// because the type is KindRef and properties live in the registry.
+
+	// Check limit property — number with minimum + maximum
+	var limitProp *metadata.Property
+	for i := range paramType.Properties {
+		if paramType.Properties[i].Name == "limit" {
+			limitProp = &paramType.Properties[i]
+			break
+		}
+	}
+	if limitProp == nil {
+		t.Fatal("expected property 'limit' on SearchQuery")
+	}
+	if limitProp.Constraints == nil {
+		t.Fatal("expected constraints on limit property")
+	}
+	if limitProp.Constraints.Minimum == nil || *limitProp.Constraints.Minimum != 1 {
+		t.Errorf("expected minimum=1 on limit, got %v", limitProp.Constraints.Minimum)
+	}
+	if limitProp.Constraints.Maximum == nil || *limitProp.Constraints.Maximum != 100 {
+		t.Errorf("expected maximum=100 on limit, got %v", limitProp.Constraints.Maximum)
+	}
+}
+
+// --- @FormDataBody tests ---
+
+func TestControllerAnalyzer_FormDataBody_NamedDto(t *testing.T) {
+	// @FormDataBody() with a named DTO type containing File and scalar properties
+	// should detect ContentType=multipart/form-data, extract TypeName, and walk type.
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Post(path?: string): MethodDecorator { return (t, k, d) => d; }
+		function FormDataBody(): ParameterDecorator { return () => {}; }
+
+		// File is a DOM type not in esnext lib; declare it for the test
+		declare class File {}
+
+		interface UploadDto {
+			file: File;
+			description: string;
+			count: number;
+		}
+
+		@Controller("uploads")
+		export class UploadController {
+			@Post()
+			async upload(@FormDataBody() body: UploadDto): Promise<void> {}
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 {
+		t.Fatalf("expected 1 controller, got %d", len(controllers))
+	}
+	if len(controllers[0].Routes) != 1 {
+		t.Fatalf("expected 1 route, got %d", len(controllers[0].Routes))
+	}
+
+	route := controllers[0].Routes[0]
+	if len(route.Parameters) != 1 {
+		t.Fatalf("expected 1 parameter, got %d", len(route.Parameters))
+	}
+
+	param := route.Parameters[0]
+	if param.Category != "body" {
+		t.Errorf("expected Category='body', got %q", param.Category)
+	}
+	if param.ContentType != "multipart/form-data" {
+		t.Errorf("expected ContentType='multipart/form-data', got %q", param.ContentType)
+	}
+	if param.TypeName != "UploadDto" {
+		t.Errorf("expected TypeName='UploadDto', got %q", param.TypeName)
+	}
+
+	// Named DTO produces KindRef — properties are resolved later via registry.
+	// The coercion is applied in the build pipeline via AutoEnableCoercion on registry entries.
+	if param.Type.Kind != metadata.KindRef {
+		t.Fatalf("expected type kind=ref for named DTO, got %q", param.Type.Kind)
+	}
+	if param.Type.Ref != "UploadDto" {
+		t.Errorf("expected Ref='UploadDto', got %q", param.Type.Ref)
+	}
+}
+
+func TestControllerAnalyzer_FormDataBody_FileArray(t *testing.T) {
+	// @FormDataBody() with File[] should walk as KindArray of KindNative "File"
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Post(path?: string): MethodDecorator { return (t, k, d) => d; }
+		function FormDataBody(): ParameterDecorator { return () => {}; }
+
+		declare class File {}
+
+		interface GalleryUploadDto {
+			files: File[];
+			title: string;
+		}
+
+		@Controller("gallery")
+		export class GalleryController {
+			@Post()
+			async upload(@FormDataBody() body: GalleryUploadDto): Promise<void> {}
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 {
+		t.Fatalf("expected 1 controller, got %d", len(controllers))
+	}
+
+	param := controllers[0].Routes[0].Parameters[0]
+
+	if param.ContentType != "multipart/form-data" {
+		t.Errorf("expected ContentType='multipart/form-data', got %q", param.ContentType)
+	}
+	if param.TypeName != "GalleryUploadDto" {
+		t.Errorf("expected TypeName='GalleryUploadDto', got %q", param.TypeName)
+	}
+
+	// Named DTO → KindRef; verify via type walker separately
+	if param.Type.Kind != metadata.KindRef {
+		t.Fatalf("expected type kind=ref for named DTO, got %q", param.Type.Kind)
+	}
+	if param.Type.Ref != "GalleryUploadDto" {
+		t.Errorf("expected Ref='GalleryUploadDto', got %q", param.Type.Ref)
+	}
+}
+
+func TestTypeWalker_FileArray(t *testing.T) {
+	// Verify the type walker correctly walks File[] as KindArray of KindNative "File".
+	// Use a type alias (not interface) so walkExportedType returns KindObject directly.
+	env := setupWalker(t, `
+		declare class File {}
+
+		export type GalleryUploadDto = {
+			files: File[];
+			title: string;
+		}
+	`)
+	defer env.release()
+
+	m := env.walkExportedType(t, "GalleryUploadDto")
+	if m.Kind != metadata.KindObject {
+		t.Fatalf("expected kind=object, got %q", m.Kind)
+	}
+
+	var filesProp *metadata.Property
+	for i := range m.Properties {
+		if m.Properties[i].Name == "files" {
+			filesProp = &m.Properties[i]
+			break
+		}
+	}
+	if filesProp == nil {
+		t.Fatal("expected 'files' property")
+	}
+	if filesProp.Type.Kind != metadata.KindArray {
+		t.Fatalf("expected files to be KindArray, got %q", filesProp.Type.Kind)
+	}
+	if filesProp.Type.ElementType == nil {
+		t.Fatal("expected files array to have element type")
+	}
+	if filesProp.Type.ElementType.Kind != metadata.KindNative || filesProp.Type.ElementType.NativeType != "File" {
+		t.Errorf("expected files element to be KindNative/File, got kind=%q nativeType=%q",
+			filesProp.Type.ElementType.Kind, filesProp.Type.ElementType.NativeType)
+	}
+}
+
+func TestControllerAnalyzer_FormDataBody_InlineType(t *testing.T) {
+	// @FormDataBody() with an inline object type should still get a synthesized
+	// TypeName so that companion generation and validation injection work.
+	// This mirrors nestia's @TypedFormDataBody(() => multer()) body: {file: File, id: string}
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Post(path?: string): MethodDecorator { return (t, k, d) => d; }
+		function FormDataBody(): ParameterDecorator { return () => {}; }
+
+		declare class File {}
+
+		@Controller("uploads")
+		export class UploadController {
+			@Post()
+			async upload(@FormDataBody() body: { file: File; id: string }): Promise<void> {}
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 {
+		t.Fatalf("expected 1 controller, got %d", len(controllers))
+	}
+
+	param := controllers[0].Routes[0].Parameters[0]
+	if param.Category != "body" {
+		t.Errorf("expected Category='body', got %q", param.Category)
+	}
+	if param.ContentType != "multipart/form-data" {
+		t.Errorf("expected ContentType='multipart/form-data', got %q", param.ContentType)
+	}
+
+	// Inline types should get a non-empty TypeName so companions can be generated
+	if param.TypeName == "" {
+		t.Errorf("expected non-empty TypeName for inline FormData body type (synthetic name), got empty")
+	}
+
+	// Type should still be fully walked
+	if param.Type.Kind != metadata.KindObject {
+		t.Fatalf("expected type kind=object, got %q", param.Type.Kind)
+	}
+	if len(param.Type.Properties) != 2 {
+		t.Fatalf("expected 2 properties (file, id), got %d", len(param.Type.Properties))
+	}
+}
+
+func TestControllerAnalyzer_FormDataBody_InlineTypeWithConstraints(t *testing.T) {
+	// Inline type with branded constraints: {files: File[], id: string}
+	// Mirrors nestia: @TypedFormDataBody(() => multer()) body: {file: File, files: File[], id: string}
+	// Constraints like MaxItems/MaxLength come via branded phantom types or JSDoc,
+	// but the basic structure should be detected correctly.
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Post(path?: string): MethodDecorator { return (t, k, d) => d; }
+		function FormDataBody(): ParameterDecorator { return () => {}; }
+
+		declare class File {}
+
+		@Controller("uploads")
+		export class UploadController {
+			@Post()
+			async upload(@FormDataBody() body: {
+				file: File;
+				files: File[];
+				id: string;
+				active: boolean;
+			}): Promise<void> {}
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 {
+		t.Fatalf("expected 1 controller, got %d", len(controllers))
+	}
+
+	param := controllers[0].Routes[0].Parameters[0]
+	if param.ContentType != "multipart/form-data" {
+		t.Errorf("expected ContentType='multipart/form-data', got %q", param.ContentType)
+	}
+
+	// Should have synthesized TypeName
+	if param.TypeName == "" {
+		t.Errorf("expected non-empty TypeName for inline FormData body")
+	}
+
+	// All 4 properties should be walked
+	if len(param.Type.Properties) != 4 {
+		t.Fatalf("expected 4 properties, got %d", len(param.Type.Properties))
+	}
+
+	// Boolean property should have coercion enabled
+	var activeProp *metadata.Property
+	for i := range param.Type.Properties {
+		if param.Type.Properties[i].Name == "active" {
+			activeProp = &param.Type.Properties[i]
+			break
+		}
+	}
+	if activeProp == nil {
+		t.Fatal("expected 'active' property")
+	}
+	if activeProp.Constraints == nil || activeProp.Constraints.Coerce == nil || !*activeProp.Constraints.Coerce {
+		t.Errorf("expected coercion enabled on boolean property in inline FormData body")
+	}
+}
+
+// TestControllerAnalyzer_QueryNestedObjectWarning verifies that @Query() with a DTO
+// containing an inline nested object property emits a "query-complex-type" warning.
+func TestControllerAnalyzer_QueryNestedObjectWarning(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+		function Query(): ParameterDecorator { return () => {}; }
+
+		interface FilterQuery {
+			page: number;
+			filter: { status: string; };
+		}
+
+		@Controller("items")
+		export class ItemController {
+			@Get()
+			async list(@Query() query: FilterQuery): Promise<void> {}
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	ca.AnalyzeSourceFile(env.sourceFile)
+
+	warnings := ca.Warnings()
+	found := false
+	for _, w := range warnings {
+		if w.Kind == "query-complex-type" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected 'query-complex-type' warning for @Query() DTO with inline nested object, got warnings: %v", warnings)
+	}
+}
+
+// TestControllerAnalyzer_QueryNestedRefWarning verifies that @Query() with a DTO
+// containing a named object type property (KindRef) emits a "query-complex-type" warning.
+func TestControllerAnalyzer_QueryNestedRefWarning(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+		function Query(): ParameterDecorator { return () => {}; }
+
+		interface AddressDto {
+			street: string;
+			city: string;
+		}
+
+		interface UserQuery {
+			name: string;
+			address: AddressDto;
+		}
+
+		@Controller("users")
+		export class UserController {
+			@Get()
+			async search(@Query() query: UserQuery): Promise<void> {}
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	ca.AnalyzeSourceFile(env.sourceFile)
+
+	warnings := ca.Warnings()
+	found := false
+	for _, w := range warnings {
+		if w.Kind == "query-complex-type" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected 'query-complex-type' warning for @Query() DTO with named nested object (KindRef), got warnings: %v", warnings)
+	}
+}
+
+// TestControllerAnalyzer_ParamWholeObjectNestedWarning verifies that @Param() used as
+// whole-object with a DTO containing a nested object emits a "param-complex-type" warning.
+func TestControllerAnalyzer_ParamWholeObjectNestedWarning(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+		function Param(): ParameterDecorator { return () => {}; }
+
+		interface RouteParams {
+			id: string;
+			nested: { sub: string; };
+		}
+
+		@Controller("items")
+		export class ItemController {
+			@Get(":id")
+			async findOne(@Param() params: RouteParams): Promise<void> {}
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	ca.AnalyzeSourceFile(env.sourceFile)
+
+	warnings := ca.Warnings()
+	found := false
+	for _, w := range warnings {
+		if w.Kind == "param-complex-type" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected 'param-complex-type' warning for @Param() whole-object with nested object, got warnings: %v", warnings)
+	}
+}
+
+// TestControllerAnalyzer_QueryFlatNoWarning verifies that @Query() with a flat DTO
+// (only scalar properties) does NOT emit a "query-complex-type" warning.
+func TestControllerAnalyzer_QueryFlatNoWarning(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+		function Query(): ParameterDecorator { return () => {}; }
+
+		interface PaginationQuery {
+			page: number;
+			limit: number;
+			search: string;
+		}
+
+		@Controller("items")
+		export class ItemController {
+			@Get()
+			async list(@Query() query: PaginationQuery): Promise<void> {}
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	ca.AnalyzeSourceFile(env.sourceFile)
+
+	warnings := ca.Warnings()
+	for _, w := range warnings {
+		if w.Kind == "query-complex-type" {
+			t.Errorf("unexpected 'query-complex-type' warning for flat @Query() DTO: %s", w.Message)
+		}
+	}
+}
+
 // The following ensures we're using the shimcompiler import correctly.
 var _ = (*shimcompiler.Program)(nil)
