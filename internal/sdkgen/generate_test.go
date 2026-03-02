@@ -45,6 +45,12 @@ func TestGenerate_BasicFixture(t *testing.T) {
 	assertContains(t, clientContent, "export interface SDKError", "client.ts should contain SDKError")
 	assertContains(t, clientContent, "export type SDKResult", "client.ts should contain SDKResult")
 	assertContains(t, clientContent, "export function createRequestFn", "client.ts should contain createRequestFn")
+	assertContains(t, clientContent, "export interface RequestContext", "client.ts should contain RequestContext")
+	assertContains(t, clientContent, "export function extractErrorMessage", "client.ts should contain extractErrorMessage")
+	assertContains(t, clientContent, "timeout?: number", "client.ts should have timeout field")
+	assertContains(t, clientContent, "throwOnError?: boolean", "client.ts should have throwOnError field")
+	assertContains(t, clientContent, "onResponse?:", "client.ts should have onResponse hook")
+	assertContains(t, clientContent, "onError?:", "client.ts should have onError hook")
 
 	// Verify sse.ts contains SSEConnection
 	sseContent := readFile(t, filepath.Join(outputDir, "sse.ts"))
@@ -86,6 +92,8 @@ func TestGenerate_BasicFixture(t *testing.T) {
 	assertContains(t, indexContent, "createProductsController", "index.ts should export products factory")
 	// Verify standalone functions are re-exported with qualified names
 	assertContains(t, indexContent, "Orders_listOrders", "index.ts should re-export standalone Orders_listOrders")
+	// Verify RequestContext is re-exported
+	assertContains(t, indexContent, "RequestContext", "index.ts should re-export RequestContext")
 }
 
 func TestGenerate_VersionedFixture(t *testing.T) {
@@ -128,6 +136,51 @@ func TestGenerate_VersionedFixture(t *testing.T) {
 	indexContent := readFile(t, filepath.Join(outputDir, "index.ts"))
 	assertContains(t, indexContent, "v1:", "index.ts should have v1 namespace")
 	assertContains(t, indexContent, "v2:", "index.ts should have v2 namespace")
+
+	// OrdersController exists in both v1 and v2 — should NOT be re-exported (name collision)
+	assertNotContains(t, indexContent, "export { createOrdersController }", "colliding versioned controller should not be re-exported")
+
+	// HealthController is unversioned — should still be re-exported
+	assertContains(t, indexContent, "createHealthController", "unversioned controller should be re-exported")
+}
+
+func TestGenerate_SingleVersionFixture(t *testing.T) {
+	outputDir := t.TempDir()
+	inputPath := "../../testdata/sdkgen/single-version.openapi.json"
+
+	err := Generate(inputPath, outputDir)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	// Verify versioned directory structure
+	expectedFiles := []string{
+		"types.ts",
+		"client.ts",
+		"index.ts",
+		"v1/companies/index.ts",
+		"v1/orders/index.ts",
+	}
+	for _, f := range expectedFiles {
+		path := filepath.Join(outputDir, f)
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			t.Errorf("expected file %q to exist", f)
+		}
+	}
+
+	// Verify index.ts re-exports versioned controllers (no name collisions)
+	indexContent := readFile(t, filepath.Join(outputDir, "index.ts"))
+	assertContains(t, indexContent, "createCompaniesController", "index.ts should re-export createCompaniesController")
+	assertContains(t, indexContent, "createOrdersController", "index.ts should re-export createOrdersController")
+	assertContains(t, indexContent, "from './v1/companies'", "should import from versioned path")
+	assertContains(t, indexContent, "from './v1/orders'", "should import from versioned path")
+
+	// Verify standalone functions are re-exported
+	assertContains(t, indexContent, "Companies_listCompanies", "index.ts should re-export standalone Companies_listCompanies")
+	assertContains(t, indexContent, "Orders_listOrders", "index.ts should re-export standalone Orders_listOrders")
+
+	// Verify createClient still works
+	assertContains(t, indexContent, "createClient", "index.ts should export createClient")
 }
 
 func TestGenerate_NoExtensions(t *testing.T) {
@@ -440,6 +493,13 @@ func assertContains(t *testing.T, content, substr, msg string) {
 	t.Helper()
 	if !strings.Contains(content, substr) {
 		t.Errorf("%s: expected %q in output:\n%s", msg, substr, truncate(content, 500))
+	}
+}
+
+func assertNotContains(t *testing.T, content, substr, msg string) {
+	t.Helper()
+	if strings.Contains(content, substr) {
+		t.Errorf("%s: unexpected %q in output:\n%s", msg, substr, truncate(content, 500))
 	}
 }
 

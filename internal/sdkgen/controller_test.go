@@ -400,6 +400,87 @@ func TestGenerateStandaloneFunction_SSEUnionType_UsesJSONParse(t *testing.T) {
 	}
 }
 
+// --- Client: RequestContext, hooks, timeout, extractErrorMessage ---
+
+func TestGenerateClient_RequestContextInterface(t *testing.T) {
+	code := generateClient()
+	assertContains(t, code, "export interface RequestContext {", "client.ts should have RequestContext interface")
+	assertContains(t, code, "method: string;", "RequestContext should have method field")
+	assertContains(t, code, "path: string;", "RequestContext should have path field")
+	assertContains(t, code, "url: string;", "RequestContext should have url field")
+}
+
+func TestGenerateClient_HookTypeSignatures(t *testing.T) {
+	code := generateClient()
+	assertContains(t, code, "onResponse?: (response: Response, context: RequestContext) => Response | void | Promise<Response | void>", "should have onResponse hook signature")
+	assertContains(t, code, "onError?: (error: SDKError, context: RequestContext) => SDKError | void | Promise<SDKError | void>", "should have onError hook signature")
+}
+
+func TestGenerateClient_TimeoutConfig(t *testing.T) {
+	code := generateClient()
+	assertContains(t, code, "timeout?: number;", "ClientConfig should have timeout field")
+	assertContains(t, code, "AbortSignal.timeout(config.timeout)", "should use AbortSignal.timeout")
+	assertContains(t, code, "AbortSignal.any([init.signal, timeoutSignal])", "should use AbortSignal.any to combine signals")
+}
+
+func TestGenerateClient_ThrowOnError(t *testing.T) {
+	code := generateClient()
+	assertContains(t, code, "throwOnError?: boolean;", "ClientConfig should have throwOnError field")
+	assertContains(t, code, "if (config.throwOnError)", "should check throwOnError")
+	assertContains(t, code, "throw error;", "should throw error when throwOnError is true")
+}
+
+func TestGenerateClient_ExtractErrorMessage(t *testing.T) {
+	code := generateClient()
+	assertContains(t, code, "export function extractErrorMessage(body: unknown, fallback: string): string", "should export extractErrorMessage")
+	// NestJS default: body.message (string)
+	assertContains(t, code, "typeof b.message === 'string'", "should check body.message string")
+	// NestJS validation pipes: body.message[0] (array)
+	assertContains(t, code, "Array.isArray(b.message)", "should check body.message array")
+	// Express nested: body.error.message
+	assertContains(t, code, "nested.message", "should check body.error.message")
+	// Simple: body.error (string)
+	assertContains(t, code, "typeof b.error === 'string'", "should check body.error string")
+}
+
+func TestGenerateClient_ExecutionOrder(t *testing.T) {
+	code := generateClient()
+
+	// onResponse must fire before !response.ok check
+	onResponseIdx := strings.Index(code, "config.onResponse")
+	notOkIdx := strings.Index(code, "!response.ok")
+	if onResponseIdx == -1 || notOkIdx == -1 {
+		t.Fatal("expected both onResponse and !response.ok in output")
+	}
+	if onResponseIdx >= notOkIdx {
+		t.Error("onResponse hook should fire before !response.ok check")
+	}
+
+	// extractErrorMessage must fire before onError
+	extractIdx := strings.Index(code, "extractErrorMessage(errorBody")
+	onErrorIdx := strings.Index(code, "config.onError")
+	if extractIdx == -1 || onErrorIdx == -1 {
+		t.Fatal("expected both extractErrorMessage and onError in output")
+	}
+	if extractIdx >= onErrorIdx {
+		t.Error("extractErrorMessage should fire before onError hook")
+	}
+
+	// onError must fire before throwOnError
+	throwIdx := strings.Index(code, "config.throwOnError")
+	if throwIdx == -1 {
+		t.Fatal("expected throwOnError in output")
+	}
+	if onErrorIdx >= throwIdx {
+		t.Error("onError hook should fire before throwOnError check")
+	}
+}
+
+func TestGenerateClient_RequestContextBuilt(t *testing.T) {
+	code := generateClient()
+	assertContains(t, code, "const context: RequestContext = { method, path, url: fullUrl }", "should build RequestContext with method, path, url")
+}
+
 func TestGenerateController_MixedSSEAndJSON(t *testing.T) {
 	doc := &SDKDocument{
 		Schemas: map[string]*SchemaNode{

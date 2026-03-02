@@ -1,0 +1,86 @@
+{
+  "openapi": "3.2.0",
+  "info": { "title": "Single Version API", "version": "1.0.0" },
+  "paths": {
+    "/v1/companies": {
+      "get": {
+        "operationId": "listCompanies",
+        "x-tsgonest-controller": "CompaniesController",
+        "x-tsgonest-method": "listCompanies",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": { "$ref": "#/components/schemas/Company" }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/orders": {
+      "get": {
+        "operationId": "listOrders",
+        "x-tsgonest-controller": "OrdersController",
+        "x-tsgonest-method": "listOrders",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": { "$ref": "#/components/schemas/Order" }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/orders/{id}": {
+      "get": {
+        "operationId": "getOrder",
+        "x-tsgonest-controller": "OrdersController",
+        "x-tsgonest-method": "getOrder",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Order" }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Company": {
+        "type": "object",
+        "required": ["id", "name"],
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" }
+        }
+      },
+      "Order": {
+        "type": "object",
+        "required": ["id", "total"],
+        "properties": {
+          "id": { "type": "string" },
+          "total": { "type": "number" }
+        }
+      }
+    }
+  }
+}

@@ -12,7 +12,7 @@ func generateIndex(versions []VersionGroup) string {
 
 	// Re-export client types and factory
 	sb.WriteString("export { createRequestFn } from './client';\n")
-	sb.WriteString("export type { ClientConfig, SDKResult, SDKError, Fetcher, RequestFn, HeadersInit } from './client';\n")
+	sb.WriteString("export type { ClientConfig, SDKResult, SDKError, RequestContext, Fetcher, RequestFn, HeadersInit } from './client';\n")
 
 	// Re-export SSE types (always — they're type-only for most consumers)
 	sb.WriteString("export { SSEConnection } from './sse';\n")
@@ -25,12 +25,22 @@ func generateIndex(versions []VersionGroup) string {
 	sb.WriteString("export * from './types';\n")
 	sb.WriteString("\n")
 
-	// Re-export controller factories and standalone functions (only unversioned to avoid name collisions)
+	// Build a set of controller names that appear in multiple versions (name collisions).
+	// These are skipped for re-export to avoid ambiguity.
+	ctrlVersionCount := make(map[string]int)
 	for _, ver := range versions {
-		if ver.Version != "" {
-			continue // versioned controllers imported via their versioned path
-		}
 		for _, ctrl := range ver.Controllers {
+			ctrlVersionCount[ctrl.Name]++
+		}
+	}
+
+	// Re-export controller factories and standalone functions.
+	// Skip controllers that appear in multiple versions to avoid name collisions.
+	for _, ver := range versions {
+		for _, ctrl := range ver.Controllers {
+			if ctrlVersionCount[ctrl.Name] > 1 {
+				continue // same controller in multiple versions — import via versioned path
+			}
 			dirPath := controllerImportPath(ver.Version, ctrl.Name)
 			factoryName := controllerFactoryName(ctrl.Name)
 			ifaceName := controllerInterfaceName(ctrl.Name)

@@ -11,6 +11,12 @@ export interface SDKError {
   body?: unknown;
 }
 
+export interface RequestContext {
+  method: string;
+  path: string;
+  url: string;
+}
+
 export type SDKResult<T> = { data: T; error: null; response: Response } | { data: null; error: SDKError; response: Response };
 
 export type Fetcher = (url: string, init: RequestInit) => Promise<Response>;
@@ -22,6 +28,24 @@ export interface ClientConfig {
   headers?: HeadersInit;
   fetcher?: Fetcher;
   onRequest?: (url: string, init: RequestInit) => RequestInit | Promise<RequestInit>;
+  timeout?: number;
+  throwOnError?: boolean;
+  onResponse?: (response: Response, context: RequestContext) => Response | void | Promise<Response | void>;
+  onError?: (error: SDKError, context: RequestContext) => SDKError | void | Promise<SDKError | void>;
+}
+
+export function extractErrorMessage(body: unknown, fallback: string): string {
+  if (body != null && typeof body === 'object') {
+    const b = body as Record<string, unknown>;
+    if (typeof b.message === 'string') return b.message;
+    if (Array.isArray(b.message) && b.message.length > 0 && typeof b.message[0] === 'string') return b.message[0];
+    if (b.error != null && typeof b.error === 'object') {
+      const nested = b.error as Record<string, unknown>;
+      if (typeof nested.message === 'string') return nested.message;
+    }
+    if (typeof b.error === 'string') return b.error;
+  }
+  return fallback;
 }
 
 export type RequestFn = <T>(
@@ -81,6 +105,9 @@ export function createRequestFn(config: ClientConfig): RequestFn {
 
     const fullUrl = config.baseUrl.replace(/\/$/, '') + url;
 
+    // Build request context for hooks
+    const context: RequestContext = { method, path, url: fullUrl };
+
     // Resolve headers
     let baseHeaders: Record<string, string> = {};
     if (config.headers) {
@@ -124,7 +151,19 @@ export function createRequestFn(config: ClientConfig): RequestFn {
       init = await config.onRequest(fullUrl, init);
     }
 
-    const response = await fetcher(fullUrl, init);
+    // Apply timeout
+    if (config.timeout != null) {
+      const timeoutSignal = AbortSignal.timeout(config.timeout);
+      init.signal = init.signal ? AbortSignal.any([init.signal, timeoutSignal]) : timeoutSignal;
+    }
+
+    let response = await fetcher(fullUrl, init);
+
+    // onResponse hook (fires on ALL responses)
+    if (config.onResponse) {
+      const replaced = await config.onResponse(response, context);
+      if (replaced) response = replaced;
+    }
 
     if (!response.ok) {
       let errorBody: unknown;
@@ -133,15 +172,21 @@ export function createRequestFn(config: ClientConfig): RequestFn {
       } catch {
         errorBody = await response.text().catch(() => undefined);
       }
-      return {
-        data: null,
-        error: {
-          status: response.status,
-          message: response.statusText,
-          body: errorBody,
-        },
-        response,
+      let error: SDKError = {
+        status: response.status,
+        message: extractErrorMessage(errorBody, response.statusText),
+        body: errorBody,
       };
+      // onError hook
+      if (config.onError) {
+        const replaced = await config.onError(error, context);
+        if (replaced) error = replaced;
+      }
+      // throwOnError
+      if (config.throwOnError) {
+        throw error;
+      }
+      return { data: null, error, response };
     }
 
     // 204 No Content
