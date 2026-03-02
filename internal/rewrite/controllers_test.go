@@ -397,9 +397,9 @@ func TestFindBodyParamName(t *testing.T) {
 	tests := []struct {
 		text, methodName, expected string
 	}{
-		{`async create(body) {`, "create", "body"},
-		{`create(dto) {`, "create", "dto"},
-		{`async update(id, body) {`, "update", "id"},
+		{"class C {\n    async create(body) { return body; }\n}", "create", "body"},
+		{"class C {\n    create(dto) { return dto; }\n}", "create", "dto"},
+		{"class C {\n    async update(id, body) { return id; }\n}", "update", "id"},
 	}
 
 	for _, tt := range tests {

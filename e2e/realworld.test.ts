@@ -49,8 +49,6 @@ describe("realworld fixture", () => {
     }
   });
 
-  it.todo("should generate manifest for realworld fixture");
-
   it("should find 5 controllers with 24 routes", () => {
     const { stderr } = runTsgonest([
       "--project",

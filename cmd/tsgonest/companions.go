@@ -31,11 +31,11 @@ func collectCoercionTypes(controllers []analyzer.ControllerInfo) map[string]bool
 	for _, ctrl := range controllers {
 		for _, route := range ctrl.Routes {
 			for _, param := range route.Parameters {
-				if (param.Category == "query" || param.Category == "param" || param.Category == "headers") && param.Name == "" && param.TypeName != "" {
+				if (param.Category == string(analyzer.CategoryQuery) || param.Category == string(analyzer.CategoryParam) || param.Category == string(analyzer.CategoryHeaders)) && param.Name == "" && param.TypeName != "" {
 					types[param.TypeName] = true
 				}
 				// FormData body params need coercion too — multer parses fields as strings
-				if param.Category == "body" && param.ContentType == "multipart/form-data" && param.TypeName != "" {
+				if param.Category == string(analyzer.CategoryBody) && param.ContentType == "multipart/form-data" && param.TypeName != "" {
 					types[param.TypeName] = true
 				}
 			}
@@ -145,7 +145,7 @@ func collectInlineBodyTypes(controllers []analyzer.ControllerInfo) []inlineBodyT
 	for _, ctrl := range controllers {
 		for _, route := range ctrl.Routes {
 			for _, param := range route.Parameters {
-				if param.Category == "body" && param.TypeName != "" && param.Type.Kind == metadata.KindObject && strings.HasPrefix(param.TypeName, "__") {
+				if param.Category == string(analyzer.CategoryBody) && param.TypeName != "" && param.Type.Kind == metadata.KindObject && strings.HasPrefix(param.TypeName, "__") {
 					m := param.Type
 					types = append(types, inlineBodyType{
 						typeName:   param.TypeName,

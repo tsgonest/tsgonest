@@ -2,9 +2,10 @@ package rewrite
 
 import (
 	"fmt"
-	"regexp"
+	"sort"
 	"strings"
 
+	"github.com/microsoft/typescript-go/shim/core"
 	"github.com/tsgonest/tsgonest/internal/analyzer"
 	"github.com/tsgonest/tsgonest/internal/metadata"
 )
@@ -24,35 +25,40 @@ type sseTransform struct {
 	entries    []sseTransformEntry
 }
 
+// prioritizedEdit wraps a core.TextChange with a priority for deterministic
+// ordering when multiple edits target the same position.
+type prioritizedEdit struct {
+	pos      int    // sort key: position in original text
+	priority int    // tie-breaker: lower = applied first
+	newText  string // replacement text
+	end      int    // end position (pos == end for pure insertions)
+}
+
 // rewriteController injects @Body() parameter validation and return value
 // transformation into a controller file's emitted JS.
 // For body params: inserts `paramName = assertTypeName(paramName);` at method start.
 // For return values: wraps `return EXPR;` with `return transformTypeName(await EXPR);`.
 // For @EventStream routes: injects Reflect.defineMetadata with per-event assert/stringify.
+//
+// Uses AST-based position extraction (LocateJS) and bulk edits for a single-pass rewrite.
 func rewriteController(text string, outputFile string, controllers []analyzer.ControllerInfo, companionMap map[string]string, moduleFormat string) string {
-	// Collect all body parameters with named types from matching controllers
+	// ── Phase 1: Collect transform specifications (unchanged metadata logic) ──
+
 	type bodyValidation struct {
 		methodName string
 		paramName  string
 		typeName   string
 	}
-
-	// Collect return transformations
 	type returnTransform struct {
 		methodName string
 		typeName   string
 		isArray    bool
 	}
-
-	// primitiveReturnTransform holds inline serialization info for primitive return types.
-	// Unlike returnTransform (which uses companion files), primitives are serialized inline.
 	type primitiveReturnTransform struct {
 		methodName string
 		atomic     string // "string", "number", or "boolean"
 		nullable   bool
 	}
-
-	// scalarCoercion holds info for inline number/boolean coercion on named scalar params
 	type scalarCoercion struct {
 		methodName string
 		paramName  string
@@ -72,12 +78,10 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 
 	for _, ctrl := range controllers {
 		for _, route := range ctrl.Routes {
-			// Skip raw response routes
 			if route.UsesRawResponse {
 				continue
 			}
 
-			// Parameter validation collection (body, query, headers, param)
 			for _, param := range route.Parameters {
 				switch param.Category {
 				case "body":
@@ -85,12 +89,9 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 					if typeName == "" {
 						continue
 					}
-					// Only inject if we have a companion for this type
 					if _, ok := companionMap[typeName]; !ok {
 						continue
 					}
-					// Use LocalName (the TS variable name) for injection.
-					// Fall back to decorator arg Name, then to findBodyParamName.
 					paramName := param.LocalName
 					if paramName == "" {
 						paramName = param.Name
@@ -110,7 +111,6 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 
 				case "query", "headers", "param":
 					if param.Name == "" && param.TypeName != "" {
-						// Whole-object: inject assert like @Body()
 						typeName := resolveParamTypeName(&param)
 						if typeName == "" {
 							continue
@@ -129,7 +129,6 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 						})
 						neededTypes[typeName] = true
 					} else if param.Name != "" && param.Category != "headers" {
-						// Individual named scalar: inline coercion (no companion needed)
 						if param.Type.Kind == metadata.KindAtomic && (param.Type.Atomic == "number" || param.Type.Atomic == "boolean") {
 							paramName := param.LocalName
 							if paramName == "" {
@@ -146,7 +145,6 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 				}
 			}
 
-			// SSE transform collection for @EventStream routes
 			if route.IsEventStream && len(route.SSEEventVariants) > 0 {
 				var entries []sseTransformEntry
 				for _, v := range route.SSEEventVariants {
@@ -159,7 +157,7 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 					}
 					eventKey := v.EventName
 					if eventKey == "" {
-						eventKey = "*" // generic string event → wildcard
+						eventKey = "*"
 					}
 					entries = append(entries, sseTransformEntry{
 						eventName:     eventKey,
@@ -176,16 +174,13 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 					})
 					needsSseInterceptor = true
 				}
-				continue // SSE routes don't get return serialization wrapping
+				continue
 			}
 
-			// Return transform collection (non-SSE routes)
 			if route.IsSSE {
 				continue
 			}
 
-			// Check for primitive return types first — these are serialized inline
-			// (no companion file needed). This handles string, number, boolean returns.
 			primitiveAtomic, primitiveNullable := resolvePrimitiveReturn(&route.ReturnType)
 			if primitiveAtomic != "" {
 				primitiveTransforms = append(primitiveTransforms, primitiveReturnTransform{
@@ -200,7 +195,6 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 			if returnTypeName == "" {
 				continue
 			}
-			// Only transform if we have a companion for the return type
 			if _, ok := companionMap[returnTypeName]; !ok {
 				continue
 			}
@@ -218,52 +212,140 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 		return text
 	}
 
-	// Inject validation calls into method bodies
-	for _, v := range validations {
-		assertFunc := companionFuncName("assert", v.typeName)
-		assertLine := "    " + v.paramName + " = " + assertFunc + "(" + v.paramName + ");"
-		text = injectAtMethodStart(text, v.methodName, assertLine)
+	// ── Phase 2: Parse JS and extract AST locations ──
+
+	locs := LocateJS(text)
+
+	// Build method lookup: methodName → *MethodLoc (across all classes)
+	methodLookup := make(map[string]*MethodLoc)
+	for _, cls := range locs.Classes {
+		for name, ml := range cls.Methods {
+			methodLookup[name] = ml
+		}
 	}
 
-	// Inject inline scalar coercion for individual @Param/@Query params
+	// ── Phase 3: Build prioritized edits ──
+
+	var edits []prioritizedEdit
+
+	// (a) Body validation injection at method body start
+	for _, v := range validations {
+		ml := methodLookup[v.methodName]
+		if ml == nil {
+			continue
+		}
+		assertFunc := companionFuncName("assert", v.typeName)
+		assertLine := "\n    " + v.paramName + " = " + assertFunc + "(" + v.paramName + ");"
+		edits = append(edits, prioritizedEdit{
+			pos:      ml.BodyOpenBrace + 1,
+			end:      ml.BodyOpenBrace + 1,
+			priority: 30,
+			newText:  assertLine,
+		})
+	}
+
+	// (b) Scalar coercion injection at method body start
 	for _, sc := range scalarCoercions {
+		ml := methodLookup[sc.methodName]
+		if ml == nil {
+			continue
+		}
 		var coercionCode string
 		switch sc.atomic {
 		case "number":
-			coercionCode = fmt.Sprintf("    if (%s === \"\") throw new __e([{path:\"%s\",expected:\"number\",received:\"string\"}]); %s = +%s; if (Number.isNaN(%s)) throw new __e([{path:\"%s\",expected:\"number\",received:typeof %s}]);",
+			coercionCode = fmt.Sprintf("\n    if (%s === \"\") throw new __e([{path:\"%s\",expected:\"number\",received:\"string\"}]); %s = +%s; if (Number.isNaN(%s)) throw new __e([{path:\"%s\",expected:\"number\",received:typeof %s}]);",
 				sc.paramName, sc.paramName, sc.paramName, sc.paramName, sc.paramName, sc.paramName, sc.paramName)
 		case "boolean":
-			coercionCode = fmt.Sprintf("    if (%s === \"true\" || %s === \"1\") %s = true; else if (%s === \"false\" || %s === \"0\") %s = false; else throw new __e([{path:\"%s\",expected:\"boolean\",received:typeof %s}]);",
+			coercionCode = fmt.Sprintf("\n    if (%s === \"true\" || %s === \"1\") %s = true; else if (%s === \"false\" || %s === \"0\") %s = false; else throw new __e([{path:\"%s\",expected:\"boolean\",received:typeof %s}]);",
 				sc.paramName, sc.paramName, sc.paramName, sc.paramName, sc.paramName, sc.paramName, sc.paramName, sc.paramName)
 		}
 		if coercionCode != "" {
-			text = injectAtMethodStart(text, sc.methodName, coercionCode)
+			edits = append(edits, prioritizedEdit{
+				pos:      ml.BodyOpenBrace + 1,
+				end:      ml.BodyOpenBrace + 1,
+				priority: 31,
+				newText:  coercionCode,
+			})
 		}
 	}
 
-	// Wrap return statements with stringify calls
+	// (c) Return expression wrapping for DTO transforms
 	for _, tr := range transforms {
+		ml := methodLookup[tr.methodName]
+		if ml == nil {
+			continue
+		}
+		isAsync := ml.IsAsync
+		// If method is not async, we need to insert "async " before the method name
+		if !isAsync {
+			edits = append(edits, prioritizedEdit{
+				pos:      ml.MethodNamePos,
+				end:      ml.MethodNamePos,
+				priority: 20,
+				newText:  "async ",
+			})
+			isAsync = true
+		}
+
+		var transformFunc string
 		if tr.isArray {
-			// Arrays: serialize each element and join into JSON array string
-			serializeFunc := companionFuncName("serialize", tr.typeName)
-			text = wrapReturnsInMethod(text, tr.methodName, serializeFunc, tr.isArray)
+			transformFunc = companionFuncName("serialize", tr.typeName)
 		} else {
-			stringifyFunc := companionFuncName("stringify", tr.typeName)
-			text = wrapReturnsInMethod(text, tr.methodName, stringifyFunc, false)
+			transformFunc = companionFuncName("stringify", tr.typeName)
+		}
+
+		for _, ret := range ml.Returns {
+			if ret.ExprStart < 0 {
+				continue // bare return
+			}
+			expr := text[ret.ExprStart:ret.ExprEnd]
+			newExpr := wrapReturnExpression(expr, transformFunc, tr.isArray, isAsync)
+			// Replace: from 'return' keyword through the end of the statement
+			suffix := ";"
+			edits = append(edits, prioritizedEdit{
+				pos:      ret.ReturnKeywordPos,
+				end:      ret.StmtEnd,
+				priority: 40,
+				newText:  "return " + newExpr + suffix,
+			})
 		}
 	}
 
-	// Wrap return statements with inline primitive serialization
+	// (d) Return expression wrapping for primitive transforms
 	for _, pt := range primitiveTransforms {
-		text = wrapPrimitiveReturns(text, pt.methodName, pt.atomic, pt.nullable)
+		ml := methodLookup[pt.methodName]
+		if ml == nil {
+			continue
+		}
+		isAsync := ml.IsAsync
+		if !isAsync {
+			edits = append(edits, prioritizedEdit{
+				pos:      ml.MethodNamePos,
+				end:      ml.MethodNamePos,
+				priority: 20,
+				newText:  "async ",
+			})
+			isAsync = true
+		}
+
+		for _, ret := range ml.Returns {
+			if ret.ExprStart < 0 {
+				continue // bare return
+			}
+			expr := text[ret.ExprStart:ret.ExprEnd]
+			newExpr := wrapPrimitiveExpression(expr, pt.atomic, pt.nullable)
+			suffix := ";"
+			edits = append(edits, prioritizedEdit{
+				pos:      ret.ReturnKeywordPos,
+				end:      ret.StmtEnd,
+				priority: 40,
+				newText:  "return " + newExpr + suffix,
+			})
+		}
 	}
 
-	// Inject SSE transform metadata after method-level __decorate calls
-	for _, st := range sseTransforms {
-		text = injectSSETransforms(text, st)
-	}
-
-	// Generate companion imports for the types we need
+	// (e) Class interceptor injection at __decorate bracket
+	// Build import lines first to know which interceptors to inject
 	var markerCalls []MarkerCall
 	for typeName := range neededTypes {
 		markerCalls = append(markerCalls, MarkerCall{
@@ -272,8 +354,6 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 		})
 	}
 	for typeName := range neededTransformTypes {
-		// For arrays, we need serialize; for non-arrays, we need stringify
-		// Import both to be safe since companion files export both
 		markerCalls = append(markerCalls, MarkerCall{
 			FunctionName: "stringify",
 			TypeName:     typeName,
@@ -283,7 +363,6 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 			TypeName:     typeName,
 		})
 	}
-	// Import assert + stringify for SSE variant data types
 	for typeName := range neededSSETypes {
 		markerCalls = append(markerCalls, MarkerCall{
 			FunctionName: "assert",
@@ -296,29 +375,53 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 	}
 	importLines := companionImports(markerCalls, companionMap, outputFile, moduleFormat)
 
-	// If we have response stringify transforms (DTO or primitive), inject the serialize interceptor
 	if len(transforms) > 0 || len(primitiveTransforms) > 0 {
 		if moduleFormat == "cjs" {
 			importLines = append(importLines, `const { TsgonestSerializeInterceptor } = require("@tsgonest/runtime");`)
 		} else {
 			importLines = append(importLines, `import { TsgonestSerializeInterceptor } from "@tsgonest/runtime";`)
 		}
-		// Inject UseInterceptors decorator on the controller class
-		text = injectClassInterceptor(text, controllers, "TsgonestSerializeInterceptor")
+		// Inject interceptor at class-level __decorate bracket
+		for _, ctrl := range controllers {
+			dc := findClassLevelDecorate(locs, ctrl.Name)
+			if dc == nil {
+				continue
+			}
+			if strings.Contains(text[dc.ArrayOpenBracket:], "UseInterceptors)(TsgonestSerializeInterceptor)") {
+				continue
+			}
+			edits = append(edits, prioritizedEdit{
+				pos:      dc.ArrayOpenBracket + 1,
+				end:      dc.ArrayOpenBracket + 1,
+				priority: 10,
+				newText:  "\n    (0, common_1.UseInterceptors)(TsgonestSerializeInterceptor),",
+			})
+		}
 	}
 
-	// If we have SSE transforms, inject the SSE interceptor
 	if needsSseInterceptor {
 		if moduleFormat == "cjs" {
 			importLines = append(importLines, `const { TsgonestSseInterceptor } = require("@tsgonest/runtime");`)
 		} else {
 			importLines = append(importLines, `import { TsgonestSseInterceptor } from "@tsgonest/runtime";`)
 		}
-		// Inject UseInterceptors decorator on the controller class
-		text = injectClassInterceptor(text, controllers, "TsgonestSseInterceptor")
+		for _, ctrl := range controllers {
+			dc := findClassLevelDecorate(locs, ctrl.Name)
+			if dc == nil {
+				continue
+			}
+			if strings.Contains(text[dc.ArrayOpenBracket:], "UseInterceptors)(TsgonestSseInterceptor)") {
+				continue
+			}
+			edits = append(edits, prioritizedEdit{
+				pos:      dc.ArrayOpenBracket + 1,
+				end:      dc.ArrayOpenBracket + 1,
+				priority: 11,
+				newText:  "\n    (0, common_1.UseInterceptors)(TsgonestSseInterceptor),",
+			})
+		}
 	}
 
-	// If we have scalar coercions, import TsgonestValidationError as __e
 	if needsHelpersImport {
 		if moduleFormat == "cjs" {
 			importLines = append(importLines, `const { TsgonestValidationError: __e } = require("@tsgonest/runtime");`)
@@ -327,13 +430,123 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 		}
 	}
 
-	if len(importLines) > 0 {
-		// Insert imports at top of file (after sentinel if present)
-		text = strings.Join(importLines, "\n") + "\n" + text
+	// (f) SSE metadata injection after method-level __decorate calls
+	for _, st := range sseTransforms {
+		dc := findMethodLevelDecorate(locs, st.className, st.methodName)
+		if dc == nil {
+			continue
+		}
+		var entries []string
+		for _, e := range st.entries {
+			entries = append(entries, fmt.Sprintf("  %q: [%s, %s]", e.eventName, e.assertFunc, e.stringifyFunc))
+		}
+		transformMap := "{\n" + strings.Join(entries, ",\n") + "\n}"
+		metadataCall := fmt.Sprintf(
+			"\nReflect.defineMetadata(\"__tsgonest_sse_transforms__\", %s, %s.prototype, %q);",
+			transformMap, st.className, st.methodName,
+		)
+		edits = append(edits, prioritizedEdit{
+			pos:      dc.StmtEnd,
+			end:      dc.StmtEnd,
+			priority: 50,
+			newText:  metadataCall,
+		})
 	}
 
-	return text
+	// (g) Imports at position 0
+	if len(importLines) > 0 {
+		edits = append(edits, prioritizedEdit{
+			pos:      0,
+			end:      0,
+			priority: 0,
+			newText:  strings.Join(importLines, "\n") + "\n",
+		})
+	}
+
+	// ── Phase 4: Sort and apply edits ──
+
+	sort.Slice(edits, func(i, j int) bool {
+		if edits[i].pos != edits[j].pos {
+			return edits[i].pos < edits[j].pos
+		}
+		return edits[i].priority < edits[j].priority
+	})
+
+	// Convert to core.TextChange slice
+	changes := make([]core.TextChange, len(edits))
+	for i, e := range edits {
+		changes[i] = core.TextChange{
+			TextRange: core.NewTextRange(e.pos, e.end),
+			NewText:   e.newText,
+		}
+	}
+
+	return core.ApplyBulkEdits(text, changes)
 }
+
+// findClassLevelDecorate finds the class-level __decorate call for a given class name.
+func findClassLevelDecorate(locs *JSLocations, className string) *DecorateCallLoc {
+	for i := range locs.DecorateCalls {
+		dc := &locs.DecorateCalls[i]
+		if dc.IsClassLevel && dc.ClassName == className {
+			return dc
+		}
+	}
+	return nil
+}
+
+// findMethodLevelDecorate finds the method-level __decorate call for a given class+method.
+func findMethodLevelDecorate(locs *JSLocations, className, methodName string) *DecorateCallLoc {
+	for i := range locs.DecorateCalls {
+		dc := &locs.DecorateCalls[i]
+		if !dc.IsClassLevel && dc.ClassName == className && dc.MethodName == methodName {
+			return dc
+		}
+	}
+	return nil
+}
+
+// wrapReturnExpression wraps a DTO return expression with a transform call.
+func wrapReturnExpression(expr, transformFunc string, isArray, isAsync bool) string {
+	if isArray {
+		var inner string
+		if isAsync {
+			inner = "(await " + expr + ")"
+		} else {
+			inner = "(" + expr + ")"
+		}
+		return "\"[\" + " + inner + ".map(_v => " + transformFunc + "(_v)).join(\",\") + \"]\""
+	}
+	if isAsync {
+		return transformFunc + "(await " + expr + ")"
+	}
+	return transformFunc + "(" + expr + ")"
+}
+
+// wrapPrimitiveExpression wraps a primitive return expression with inline serialization.
+func wrapPrimitiveExpression(expr, atomic string, nullable bool) string {
+	awaitExpr := "(await " + expr + ")"
+	if nullable {
+		return "((_v) => _v == null ? \"null\" : " + primitiveSerializeExpr("_v", atomic) + ")" + awaitExpr
+	}
+	return primitiveSerializeExpr(awaitExpr, atomic)
+}
+
+// primitiveSerializeExpr returns the inline JS expression to serialize a primitive value.
+func primitiveSerializeExpr(expr string, atomic string) string {
+	switch atomic {
+	case "string":
+		return "JSON.stringify(" + expr + ")"
+	case "number":
+		return "(Number.isFinite(" + expr + ") ? \"\" + " + expr + " : \"null\")"
+	case "boolean":
+		return expr + " ? \"true\" : \"false\""
+	default:
+		return "JSON.stringify(" + expr + ")"
+	}
+}
+
+// ─── Pure metadata extraction (unchanged) ───────────────────────────────────
 
 // resolveParamTypeName extracts the type name from a route parameter's metadata.
 func resolveParamTypeName(param *analyzer.RouteParameter) string {
@@ -379,12 +592,10 @@ func resolvePrimitiveReturn(m *metadata.Metadata) (atomic string, nullable bool)
 			return m.Atomic, m.Nullable
 		}
 	case metadata.KindUnion:
-		// Check if it's a union of atomics of the same type (e.g., nullable atomic)
 		var foundAtomic string
 		nullable := m.Nullable
 		for _, member := range m.UnionMembers {
 			if member.Kind == metadata.KindAtomic {
-				// Recognize null/undefined as nullable markers, not as the atomic type
 				if member.Atomic == "null" || member.Atomic == "undefined" {
 					nullable = true
 					continue
@@ -392,10 +603,9 @@ func resolvePrimitiveReturn(m *metadata.Metadata) (atomic string, nullable bool)
 				if foundAtomic == "" {
 					foundAtomic = member.Atomic
 				} else if foundAtomic != member.Atomic {
-					return "", false // mixed atomic types
+					return "", false
 				}
 			} else if member.Kind == metadata.KindLiteral {
-				// Literal unions like 200 | 404 | 500 — treat as number
 				switch member.LiteralValue.(type) {
 				case float64, int, int64:
 					if foundAtomic == "" {
@@ -419,7 +629,7 @@ func resolvePrimitiveReturn(m *metadata.Metadata) (atomic string, nullable bool)
 					return "", false
 				}
 			} else {
-				return "", false // non-primitive member
+				return "", false
 			}
 		}
 		if foundAtomic != "" {
@@ -429,787 +639,152 @@ func resolvePrimitiveReturn(m *metadata.Metadata) (atomic string, nullable bool)
 	return "", false
 }
 
+// ─── Backward-compatible thin wrappers (used by tests) ──────────────────────
+
 // findBodyParamName finds the parameter name for an unnamed @Body() decorator
-// by looking at the method signature in the emitted JS.
+// by looking at the method signature in the emitted JS via AST parsing.
 func findBodyParamName(text string, methodName string) string {
-	// Look for: async methodName(paramName or methodName(paramName
-	pattern := regexp.MustCompile(`(?:async\s+)?` + regexp.QuoteMeta(methodName) + `\s*\(([^,)]+)`)
-	match := pattern.FindStringSubmatch(text)
-	if len(match) < 2 {
-		return ""
-	}
-	name := strings.TrimSpace(match[1])
-	// Reject destructured parameters like { id } or [a, b]
-	if strings.ContainsAny(name, "{}[]") {
-		return ""
-	}
-	return name
-}
-
-// injectAtMethodStart inserts a line of code at the beginning of a method body.
-// Scans for `methodName(` within a class body, finds the opening `{`, and inserts after it.
-func injectAtMethodStart(text string, methodName string, line string) string {
-	// Match: async methodName( or methodName( within a class body
-	pattern := regexp.MustCompile(`(?:async\s+)?` + regexp.QuoteMeta(methodName) + `\s*\([^)]*\)\s*\{`)
-	loc := pattern.FindStringIndex(text)
-	if loc == nil {
-		return text
-	}
-
-	// Find the opening brace position
-	bracePos := loc[1] - 1
-	if text[bracePos] != '{' {
-		// Search for it from loc[0]
-		for i := loc[0]; i < loc[1]; i++ {
-			if text[i] == '{' {
-				bracePos = i
-				break
+	locs := LocateJS(text)
+	for _, cls := range locs.Classes {
+		if m, ok := cls.Methods[methodName]; ok {
+			if len(m.Parameters) > 0 {
+				name := m.Parameters[0]
+				// Reject destructured parameters
+				if strings.ContainsAny(name, "{}[]") {
+					return ""
+				}
+				return name
 			}
 		}
 	}
-
-	// Insert after the opening brace
-	insertPos := bracePos + 1
-	text = text[:insertPos] + "\n" + line + text[insertPos:]
-
-	return text
-}
-
-// wrapReturnsInMethod finds a method by name, locates its body boundaries,
-// and wraps each top-level `return EXPR;` statement with a transform call.
-// Only wraps returns at depth 0 within the method (not inside nested functions/arrows).
-func wrapReturnsInMethod(text string, methodName string, transformFunc string, isArray bool) string {
-	bodyStart, bodyEnd, found := findMethodBody(text, methodName)
-	if !found {
-		return text
-	}
-
-	// Check if the method is async by looking at the method declaration before the body
-	methodDecl := text[:bodyStart]
-	isAsync := isMethodAsync(methodDecl, methodName)
-
-	// If the method is not async, make it async so we can safely await the return value.
-	// This is necessary because the method may return a Promise (e.g., from an async service call)
-	// even though the method itself is not declared async.
-	// NestJS handles async methods natively, and adding async to a synchronous method is safe
-	// (it just wraps the return in a Promise, which NestJS already expects).
-	if !isAsync {
-		text = makeMethodAsync(text, methodName)
-		isAsync = true
-		// Re-find body boundaries since text changed
-		bodyStart, bodyEnd, found = findMethodBody(text, methodName)
-		if !found {
-			return text
-		}
-	}
-
-	// Work on the method body substring
-	body := text[bodyStart:bodyEnd]
-	newBody := wrapReturnsInBody(body, transformFunc, isArray, isAsync)
-	if body == newBody {
-		return text
-	}
-
-	return text[:bodyStart] + newBody + text[bodyEnd:]
-}
-
-// makeMethodAsync inserts `async` before the method name in its declaration.
-// Handles both `methodName(` and indented declarations like `    methodName(`.
-func makeMethodAsync(text string, methodName string) string {
-	// Find the method declaration: methodName( preceded by whitespace/newline
-	// but NOT already preceded by `async`.
-	// Support: indented (\n\s+method), unindented (\nmethod), and single-line ({ method).
-	pattern := regexp.MustCompile(`(\n[ \t]*|[{;]\s*)` + regexp.QuoteMeta(methodName) + `\s*\(`)
-	loc := pattern.FindStringIndex(text)
-	if loc == nil {
-		return text
-	}
-	// Find the method name start (skip the newline+whitespace prefix)
-	methodStart := loc[0]
-	nameIdx := strings.Index(text[methodStart:methodStart+len(text[loc[0]:loc[1]])], methodName)
-	if nameIdx < 0 {
-		return text
-	}
-	insertPos := methodStart + nameIdx
-	// Check if already async
-	before := strings.TrimRight(text[:insertPos], " \t")
-	if strings.HasSuffix(before, "async") {
-		return text
-	}
-	return text[:insertPos] + "async " + text[insertPos:]
-}
-
-// isMethodAsync checks if a method declaration preceding the body start is async.
-func isMethodAsync(textBeforeBody string, methodName string) bool {
-	// Find the method name position — look backwards from end for "async methodName("
-	idx := strings.LastIndex(textBeforeBody, methodName)
-	if idx < 0 {
-		return false
-	}
-	// Check the text before the method name for "async" keyword
-	before := strings.TrimRight(textBeforeBody[:idx], " \t\n\r")
-	return strings.HasSuffix(before, "async")
+	return ""
 }
 
 // findMethodBody locates the method body boundaries (inside the opening/closing braces).
-// Returns the start (after opening '{') and end (before closing '}') positions, and whether found.
+// Returns the start (after opening '{') and end (at closing '}') positions, and whether found.
 func findMethodBody(text string, methodName string) (bodyStart, bodyEnd int, found bool) {
-	// Match: async methodName( or methodName( within a class body
-	pattern := regexp.MustCompile(`(?:async\s+)?` + regexp.QuoteMeta(methodName) + `\s*\([^)]*\)\s*\{`)
-	loc := pattern.FindStringIndex(text)
-	if loc == nil {
-		return 0, 0, false
-	}
-
-	// Find the opening brace position
-	bracePos := loc[1] - 1
-	if text[bracePos] != '{' {
-		for i := loc[0]; i < loc[1]; i++ {
-			if text[i] == '{' {
-				bracePos = i
-				break
-			}
+	locs := LocateJS(text)
+	for _, cls := range locs.Classes {
+		if m, ok := cls.Methods[methodName]; ok {
+			return m.BodyOpenBrace + 1, m.BodyCloseBrace, true
 		}
 	}
-
-	// Count braces to find matching closing brace
-	depth := 1
-	bodyStart = bracePos + 1
-	for i := bodyStart; i < len(text); i++ {
-		switch text[i] {
-		case '{':
-			depth++
-		case '}':
-			depth--
-			if depth == 0 {
-				return bodyStart, i, true
-			}
-		case '"', '\'', '`':
-			// Skip string literals to avoid counting braces inside them
-			i = skipStringLiteral(text, i)
-		case '/':
-			// Skip comments
-			if i+1 < len(text) {
-				if text[i+1] == '/' {
-					// Line comment — skip to end of line
-					for i < len(text) && text[i] != '\n' {
-						i++
-					}
-				} else if text[i+1] == '*' {
-					// Block comment — skip to */
-					i += 2
-					for i+1 < len(text) {
-						if text[i] == '*' && text[i+1] == '/' {
-							i++
-							break
-						}
-						i++
-					}
-				}
-			}
-		}
-	}
-
 	return 0, 0, false
 }
 
-// skipStringLiteral advances past a string literal starting at position i.
-// Handles single-quoted, double-quoted, and template literal strings.
-func skipStringLiteral(text string, i int) int {
-	quote := text[i]
-	i++
-	for i < len(text) {
-		if text[i] == '\\' {
-			i += 2 // skip escaped character
-			continue
-		}
-		if text[i] == quote {
-			return i
-		}
-		i++
-	}
-	return i
-}
-
-// wrapReturnsInBody wraps top-level return statements within a method body.
-// Only wraps returns at brace depth 0 (not inside nested functions/arrows/blocks).
-// When isAsync is false, omits `await` from the wrapping.
-func wrapReturnsInBody(body string, transformFunc string, isArray bool, isAsync bool) string {
-	// We need to find `return EXPR;` patterns that belong to THIS method,
-	// not inside nested function/arrow scopes.
-	// funcDepth tracks nested function bodies only (not control-flow blocks).
-	// A `{` after `)` with a preceding function/arrow context increments funcDepth.
-	// Control-flow blocks (if/for/while/switch/try/catch) do NOT increment funcDepth.
-	var result strings.Builder
-	i := 0
-	funcDepth := 0
-	// braceStack tracks whether each '{' is a function body (true) or control-flow (false)
-	var braceStack []bool
-
-	for i < len(body) {
-		ch := body[i]
-
-		// Track brace depth, distinguishing function bodies from control-flow blocks
-		if ch == '{' {
-			isFuncBody := isFunctionBrace(body, i)
-			braceStack = append(braceStack, isFuncBody)
-			if isFuncBody {
-				funcDepth++
-			}
-			result.WriteByte(ch)
-			i++
-			continue
-		}
-		if ch == '}' {
-			if len(braceStack) > 0 {
-				if braceStack[len(braceStack)-1] {
-					funcDepth--
-				}
-				braceStack = braceStack[:len(braceStack)-1]
-			}
-			result.WriteByte(ch)
-			i++
-			continue
-		}
-
-		// Skip string literals
-		if ch == '"' || ch == '\'' || ch == '`' {
-			end := skipStringLiteral(body, i)
-			result.WriteString(body[i : end+1])
-			i = end + 1
-			continue
-		}
-
-		// Skip comments
-		if ch == '/' && i+1 < len(body) {
-			if body[i+1] == '/' {
-				// Line comment
-				start := i
-				for i < len(body) && body[i] != '\n' {
-					i++
-				}
-				result.WriteString(body[start:i])
-				continue
-			}
-			if body[i+1] == '*' {
-				// Block comment
-				start := i
-				i += 2
-				for i+1 < len(body) {
-					if body[i] == '*' && body[i+1] == '/' {
-						i += 2
-						break
-					}
-					i++
-				}
-				result.WriteString(body[start:i])
-				continue
-			}
-		}
-
-		// Look for `return` keyword at funcDepth 0 (this method's scope)
-		if funcDepth == 0 && ch == 'r' && i+6 <= len(body) && body[i:i+6] == "return" {
-			// Check it's a word boundary (not part of a larger identifier)
-			if i > 0 && isIdentChar(body[i-1]) {
-				result.WriteByte(ch)
-				i++
-				continue
-			}
-			afterReturn := i + 6
-			if afterReturn < len(body) && isIdentChar(body[afterReturn]) {
-				result.WriteByte(ch)
-				i++
-				continue
-			}
-
-			// Found `return` at funcDepth 0 — extract the expression until `;`
-			// Skip whitespace after `return`
-			exprStart := afterReturn
-			for exprStart < len(body) && (body[exprStart] == ' ' || body[exprStart] == '\t' || body[exprStart] == '\n' || body[exprStart] == '\r') {
-				exprStart++
-			}
-
-			// Bare `return;` — skip
-			if exprStart < len(body) && body[exprStart] == ';' {
-				result.WriteString(body[i : exprStart+1])
-				i = exprStart + 1
-				continue
-			}
-
-			// Find the end of the expression (the `;`)
-			exprEnd := findExpressionEnd(body, exprStart)
-			if exprEnd < 0 {
-				// No semicolon found — try ASI: expression ends at newline before `}`
-				// or at the next `}` at current brace depth
-				exprEnd = findExpressionEndASI(body, exprStart)
-				if exprEnd < 0 {
-					result.WriteByte(ch)
-					i++
-					continue
-				}
-			}
-
-			expr := strings.TrimSpace(body[exprStart:exprEnd])
-			if expr == "" {
-				result.WriteString(body[i : exprEnd+1])
-				i = exprEnd + 1
-				continue
-			}
-
-			// Write the wrapped return
-			result.WriteString("return ")
-			if isArray {
-				// Serialize each element and join into JSON array string:
-				// return "[" + (await EXPR).map(_v => serializeFunc(_v)).join(",") + "]";
-				result.WriteString("\"[\" + ")
-				if isAsync {
-					result.WriteString("(await ")
-					result.WriteString(expr)
-					result.WriteString(")")
-				} else {
-					result.WriteString("(")
-					result.WriteString(expr)
-					result.WriteString(")")
-				}
-				result.WriteString(".map(_v => ")
-				result.WriteString(transformFunc)
-				result.WriteString("(_v)).join(\",\") + \"]\"")
-			} else {
-				result.WriteString(transformFunc)
-				result.WriteString("(")
-				if isAsync {
-					result.WriteString("await ")
-				}
-				result.WriteString(expr)
-				result.WriteString(")")
-			}
-			result.WriteByte(';')
-			i = exprEnd + 1 // skip past the `;` or ASI boundary
-			continue
-		}
-
-		result.WriteByte(ch)
-		i++
-	}
-
-	return result.String()
-}
-
-// isFunctionBrace checks if the `{` at position pos is the start of a
-// function/arrow body (as opposed to a control-flow block).
-// Looks backwards past whitespace for `)` followed by `=>`, or for
-// the `function` keyword pattern.
-func isFunctionBrace(body string, pos int) bool {
-	// Look backwards past whitespace
-	j := pos - 1
-	for j >= 0 && (body[j] == ' ' || body[j] == '\t' || body[j] == '\n' || body[j] == '\r') {
-		j--
-	}
-	if j < 0 {
-		return false
-	}
-
-	// Arrow function: `=> {`
-	if j >= 1 && body[j-1] == '=' && body[j] == '>' {
-		return true
-	}
-
-	// Function/method body: `) {`
-	// We need to distinguish `function foo() {` and `method() {` from `if () {` / `for () {`
-	if body[j] == ')' {
-		// Scan backwards past the balanced parens to find what precedes them
-		parenDepth := 1
-		k := j - 1
-		for k >= 0 && parenDepth > 0 {
-			switch body[k] {
-			case ')':
-				parenDepth++
-			case '(':
-				parenDepth--
-			case '"', '\'', '`':
-				// Skip backwards past string literal (approximate)
-				quoteChar := body[k]
-				k--
-				for k >= 0 && body[k] != quoteChar {
-					if body[k] == '\\' {
-						k--
-					}
-					k--
-				}
-			}
-			k--
-		}
-		// k is now just before the '(' — check what keyword precedes it
-		// Skip whitespace
-		for k >= 0 && (body[k] == ' ' || body[k] == '\t' || body[k] == '\n' || body[k] == '\r') {
-			k--
-		}
-		if k < 0 {
-			return false
-		}
-		// Extract the preceding word
-		wordEnd := k + 1
-		for k >= 0 && isIdentChar(body[k]) {
-			k--
-		}
-		word := body[k+1 : wordEnd]
-
-		// Control-flow keywords — NOT function bodies
-		switch word {
-		case "if", "else", "for", "while", "switch", "catch", "with":
-			return false
-		}
-		// Everything else (function name, method name, "function" keyword) is a function body
-		return true
-	}
-
-	// `else {` without parens — control-flow, not function
-	// `try {`, `finally {` — control-flow
-	// Check the preceding word
-	if isIdentChar(body[j]) {
-		wordEnd := j + 1
-		k := j
-		for k >= 0 && isIdentChar(body[k]) {
-			k--
-		}
-		word := body[k+1 : wordEnd]
-		switch word {
-		case "else", "try", "finally", "do":
-			return false
+// wrapReturnsInMethod finds a method by name and wraps each top-level return
+// statement with a transform call. Thin wrapper over AST-based approach.
+func wrapReturnsInMethod(text string, methodName string, transformFunc string, isArray bool) string {
+	locs := LocateJS(text)
+	var ml *MethodLoc
+	for _, cls := range locs.Classes {
+		if m, ok := cls.Methods[methodName]; ok {
+			ml = m
+			break
 		}
 	}
-
-	return false
-}
-
-// findExpressionEndASI finds the end of a return expression when there's no
-// semicolon (Automatic Semicolon Insertion). The expression ends at a newline
-// that is followed (after optional whitespace) by a `}` or another statement.
-func findExpressionEndASI(body string, start int) int {
-	depth := 0
-	for i := start; i < len(body); i++ {
-		ch := body[i]
-		switch ch {
-		case '(':
-			depth++
-		case ')':
-			depth--
-		case '[':
-			depth++
-		case ']':
-			depth--
-		case '{':
-			depth++
-		case '}':
-			if depth == 0 {
-				// End of block — expression ends at the last non-whitespace before this
-				end := i - 1
-				for end >= start && (body[end] == ' ' || body[end] == '\t' || body[end] == '\n' || body[end] == '\r') {
-					end--
-				}
-				if end >= start {
-					return end + 1
-				}
-				return -1
-			}
-			depth--
-		case '"', '\'', '`':
-			i = skipStringLiteral(body, i)
-		case '\n':
-			if depth == 0 {
-				// Newline at depth 0 — potential ASI point
-				// Check if the next non-whitespace is `}` or a new statement keyword
-				k := i + 1
-				for k < len(body) && (body[k] == ' ' || body[k] == '\t' || body[k] == '\r') {
-					k++
-				}
-				if k >= len(body) || body[k] == '}' || body[k] == '\n' {
-					return i
-				}
-				// Check for statement-starting keywords after the newline
-				if isStatementStart(body, k) {
-					return i
-				}
-			}
-		}
-	}
-	return -1
-}
-
-// isStatementStart checks if position k in body starts a new statement keyword.
-func isStatementStart(body string, k int) bool {
-	keywords := []string{"return", "if", "for", "while", "switch", "throw", "try", "const", "let", "var", "break", "continue", "case", "default"}
-	for _, kw := range keywords {
-		if k+len(kw) <= len(body) && body[k:k+len(kw)] == kw && (k+len(kw) >= len(body) || !isIdentChar(body[k+len(kw)])) {
-			return true
-		}
-	}
-	return false
-}
-
-// findExpressionEnd finds the position of the semicolon ending an expression,
-// respecting nested parentheses, brackets, braces, and string literals.
-func findExpressionEnd(body string, start int) int {
-	depth := 0
-	for i := start; i < len(body); i++ {
-		ch := body[i]
-		switch ch {
-		case '(':
-			depth++
-		case ')':
-			depth--
-		case '[':
-			depth++
-		case ']':
-			depth--
-		case '{':
-			depth++
-		case '}':
-			depth--
-		case '"', '\'', '`':
-			i = skipStringLiteral(body, i)
-		case ';':
-			if depth == 0 {
-				return i
-			}
-		}
-	}
-	return -1
-}
-
-// isIdentChar returns true if the character can be part of a JavaScript identifier.
-func isIdentChar(c byte) bool {
-	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '$'
-}
-
-// injectClassInterceptor adds UseInterceptors(interceptorName)
-// as a class-level decorator on each controller.
-// It finds the class-level __decorate([ ... ], ControllerName) call and inserts
-// the interceptor decorator after the opening bracket.
-func injectClassInterceptor(text string, controllers []analyzer.ControllerInfo, interceptorName string) string {
-	for _, ctrl := range controllers {
-		className := ctrl.Name
-		// Find: ClassName = __decorate([
-		pattern := regexp.MustCompile(regexp.QuoteMeta(className) + `\s*=\s*__decorate\(\[`)
-		loc := pattern.FindStringIndex(text)
-		if loc == nil {
-			continue
-		}
-		// Check if the interceptor is already present in the __decorate block
-		if strings.Contains(text[loc[0]:], "UseInterceptors)("+interceptorName+")") {
-			continue
-		}
-		// Find the '[' position
-		bracketPos := loc[1] - 1
-		insertPos := bracketPos + 1
-
-		interceptorLine := "\n    (0, common_1.UseInterceptors)(" + interceptorName + "),"
-		text = text[:insertPos] + interceptorLine + text[insertPos:]
-	}
-	return text
-}
-
-// injectSSETransforms injects Reflect.defineMetadata for SSE per-event transform
-// maps after the method-level __decorate call for the given method.
-//
-// It generates code like:
-//
-//	Reflect.defineMetadata("__tsgonest_sse_transforms__", {
-//	  "created": [assertUserDto, stringifyUserDto],
-//	  "deleted": [assertDeletePayload, stringifyDeletePayload]
-//	}, ClassName.prototype, "methodName");
-//
-// This metadata is read at request time by TsgonestSseInterceptor to validate
-// and serialize each event's data field.
-func injectSSETransforms(text string, st sseTransform) string {
-	// Find the method-level __decorate call:
-	// __decorate([...], ClassName.prototype, "methodName", null);
-	pattern := regexp.MustCompile(
-		`__decorate\(\[[^\]]*\],\s*` +
-			regexp.QuoteMeta(st.className) + `\.prototype,\s*"` +
-			regexp.QuoteMeta(st.methodName) + `"[^;]*;`,
-	)
-	loc := pattern.FindStringIndex(text)
-	if loc == nil {
+	if ml == nil {
 		return text
 	}
 
-	// Build the transform map object literal
-	var entries []string
-	for _, e := range st.entries {
-		entries = append(entries, fmt.Sprintf("  %q: [%s, %s]", e.eventName, e.assertFunc, e.stringifyFunc))
-	}
-	transformMap := "{\n" + strings.Join(entries, ",\n") + "\n}"
+	isAsync := ml.IsAsync
+	var edits []prioritizedEdit
 
-	metadataCall := fmt.Sprintf(
-		"\nReflect.defineMetadata(\"__tsgonest_sse_transforms__\", %s, %s.prototype, %q);",
-		transformMap, st.className, st.methodName,
-	)
-
-	// Insert after the __decorate call
-	insertPos := loc[1]
-	text = text[:insertPos] + metadataCall + text[insertPos:]
-
-	return text
-}
-
-// wrapPrimitiveReturns wraps return statements in a method with inline primitive
-// JSON serialization. Unlike DTO return transforms which use companion files,
-// primitive types (string, number, boolean) are serialized inline:
-//   - string:  return JSON.stringify(await EXPR);
-//   - number:  return "" + (await EXPR);
-//   - boolean: return (await EXPR) ? "true" : "false";
-//
-// With nullable wrapping when needed.
-func wrapPrimitiveReturns(text string, methodName string, atomic string, nullable bool) string {
-	bodyStart, bodyEnd, found := findMethodBody(text, methodName)
-	if !found {
-		return text
-	}
-
-	// Ensure the method is async
-	methodDecl := text[:bodyStart]
-	isAsync := isMethodAsync(methodDecl, methodName)
+	// If not async, insert async keyword
 	if !isAsync {
-		text = makeMethodAsync(text, methodName)
-		bodyStart, bodyEnd, found = findMethodBody(text, methodName)
-		if !found {
-			return text
-		}
+		edits = append(edits, prioritizedEdit{
+			pos:      ml.MethodNamePos,
+			end:      ml.MethodNamePos,
+			priority: 20,
+			newText:  "async ",
+		})
+		isAsync = true
 	}
 
-	body := text[bodyStart:bodyEnd]
-	newBody := wrapPrimitiveReturnsInBody(body, atomic, nullable)
-	if body == newBody {
+	for _, ret := range ml.Returns {
+		if ret.ExprStart < 0 {
+			continue
+		}
+		expr := text[ret.ExprStart:ret.ExprEnd]
+		newExpr := wrapReturnExpression(expr, transformFunc, isArray, isAsync)
+		edits = append(edits, prioritizedEdit{
+			pos:      ret.ReturnKeywordPos,
+			end:      ret.StmtEnd,
+			priority: 40,
+			newText:  "return " + newExpr + ";",
+		})
+	}
+
+	if len(edits) == 0 {
 		return text
 	}
 
-	return text[:bodyStart] + newBody + text[bodyEnd:]
+	sort.Slice(edits, func(i, j int) bool {
+		if edits[i].pos != edits[j].pos {
+			return edits[i].pos < edits[j].pos
+		}
+		return edits[i].priority < edits[j].priority
+	})
+
+	changes := make([]core.TextChange, len(edits))
+	for i, e := range edits {
+		changes[i] = core.TextChange{
+			TextRange: core.NewTextRange(e.pos, e.end),
+			NewText:   e.newText,
+		}
+	}
+	return core.ApplyBulkEdits(text, changes)
 }
 
-// wrapPrimitiveReturnsInBody wraps top-level return statements in a method body
-// with inline primitive serialization expressions.
-func wrapPrimitiveReturnsInBody(body string, atomic string, nullable bool) string {
-	var result strings.Builder
-	i := 0
-	depth := 0
+// injectClassInterceptor adds UseInterceptors(interceptorName) as a class-level
+// decorator. Thin wrapper over AST-based approach.
+func injectClassInterceptor(text string, controllers []analyzer.ControllerInfo, interceptorName string) string {
+	locs := LocateJS(text)
+	var edits []prioritizedEdit
 
-	for i < len(body) {
-		ch := body[i]
-
-		if ch == '{' {
-			depth++
-			result.WriteByte(ch)
-			i++
+	for _, ctrl := range controllers {
+		dc := findClassLevelDecorate(locs, ctrl.Name)
+		if dc == nil {
 			continue
 		}
-		if ch == '}' {
-			depth--
-			result.WriteByte(ch)
-			i++
+		if strings.Contains(text[dc.ArrayOpenBracket:], "UseInterceptors)("+interceptorName+")") {
 			continue
 		}
-		if ch == '"' || ch == '\'' || ch == '`' {
-			end := skipStringLiteral(body, i)
-			result.WriteString(body[i : end+1])
-			i = end + 1
-			continue
-		}
-		if ch == '/' && i+1 < len(body) {
-			if body[i+1] == '/' {
-				start := i
-				for i < len(body) && body[i] != '\n' {
-					i++
-				}
-				result.WriteString(body[start:i])
-				continue
-			}
-			if body[i+1] == '*' {
-				start := i
-				i += 2
-				for i+1 < len(body) {
-					if body[i] == '*' && body[i+1] == '/' {
-						i += 2
-						break
-					}
-					i++
-				}
-				result.WriteString(body[start:i])
-				continue
-			}
-		}
-
-		if depth == 0 && ch == 'r' && i+6 <= len(body) && body[i:i+6] == "return" {
-			if i > 0 && isIdentChar(body[i-1]) {
-				result.WriteByte(ch)
-				i++
-				continue
-			}
-			afterReturn := i + 6
-			if afterReturn < len(body) && isIdentChar(body[afterReturn]) {
-				result.WriteByte(ch)
-				i++
-				continue
-			}
-
-			exprStart := afterReturn
-			for exprStart < len(body) && (body[exprStart] == ' ' || body[exprStart] == '\t' || body[exprStart] == '\n' || body[exprStart] == '\r') {
-				exprStart++
-			}
-
-			if exprStart < len(body) && body[exprStart] == ';' {
-				result.WriteString(body[i : exprStart+1])
-				i = exprStart + 1
-				continue
-			}
-
-			exprEnd := findExpressionEnd(body, exprStart)
-			if exprEnd < 0 {
-				result.WriteByte(ch)
-				i++
-				continue
-			}
-
-			expr := strings.TrimSpace(body[exprStart:exprEnd])
-			if expr == "" {
-				result.WriteString(body[i : exprEnd+1])
-				i = exprEnd + 1
-				continue
-			}
-
-			// Write the wrapped return with inline primitive serialization
-			result.WriteString("return ")
-			awaitExpr := "(await " + expr + ")"
-			if nullable {
-				result.WriteString("((_v) => _v == null ? \"null\" : ")
-				result.WriteString(primitiveSerializeExpr("_v", atomic))
-				result.WriteString(")")
-				result.WriteString(awaitExpr)
-			} else {
-				result.WriteString(primitiveSerializeExpr(awaitExpr, atomic))
-			}
-			result.WriteByte(';')
-			i = exprEnd + 1
-			continue
-		}
-
-		result.WriteByte(ch)
-		i++
+		edits = append(edits, prioritizedEdit{
+			pos:      dc.ArrayOpenBracket + 1,
+			end:      dc.ArrayOpenBracket + 1,
+			priority: 10,
+			newText:  "\n    (0, common_1.UseInterceptors)(" + interceptorName + "),",
+		})
 	}
 
-	return result.String()
+	if len(edits) == 0 {
+		return text
+	}
+
+	sort.Slice(edits, func(i, j int) bool {
+		return edits[i].pos < edits[j].pos
+	})
+
+	changes := make([]core.TextChange, len(edits))
+	for i, e := range edits {
+		changes[i] = core.TextChange{
+			TextRange: core.NewTextRange(e.pos, e.end),
+			NewText:   e.newText,
+		}
+	}
+	return core.ApplyBulkEdits(text, changes)
 }
 
-// primitiveSerializeExpr returns the inline JS expression to serialize a primitive value.
-func primitiveSerializeExpr(expr string, atomic string) string {
-	switch atomic {
-	case "string":
-		return "JSON.stringify(" + expr + ")"
-	case "number":
-		return "(Number.isFinite(" + expr + ") ? \"\" + " + expr + " : \"null\")"
-	case "boolean":
-		return expr + " ? \"true\" : \"false\""
-	default:
-		return "JSON.stringify(" + expr + ")"
+// injectAtMethodStart inserts a line of code at the beginning of a method body.
+// Thin wrapper over AST-based location extraction.
+func injectAtMethodStart(text string, methodName string, line string) string {
+	locs := LocateJS(text)
+	for _, cls := range locs.Classes {
+		if m, ok := cls.Methods[methodName]; ok {
+			insertPos := m.BodyOpenBrace + 1
+			return text[:insertPos] + "\n" + line + text[insertPos:]
+		}
 	}
+	return text
 }

@@ -38,6 +38,7 @@ require (
 	github.com/microsoft/typescript-go/shim/compiler v0.0.0-00010101000000-000000000000
 	github.com/microsoft/typescript-go/shim/core v0.0.0-00010101000000-000000000000
 	github.com/microsoft/typescript-go/shim/execute/incremental v0.0.0-00010101000000-000000000000
+	github.com/microsoft/typescript-go/shim/parser v0.0.0-00010101000000-000000000000
 	github.com/microsoft/typescript-go/shim/scanner v0.0.0-00010101000000-000000000000
 	github.com/microsoft/typescript-go/shim/tsoptions v0.0.0-00010101000000-000000000000
 	github.com/microsoft/typescript-go/shim/tspath v0.0.0-00010101000000-000000000000

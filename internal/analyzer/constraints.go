@@ -1,296 +1,50 @@
 package analyzer
 
 import (
-	"fmt"
 	"strconv"
 	"strings"
 
 	"github.com/microsoft/typescript-go/shim/ast"
+	"github.com/tsgonest/tsgonest/internal/constraints"
 	"github.com/tsgonest/tsgonest/internal/metadata"
 )
 
 // extractConstraintValue sets a constraint field from a branded type literal value.
 // Returns true if a constraint was successfully extracted.
+// Delegates to constraints.SetBranded — the canonical implementation.
 func extractConstraintValue(c *metadata.Constraints, key string, typeMeta *metadata.Metadata) bool {
-	switch key {
-	// String constraints
-	case "format":
-		if s, ok := literalString(typeMeta); ok {
-			c.Format = &s
-			return true
-		}
-	case "minLength":
-		if n, ok := literalInt(typeMeta); ok {
-			c.MinLength = &n
-			return true
-		}
-	case "maxLength":
-		if n, ok := literalInt(typeMeta); ok {
-			c.MaxLength = &n
-			return true
-		}
-	case "pattern":
-		if s, ok := literalString(typeMeta); ok {
-			c.Pattern = &s
-			return true
-		}
-	case "startsWith":
-		if s, ok := literalString(typeMeta); ok {
-			c.StartsWith = &s
-			return true
-		}
-	case "endsWith":
-		if s, ok := literalString(typeMeta); ok {
-			c.EndsWith = &s
-			return true
-		}
-	case "includes":
-		if s, ok := literalString(typeMeta); ok {
-			c.Includes = &s
-			return true
-		}
-
-	// Numeric constraints
-	case "minimum":
-		if f, ok := literalFloat(typeMeta); ok {
-			c.Minimum = &f
-			return true
-		}
-	case "maximum":
-		if f, ok := literalFloat(typeMeta); ok {
-			c.Maximum = &f
-			return true
-		}
-	case "exclusiveMinimum":
-		if f, ok := literalFloat(typeMeta); ok {
-			c.ExclusiveMinimum = &f
-			return true
-		}
-	case "exclusiveMaximum":
-		if f, ok := literalFloat(typeMeta); ok {
-			c.ExclusiveMaximum = &f
-			return true
-		}
-	case "multipleOf":
-		if f, ok := literalFloat(typeMeta); ok {
-			c.MultipleOf = &f
-			return true
-		}
-	case "type":
-		if s, ok := literalString(typeMeta); ok {
-			c.NumericType = &s
-			return true
-		}
-
-	// Array constraints
-	case "minItems":
-		if n, ok := literalInt(typeMeta); ok {
-			c.MinItems = &n
-			return true
-		}
-	case "maxItems":
-		if n, ok := literalInt(typeMeta); ok {
-			c.MaxItems = &n
-			return true
-		}
-	case "uniqueItems":
-		if b, ok := literalBool(typeMeta); ok && b {
-			c.UniqueItems = &b
-			return true
-		}
-
-	// String case validation
-	case "uppercase":
-		if b, ok := literalBool(typeMeta); ok && b {
-			c.Uppercase = &b
-			return true
-		}
-	case "lowercase":
-		if b, ok := literalBool(typeMeta); ok && b {
-			c.Lowercase = &b
-			return true
-		}
-
-	// Transforms (applied before validation)
-	case "transform_trim":
-		if b, ok := literalBool(typeMeta); ok && b {
-			c.Transforms = append(c.Transforms, "trim")
-			return true
-		}
-	case "transform_toLowerCase":
-		if b, ok := literalBool(typeMeta); ok && b {
-			c.Transforms = append(c.Transforms, "toLowerCase")
-			return true
-		}
-	case "transform_toUpperCase":
-		if b, ok := literalBool(typeMeta); ok && b {
-			c.Transforms = append(c.Transforms, "toUpperCase")
-			return true
-		}
-
-	// Custom error message
-	case "error":
-		if s, ok := literalString(typeMeta); ok {
-			c.ErrorMessage = &s
-			return true
-		}
-
-	// Default value
-	case "default":
-		if s, ok := literalString(typeMeta); ok {
-			c.Default = &s
-			return true
-		}
-		// Also support numeric/boolean defaults as string representation
-		if f, ok := literalFloat(typeMeta); ok {
-			s := fmt.Sprintf("%v", f)
-			c.Default = &s
-			return true
-		}
-		if b, ok := literalBool(typeMeta); ok {
-			s := fmt.Sprintf("%v", b)
-			c.Default = &s
-			return true
-		}
-
-	// Coercion (string→number, string→boolean, string→Date)
-	case "coerce":
-		if b, ok := literalBool(typeMeta); ok && b {
-			c.Coerce = &b
-			return true
-		}
-	}
-	return false
+	return constraints.SetBranded(c, key, typeMeta)
 }
 
 // literalString extracts a string value from a literal metadata.
+// Delegates to constraints.LiteralString.
 func literalString(m *metadata.Metadata) (string, bool) {
-	if m.Kind == metadata.KindLiteral {
-		if s, ok := m.LiteralValue.(string); ok {
-			return s, true
-		}
-	}
-	return "", false
+	return constraints.LiteralString(m)
 }
 
 // literalFloat extracts a float64 value from a literal metadata.
+// Delegates to constraints.LiteralFloat.
 func literalFloat(m *metadata.Metadata) (float64, bool) {
-	if m.Kind == metadata.KindLiteral {
-		switch v := m.LiteralValue.(type) {
-		case float64:
-			return v, true
-		case int:
-			return float64(v), true
-		case int64:
-			return float64(v), true
-		}
-	}
-	return 0, false
+	return constraints.LiteralFloat(m)
 }
 
 // literalInt extracts an int value from a literal metadata.
+// Delegates to constraints.LiteralInt.
 func literalInt(m *metadata.Metadata) (int, bool) {
-	if m.Kind == metadata.KindLiteral {
-		switch v := m.LiteralValue.(type) {
-		case float64:
-			return int(v), true
-		case int:
-			return v, true
-		case int64:
-			return int(v), true
-		}
-	}
-	return 0, false
+	return constraints.LiteralInt(m)
 }
 
 // literalBool extracts a boolean value from a literal metadata.
+// Delegates to constraints.LiteralBool.
 func literalBool(m *metadata.Metadata) (bool, bool) {
-	if m.Kind == metadata.KindLiteral {
-		if b, ok := m.LiteralValue.(bool); ok {
-			return b, true
-		}
-	}
-	return false, false
+	return constraints.LiteralBool(m)
 }
 
-// mergeConstraints merges src constraints into dst. src values take precedence
-// (override dst values when both are set).
+// mergeConstraints merges src constraints into dst. src values take precedence.
+// Delegates to constraints.Merge — the canonical implementation that covers all
+// fields including Errors.
 func mergeConstraints(dst, src *metadata.Constraints) {
-	if src.Minimum != nil {
-		dst.Minimum = src.Minimum
-	}
-	if src.Maximum != nil {
-		dst.Maximum = src.Maximum
-	}
-	if src.ExclusiveMinimum != nil {
-		dst.ExclusiveMinimum = src.ExclusiveMinimum
-	}
-	if src.ExclusiveMaximum != nil {
-		dst.ExclusiveMaximum = src.ExclusiveMaximum
-	}
-	if src.MultipleOf != nil {
-		dst.MultipleOf = src.MultipleOf
-	}
-	if src.NumericType != nil {
-		dst.NumericType = src.NumericType
-	}
-	if src.MinLength != nil {
-		dst.MinLength = src.MinLength
-	}
-	if src.MaxLength != nil {
-		dst.MaxLength = src.MaxLength
-	}
-	if src.Pattern != nil {
-		dst.Pattern = src.Pattern
-	}
-	if src.Format != nil {
-		dst.Format = src.Format
-	}
-	if src.StartsWith != nil {
-		dst.StartsWith = src.StartsWith
-	}
-	if src.EndsWith != nil {
-		dst.EndsWith = src.EndsWith
-	}
-	if src.Includes != nil {
-		dst.Includes = src.Includes
-	}
-	if src.Uppercase != nil {
-		dst.Uppercase = src.Uppercase
-	}
-	if src.Lowercase != nil {
-		dst.Lowercase = src.Lowercase
-	}
-	if src.ContentMediaType != nil {
-		dst.ContentMediaType = src.ContentMediaType
-	}
-	if len(src.Transforms) > 0 {
-		dst.Transforms = src.Transforms
-	}
-	if src.MinItems != nil {
-		dst.MinItems = src.MinItems
-	}
-	if src.MaxItems != nil {
-		dst.MaxItems = src.MaxItems
-	}
-	if src.UniqueItems != nil {
-		dst.UniqueItems = src.UniqueItems
-	}
-	if src.Default != nil {
-		dst.Default = src.Default
-	}
-	if src.Coerce != nil {
-		dst.Coerce = src.Coerce
-	}
-	if src.ValidateFn != nil {
-		dst.ValidateFn = src.ValidateFn
-	}
-	if src.ValidateModule != nil {
-		dst.ValidateModule = src.ValidateModule
-	}
-	if src.ErrorMessage != nil {
-		dst.ErrorMessage = src.ErrorMessage
-	}
+	constraints.Merge(dst, src)
 }
 
 // extractJSDocConstraints parses JSDoc tags on a declaration node to extract
@@ -390,11 +144,7 @@ func (w *TypeWalker) extractJSDocConstraints(node *ast.Node) *metadata.Constrain
 			}
 		case "type", "numerictype":
 			s := strings.TrimSpace(comment)
-			validTypes := map[string]bool{
-				"int32": true, "uint32": true, "int64": true,
-				"uint64": true, "float": true, "double": true,
-			}
-			if validTypes[s] {
+			if constraints.ValidNumericTypes[s] {
 				c.NumericType = &s
 				found = true
 			}
@@ -443,27 +193,27 @@ func (w *TypeWalker) extractJSDocConstraints(node *ast.Node) *metadata.Constrain
 			c.Maximum = &v
 			found = true
 		case "int":
-			s := "int32"
+			s := string(constraints.NumericInt32)
 			c.NumericType = &s
 			found = true
 		case "safe":
-			s := "int64"
+			s := string(constraints.NumericInt64)
 			c.NumericType = &s
 			found = true
 		case "finite":
-			s := "float"
+			s := string(constraints.NumericFloat)
 			c.NumericType = &s
 			found = true
 
 		// --- String transform tags ---
 		case "trim":
-			c.Transforms = append(c.Transforms, "trim")
+			c.Transforms = append(c.Transforms, string(constraints.TransformTrim))
 			found = true
 		case "tolowercase":
-			c.Transforms = append(c.Transforms, "toLowerCase")
+			c.Transforms = append(c.Transforms, string(constraints.TransformToLowerCase))
 			found = true
 		case "touppercase":
-			c.Transforms = append(c.Transforms, "toUpperCase")
+			c.Transforms = append(c.Transforms, string(constraints.TransformToUpperCase))
 			found = true
 
 		// --- String content checks ---

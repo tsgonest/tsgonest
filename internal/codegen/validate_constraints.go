@@ -3,22 +3,23 @@ package codegen
 import (
 	"fmt"
 
+	"github.com/tsgonest/tsgonest/internal/constraints"
 	"github.com/tsgonest/tsgonest/internal/metadata"
 )
 
 // generateTransforms emits JS statements that transform the value in-place before validation.
 func generateTransforms(e *Emitter, accessor string, transforms []string) {
 	for _, t := range transforms {
-		switch t {
-		case "trim":
+		switch constraints.Transform(t) {
+		case constraints.TransformTrim:
 			e.Block("if (typeof %s === \"string\")", accessor)
 			e.Line("%s = %s.trim();", accessor, accessor)
 			e.EndBlock()
-		case "toLowerCase":
+		case constraints.TransformToLowerCase:
 			e.Block("if (typeof %s === \"string\")", accessor)
 			e.Line("%s = %s.toLowerCase();", accessor, accessor)
 			e.EndBlock()
-		case "toUpperCase":
+		case constraints.TransformToUpperCase:
 			e.Block("if (typeof %s === \"string\")", accessor)
 			e.Line("%s = %s.toUpperCase();", accessor, accessor)
 			e.EndBlock()
@@ -301,48 +302,48 @@ func generateNumericTypeCheck(e *Emitter, accessor string, path string, numType 
 		}
 		return defaultExpected
 	}
-	switch numType {
-	case "int32":
+	switch constraints.NumericType(numType) {
+	case constraints.NumericInt32:
 		if typeVerified {
 			e.Block("if (!Number.isInteger(%s) || %s < -2147483648 || %s > 2147483647)", accessor, accessor, accessor)
 		} else {
 			e.Block("if (typeof %s === \"number\" && (!Number.isInteger(%s) || %s < -2147483648 || %s > 2147483647))", accessor, accessor, accessor, accessor)
 		}
-		e.Line("errors.push({ path: %q, expected: \"%s\", received: \"\" + %s });", path, errMsg("int32"), accessor)
+		e.Line("errors.push({ path: %q, expected: \"%s\", received: \"\" + %s });", path, errMsg(string(constraints.NumericInt32)), accessor)
 		e.EndBlock()
-	case "uint32":
+	case constraints.NumericUint32:
 		if typeVerified {
 			e.Block("if (!Number.isInteger(%s) || %s < 0 || %s > 4294967295)", accessor, accessor, accessor)
 		} else {
 			e.Block("if (typeof %s === \"number\" && (!Number.isInteger(%s) || %s < 0 || %s > 4294967295))", accessor, accessor, accessor, accessor)
 		}
-		e.Line("errors.push({ path: %q, expected: \"%s\", received: \"\" + %s });", path, errMsg("uint32"), accessor)
+		e.Line("errors.push({ path: %q, expected: \"%s\", received: \"\" + %s });", path, errMsg(string(constraints.NumericUint32)), accessor)
 		e.EndBlock()
-	case "int64":
+	case constraints.NumericInt64:
 		if typeVerified {
 			e.Block("if (!Number.isInteger(%s) || %s < -9007199254740991 || %s > 9007199254740991)", accessor, accessor, accessor)
 		} else {
 			e.Block("if (typeof %s === \"number\" && (!Number.isInteger(%s) || %s < -9007199254740991 || %s > 9007199254740991))", accessor, accessor, accessor, accessor)
 		}
-		e.Line("errors.push({ path: %q, expected: \"%s\", received: \"\" + %s });", path, errMsg("int64"), accessor)
+		e.Line("errors.push({ path: %q, expected: \"%s\", received: \"\" + %s });", path, errMsg(string(constraints.NumericInt64)), accessor)
 		e.EndBlock()
-	case "uint64":
+	case constraints.NumericUint64:
 		if typeVerified {
 			e.Block("if (!Number.isInteger(%s) || %s < 0 || %s > 9007199254740991)", accessor, accessor, accessor)
 		} else {
 			e.Block("if (typeof %s === \"number\" && (!Number.isInteger(%s) || %s < 0 || %s > 9007199254740991))", accessor, accessor, accessor, accessor)
 		}
-		e.Line("errors.push({ path: %q, expected: \"%s\", received: \"\" + %s });", path, errMsg("uint64"), accessor)
+		e.Line("errors.push({ path: %q, expected: \"%s\", received: \"\" + %s });", path, errMsg(string(constraints.NumericUint64)), accessor)
 		e.EndBlock()
-	case "float":
+	case constraints.NumericFloat:
 		if typeVerified {
 			e.Block("if (!Number.isFinite(%s))", accessor)
 		} else {
 			e.Block("if (typeof %s === \"number\" && !Number.isFinite(%s))", accessor, accessor)
 		}
-		e.Line("errors.push({ path: %q, expected: \"%s\", received: \"\" + %s });", path, errMsg("float"), accessor)
+		e.Line("errors.push({ path: %q, expected: \"%s\", received: \"\" + %s });", path, errMsg(string(constraints.NumericFloat)), accessor)
 		e.EndBlock()
-	case "double":
+	case constraints.NumericDouble:
 		// double always passes — no extra check needed (any finite number is valid)
 	}
 }
