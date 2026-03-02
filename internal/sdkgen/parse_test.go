@@ -449,6 +449,141 @@ func TestExtractSSEEventType_InlineSchema(t *testing.T) {
 	}
 }
 
+func TestExtractSSEEventType_OneOfDiscriminatedVariants(t *testing.T) {
+	// Simulates @EventStream with typed discriminated variants:
+	// oneOf with event variants that have contentSchema on data, plus an error variant without
+	responses := map[string]*openAPIResponse{
+		"200": {
+			Content: map[string]openAPIMediaType{
+				"text/event-stream": {
+					ItemSchema: json.RawMessage(`{
+						"oneOf": [
+							{
+								"type": "object",
+								"required": ["data", "event"],
+								"properties": {
+									"data": {
+										"type": "string",
+										"contentMediaType": "application/json",
+										"contentSchema": {"$ref": "#/components/schemas/OrderCreated"}
+									},
+									"event": {"type": "string", "const": "order.created"}
+								}
+							},
+							{
+								"type": "object",
+								"required": ["data", "event"],
+								"properties": {
+									"data": {
+										"type": "string",
+										"contentMediaType": "application/json",
+										"contentSchema": {"$ref": "#/components/schemas/OrderUpdated"}
+									},
+									"event": {"type": "string", "const": "order.updated"}
+								}
+							},
+							{
+								"type": "object",
+								"required": ["data", "event"],
+								"properties": {
+									"data": {"type": "string"},
+									"event": {"type": "string", "const": "error"}
+								}
+							}
+						],
+						"discriminator": {"propertyName": "event"}
+					}`),
+				},
+			},
+		},
+	}
+	resolver := &schemaResolver{schemas: map[string]*SchemaNode{}}
+	resolver.initFingerprints()
+
+	got := extractSSEEventType(responses, resolver)
+	if got != "OrderCreated | OrderUpdated" {
+		t.Errorf("expected 'OrderCreated | OrderUpdated', got %q", got)
+	}
+}
+
+func TestExtractSSEEventType_OneOfSingleVariant(t *testing.T) {
+	// Single typed variant + error variant → should return just the single type
+	responses := map[string]*openAPIResponse{
+		"200": {
+			Content: map[string]openAPIMediaType{
+				"text/event-stream": {
+					ItemSchema: json.RawMessage(`{
+						"oneOf": [
+							{
+								"type": "object",
+								"properties": {
+									"data": {
+										"type": "string",
+										"contentMediaType": "application/json",
+										"contentSchema": {"$ref": "#/components/schemas/Notification"}
+									},
+									"event": {"type": "string"}
+								}
+							},
+							{
+								"type": "object",
+								"properties": {
+									"data": {"type": "string"},
+									"event": {"type": "string", "const": "error"}
+								}
+							}
+						]
+					}`),
+				},
+			},
+		},
+	}
+	resolver := &schemaResolver{schemas: map[string]*SchemaNode{}}
+	resolver.initFingerprints()
+
+	got := extractSSEEventType(responses, resolver)
+	if got != "Notification" {
+		t.Errorf("expected 'Notification', got %q", got)
+	}
+}
+
+func TestExtractSSEEventType_OneOfNoContentSchema(t *testing.T) {
+	// All variants are untyped (no contentSchema) → should return ""
+	responses := map[string]*openAPIResponse{
+		"200": {
+			Content: map[string]openAPIMediaType{
+				"text/event-stream": {
+					ItemSchema: json.RawMessage(`{
+						"oneOf": [
+							{
+								"type": "object",
+								"properties": {
+									"data": {"type": "string"},
+									"event": {"type": "string", "const": "ping"}
+								}
+							},
+							{
+								"type": "object",
+								"properties": {
+									"data": {"type": "string"},
+									"event": {"type": "string", "const": "error"}
+								}
+							}
+						]
+					}`),
+				},
+			},
+		},
+	}
+	resolver := &schemaResolver{schemas: map[string]*SchemaNode{}}
+	resolver.initFingerprints()
+
+	got := extractSSEEventType(responses, resolver)
+	if got != "" {
+		t.Errorf("expected empty string for untyped oneOf SSE, got %q", got)
+	}
+}
+
 // --- Fingerprint tests ---
 
 // TestRawPropFingerprint_InlineObjectsAreDifferent verifies that two inline
@@ -836,10 +971,10 @@ func TestStripGlobalPrefix(t *testing.T) {
 		{"/api/v1/users", "/api", "/v1/users"},
 		{"/api/v1/users", "/api/", "/v1/users"},
 		{"/my-api/v1/users", "my-api", "/v1/users"},
-		{"/v1/users", "api", "/v1/users"},       // no match, return unchanged
-		{"/api", "api", "/"},                     // exact prefix match
+		{"/v1/users", "api", "/v1/users"},                     // no match, return unchanged
+		{"/api", "api", "/"},                                  // exact prefix match
 		{"/api-extra/v1/users", "api", "/api-extra/v1/users"}, // prefix must match full segment
-		{"/users", "", "/users"},                 // empty prefix
+		{"/users", "", "/users"},                              // empty prefix
 	}
 
 	for _, tt := range tests {
@@ -881,7 +1016,7 @@ func TestExtractVersionWithRe(t *testing.T) {
 	}{
 		{"/ver1/orders", "ver1"},
 		{"/ver2/orders", "ver2"},
-		{"/v1/orders", ""},  // doesn't match custom prefix
+		{"/v1/orders", ""}, // doesn't match custom prefix
 	}
 
 	for _, tt := range customTests {

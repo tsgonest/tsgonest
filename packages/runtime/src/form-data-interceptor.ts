@@ -49,12 +49,18 @@ export class FormDataInterceptor {
       });
     });
 
-    // Merge files into body by field name
+    // Merge files into body by field name, converting multer files to web-native File instances.
+    // Multer produces Express.Multer.File objects (with buffer, originalname, mimetype, etc.)
+    // which would fail `instanceof File` checks in generated validation code.
+    // Converting to web-native File ensures type-safe validation works correctly.
     if (req.files && Array.isArray(req.files)) {
-      const filesByField = new Map<string, any[]>();
+      const filesByField = new Map<string, File[]>();
       for (const file of req.files) {
+        const webFile = new File([file.buffer], file.originalname, {
+          type: file.mimetype,
+        });
         const existing = filesByField.get(file.fieldname) || [];
-        existing.push(file);
+        existing.push(webFile);
         filesByField.set(file.fieldname, existing);
       }
       for (const [fieldName, files] of filesByField) {

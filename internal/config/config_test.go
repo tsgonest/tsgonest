@@ -557,6 +557,134 @@ func TestLoadConfig_SDKConfig(t *testing.T) {
 	}
 }
 
+func TestLoadTS_DefineConfigDoubleDefault(t *testing.T) {
+	requireNode(t)
+
+	dir := t.TempDir()
+	tsPath := filepath.Join(dir, "tsgonest.config.ts")
+	// Simulate the double-default wrapping that tsx produces when a config file
+	// uses defineConfig() from @tsgonest/runtime. In this scenario, dynamic
+	// import() yields m.default = { default: { ...actualConfig } }.
+	// We simulate this by exporting an object that has a "default" property
+	// containing the actual config — matching what the eval script's m.default sees.
+	content := `
+function defineConfig(c: any) { return c; }
+const config = defineConfig({
+  controllers: {
+    include: ["src/**/*.controller.ts"],
+  },
+  openapi: {
+    output: "dist/openapi.json",
+    title: "EZcart API",
+    securitySchemes: {
+      bearer: {
+        type: "http",
+        scheme: "bearer",
+        bearerFormat: "JWT",
+      },
+    },
+    security: [{ bearer: [] }],
+  },
+  nestjs: {
+    globalPrefix: "api",
+    versioning: {
+      type: "URI",
+      defaultVersion: "1",
+      prefix: "v",
+    },
+  },
+});
+// This mimics the double-wrapping: tsx makes import().default = { default: config }
+export default { default: config } as any;
+`
+	os.WriteFile(tsPath, []byte(content), 0o644)
+
+	cfg, err := LoadTS(tsPath)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify the config was correctly unwrapped — not silently ignored
+	if cfg.OpenAPI.Title != "EZcart API" {
+		t.Errorf("expected title='EZcart API', got %q (config was not unwrapped)", cfg.OpenAPI.Title)
+	}
+	if len(cfg.OpenAPI.SecuritySchemes) == 0 {
+		t.Error("expected securitySchemes to be set (config was not unwrapped)")
+	} else if _, ok := cfg.OpenAPI.SecuritySchemes["bearer"]; !ok {
+		t.Error("expected 'bearer' security scheme")
+	}
+	if len(cfg.OpenAPI.Security) == 0 {
+		t.Error("expected security requirements to be set")
+	}
+	if cfg.NestJS.GlobalPrefix != "api" {
+		t.Errorf("expected globalPrefix='api', got %q", cfg.NestJS.GlobalPrefix)
+	}
+	if cfg.NestJS.Versioning == nil {
+		t.Fatal("expected versioning to be set")
+	}
+	if cfg.NestJS.Versioning.Type != "URI" {
+		t.Errorf("expected versioning type='URI', got %q", cfg.NestJS.Versioning.Type)
+	}
+	if cfg.NestJS.Versioning.DefaultVersion != "1" {
+		t.Errorf("expected defaultVersion='1', got %q", cfg.NestJS.Versioning.DefaultVersion)
+	}
+}
+
+func TestLoadTS_PlainExportNotAffectedByDoubleDefaultUnwrap(t *testing.T) {
+	requireNode(t)
+
+	dir := t.TempDir()
+	tsPath := filepath.Join(dir, "tsgonest.config.ts")
+	// A normal plain export should still work correctly — the unwrap logic
+	// should not interfere since a valid config has no "default" property.
+	content := `export default {
+  controllers: {
+    include: ["src/**/*.controller.ts"],
+  },
+  transforms: {
+    validation: true,
+    serialization: true,
+  },
+  openapi: {
+    output: "dist/openapi.json",
+    title: "Normal API",
+    securitySchemes: {
+      apiKey: {
+        type: "apiKey",
+        in: "header",
+        name: "X-API-Key",
+      },
+    },
+  },
+  nestjs: {
+    globalPrefix: "v2",
+  },
+};
+`
+	os.WriteFile(tsPath, []byte(content), 0o644)
+
+	cfg, err := LoadTS(tsPath)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if cfg.OpenAPI.Title != "Normal API" {
+		t.Errorf("expected title='Normal API', got %q", cfg.OpenAPI.Title)
+	}
+	if len(cfg.OpenAPI.SecuritySchemes) != 1 {
+		t.Errorf("expected 1 security scheme, got %d", len(cfg.OpenAPI.SecuritySchemes))
+	}
+	if cfg.NestJS.GlobalPrefix != "v2" {
+		t.Errorf("expected globalPrefix='v2', got %q", cfg.NestJS.GlobalPrefix)
+	}
+	if !cfg.Transforms.Validation {
+		t.Error("expected validation=true")
+	}
+	if !cfg.Transforms.Serialization {
+		t.Error("expected serialization=true")
+	}
+}
+
 func TestLoadTS_ViaLoadDispatch(t *testing.T) {
 	requireNode(t)
 

@@ -2353,3 +2353,170 @@ func TestIntegration_Bug2_InterfacePropertyTypesInOpenAPI(t *testing.T) {
 		t.Error("slug: expected maxLength constraint")
 	}
 }
+
+// --- FormData body with File/File[]/constraints ---
+
+func TestIntegration_FormDataBody_FileProperties(t *testing.T) {
+	// A FormData body with File, File[], and scalar properties should produce
+	// correct multipart/form-data OpenAPI schema: File→binary, File[]→array of binary.
+	registry := metadata.NewTypeRegistry()
+
+	registry.Register("UploadDto", &metadata.Metadata{
+		Kind: metadata.KindObject, Name: "UploadDto",
+		Properties: []metadata.Property{
+			{Name: "file", Type: metadata.Metadata{Kind: metadata.KindNative, NativeType: "File"}, Required: true},
+			{Name: "files", Type: metadata.Metadata{
+				Kind:        metadata.KindArray,
+				ElementType: &metadata.Metadata{Kind: metadata.KindNative, NativeType: "File"},
+			}, Required: true},
+			{Name: "description", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+			{Name: "count", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "number"}, Required: false},
+		},
+	})
+
+	gen := NewGenerator(registry)
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name: "UploadController",
+			Path: "uploads",
+			Routes: []analyzer.Route{
+				{
+					Method:      "POST",
+					Path:        "/uploads",
+					OperationID: "uploadFiles",
+					Parameters: []analyzer.RouteParameter{
+						{
+							Category:    "body",
+							Type:        metadata.Metadata{Kind: metadata.KindRef, Ref: "UploadDto"},
+							Required:    true,
+							ContentType: "multipart/form-data",
+						},
+					},
+					StatusCode: 201,
+					Tags:       []string{"Upload"},
+				},
+			},
+		},
+	}
+
+	doc := gen.Generate(controllers)
+	data := requireValidDoc(t, doc)
+	raw := parseJSON(t, data)
+
+	// Navigate to POST /uploads
+	paths := raw["paths"].(map[string]any)
+	uploadsPath := paths["/uploads"].(map[string]any)
+	postOp := uploadsPath["post"].(map[string]any)
+	reqBody := postOp["requestBody"].(map[string]any)
+	content := reqBody["content"].(map[string]any)
+
+	// Must use multipart/form-data, not application/json
+	if _, ok := content["multipart/form-data"]; !ok {
+		t.Fatalf("expected multipart/form-data content type, got keys: %v", getKeys(content))
+	}
+	if _, ok := content["application/json"]; ok {
+		t.Error("should NOT have application/json for FormData body")
+	}
+
+	// Check the schema properties reference UploadDto
+	formData := content["multipart/form-data"].(map[string]any)
+	schema := formData["schema"].(map[string]any)
+
+	// Should reference UploadDto (either inline or via $ref)
+	// If $ref, resolve from components
+	if ref, ok := schema["$ref"]; ok {
+		refStr := ref.(string)
+		if !strings.Contains(refStr, "UploadDto") {
+			t.Errorf("expected $ref to UploadDto, got %q", refStr)
+		}
+
+		// Verify component schema has File properties as binary
+		components := raw["components"].(map[string]any)
+		schemas := components["schemas"].(map[string]any)
+		uploadDtoSchema := schemas["UploadDto"].(map[string]any)
+		props := uploadDtoSchema["properties"].(map[string]any)
+
+		// file should be {type: "string", format: "binary"}
+		fileProp := props["file"].(map[string]any)
+		if fileProp["type"] != "string" || fileProp["format"] != "binary" {
+			t.Errorf("expected file: {type: string, format: binary}, got %v", fileProp)
+		}
+
+		// files should be {type: "array", items: {type: "string", format: "binary"}}
+		filesProp := props["files"].(map[string]any)
+		if filesProp["type"] != "array" {
+			t.Errorf("expected files to be array type, got %v", filesProp["type"])
+		}
+		filesItems := filesProp["items"].(map[string]any)
+		if filesItems["type"] != "string" || filesItems["format"] != "binary" {
+			t.Errorf("expected files items: {type: string, format: binary}, got %v", filesItems)
+		}
+	}
+}
+
+func TestIntegration_FormDataBody_WithConstraints(t *testing.T) {
+	// FormData body with branded constraints: MaxItems on File[], MaxLength on string
+	registry := metadata.NewTypeRegistry()
+
+	registry.Register("ConstrainedUploadDto", &metadata.Metadata{
+		Kind: metadata.KindObject, Name: "ConstrainedUploadDto",
+		Properties: []metadata.Property{
+			{Name: "files", Type: metadata.Metadata{
+				Kind:        metadata.KindArray,
+				ElementType: &metadata.Metadata{Kind: metadata.KindNative, NativeType: "File"},
+			}, Required: true,
+				Constraints: &metadata.Constraints{MaxItems: intgIntPtr(10)},
+			},
+			{Name: "id", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true,
+				Constraints: &metadata.Constraints{MaxLength: intgIntPtr(10)},
+			},
+			{Name: "file", Type: metadata.Metadata{Kind: metadata.KindNative, NativeType: "File"}, Required: true},
+		},
+	})
+
+	gen := NewGenerator(registry)
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name: "UploadController",
+			Path: "uploads",
+			Routes: []analyzer.Route{
+				{
+					Method:      "POST",
+					Path:        "/uploads",
+					OperationID: "uploadConstrained",
+					Parameters: []analyzer.RouteParameter{
+						{
+							Category:    "body",
+							Type:        metadata.Metadata{Kind: metadata.KindRef, Ref: "ConstrainedUploadDto"},
+							Required:    true,
+							ContentType: "multipart/form-data",
+						},
+					},
+					StatusCode: 201,
+					Tags:       []string{"Upload"},
+				},
+			},
+		},
+	}
+
+	doc := gen.Generate(controllers)
+	data := requireValidDoc(t, doc)
+
+	// Verify constraints appear in JSON output
+	jsonStr := string(data)
+
+	// MaxItems on files array
+	if !strings.Contains(jsonStr, `"maxItems"`) {
+		t.Error("expected maxItems constraint on files array in OpenAPI schema")
+	}
+
+	// MaxLength on id string
+	if !strings.Contains(jsonStr, `"maxLength"`) {
+		t.Error("expected maxLength constraint on id string in OpenAPI schema")
+	}
+
+	// File property should be format: binary
+	if !strings.Contains(jsonStr, `"format": "binary"`) {
+		t.Error("expected format: binary for File property")
+	}
+}

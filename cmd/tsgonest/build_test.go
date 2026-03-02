@@ -6,7 +6,9 @@ import (
 	"testing"
 
 	"github.com/microsoft/typescript-go/shim/core"
+	"github.com/tsgonest/tsgonest/internal/analyzer"
 	"github.com/tsgonest/tsgonest/internal/compiler"
+	"github.com/tsgonest/tsgonest/internal/metadata"
 )
 
 // ── parseBuildArgs tests ─────────────────────────────────────────────────────
@@ -528,6 +530,137 @@ func TestPipeline_InvalidTsgoFlagReportsError(t *testing.T) {
 	_, errs := parseTsgoFlags(flags.TsgoArgs)
 	if len(errs) == 0 {
 		t.Error("expected error for --badFlag, got none")
+	}
+}
+
+// --- collectCoercionTypes tests ---
+
+func TestCollectCoercionTypes_IncludesFormDataBody(t *testing.T) {
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name:       "UploadController",
+			SourceFile: "/src/upload.controller.ts",
+			Routes: []analyzer.Route{
+				{
+					OperationID: "upload",
+					MethodName:  "upload",
+					Parameters: []analyzer.RouteParameter{
+						{
+							Category:    "body",
+							LocalName:   "body",
+							TypeName:    "UploadDto",
+							ContentType: "multipart/form-data",
+							Type:        metadata.Metadata{Kind: metadata.KindRef, Ref: "UploadDto"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	types := collectCoercionTypes(controllers)
+	if !types["UploadDto"] {
+		t.Errorf("expected UploadDto in coercion types for @FormDataBody(), got: %v", types)
+	}
+}
+
+func TestCollectCoercionTypes_ExcludesRegularBody(t *testing.T) {
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name:       "UserController",
+			SourceFile: "/src/user.controller.ts",
+			Routes: []analyzer.Route{
+				{
+					OperationID: "create",
+					MethodName:  "create",
+					Parameters: []analyzer.RouteParameter{
+						{
+							Category:  "body",
+							LocalName: "body",
+							TypeName:  "CreateUserDto",
+							Type:      metadata.Metadata{Kind: metadata.KindRef, Ref: "CreateUserDto"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	types := collectCoercionTypes(controllers)
+	if types["CreateUserDto"] {
+		t.Errorf("regular @Body() should NOT be in coercion types, got: %v", types)
+	}
+}
+
+func TestCollectCoercionTypes_FormDataBody_InlineType(t *testing.T) {
+	// When the analyzer synthesizes a TypeName for an inline FormData body,
+	// collectCoercionTypes should include it in the coercion set.
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name:       "UploadController",
+			SourceFile: "/src/upload.controller.ts",
+			Routes: []analyzer.Route{
+				{
+					OperationID: "upload",
+					MethodName:  "upload",
+					Parameters: []analyzer.RouteParameter{
+						{
+							Category:    "body",
+							LocalName:   "body",
+							TypeName:    "__UploadController_upload_Body",
+							ContentType: "multipart/form-data",
+							Type: metadata.Metadata{
+								Kind: metadata.KindObject,
+								Name: "__UploadController_upload_Body",
+								Properties: []metadata.Property{
+									{Name: "file", Type: metadata.Metadata{Kind: metadata.KindNative, NativeType: "File"}},
+									{Name: "id", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}},
+									{Name: "count", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "number"}},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	types := collectCoercionTypes(controllers)
+	if !types["__UploadController_upload_Body"] {
+		t.Errorf("expected synthetic inline type in coercion types, got: %v", types)
+	}
+}
+
+func TestCollectNeededTypes_FormDataBody_InlineType(t *testing.T) {
+	// Inline FormData body types with synthetic TypeName should be in needed types
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name:       "UploadController",
+			SourceFile: "/src/upload.controller.ts",
+			Routes: []analyzer.Route{
+				{
+					OperationID: "upload",
+					MethodName:  "upload",
+					Parameters: []analyzer.RouteParameter{
+						{
+							Category:    "body",
+							LocalName:   "body",
+							TypeName:    "__UploadController_upload_Body",
+							ContentType: "multipart/form-data",
+							Type: metadata.Metadata{
+								Kind: metadata.KindObject,
+								Name: "__UploadController_upload_Body",
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	needed := collectNeededTypes(controllers, nil, nil)
+	if !needed["__UploadController_upload_Body"] {
+		t.Errorf("expected synthetic inline type in needed types, got: %v", needed)
 	}
 }
 

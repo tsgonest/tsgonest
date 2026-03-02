@@ -719,7 +719,7 @@ func (a *ControllerAnalyzer) analyzeMethod(methodNode *ast.Node, controllerPath 
 		}
 
 		for i := range params {
-			ValidateParameterType(&params[i], a.warnings, sourceFile, warnLocation)
+			ValidateParameterType(&params[i], a.warnings, a.registry, sourceFile, warnLocation)
 		}
 
 		// Warn when @Res()/@Response() is used WITHOUT @Returns — return type cannot be determined statically.
@@ -1242,9 +1242,9 @@ func (a *ControllerAnalyzer) analyzeParameter(paramNode *ast.Node, className str
 		}
 	}
 
-	// Auto-enable coercion for query and path parameters that are typed as
-	// number or boolean. These arrive as strings from HTTP and need coercion.
-	if category == "param" || category == "query" {
+	// Auto-enable coercion for query, path, and FormData body parameters that
+	// are typed as number or boolean. These arrive as strings from HTTP and need coercion.
+	if category == "param" || category == "query" || (category == "body" && isFormData) {
 		AutoEnableCoercion(&paramType)
 	}
 
@@ -1257,6 +1257,14 @@ func (a *ControllerAnalyzer) analyzeParameter(paramNode *ast.Node, className str
 	localName := ""
 	if paramDecl.Name() != nil && paramDecl.Name().Kind == ast.KindIdentifier {
 		localName = paramDecl.Name().Text()
+	}
+
+	// For inline body types (no named DTO), synthesize a TypeName so that
+	// companion generation and validation injection can work.
+	// E.g., @FormDataBody() body: {file: File, id: string} → "__UploadController_upload_Body"
+	if category == "body" && paramTypeName == "" && paramType.Kind == metadata.KindObject && len(paramType.Properties) > 0 {
+		paramTypeName = "__" + className + "_" + methodName + "_Body"
+		paramType.Name = paramTypeName
 	}
 
 	rp := &RouteParameter{
@@ -1481,8 +1489,10 @@ func (a *ControllerAnalyzer) extractReturnType(methodNode *ast.Node, className s
 	// Fast path: explicit return type annotation — use the type node directly.
 	if methodDecl.Type != nil {
 		result := a.walker.WalkTypeNode(methodDecl.Type)
-		// Preserve the inner type name for Promise<T> / Observable<T>
-		if result.Name == "" {
+		// Preserve the inner type name for Promise<T> / Observable<T>.
+		// Skip for KindRef — the walker already resolved the type (e.g.,
+		// generic type alias instantiation like PaginatedResponse<OrderDto>).
+		if result.Name == "" && result.Kind != metadata.KindRef {
 			result.Name = resolveInnerTypeName(methodDecl.Type)
 		}
 		return result
@@ -1563,6 +1573,24 @@ func (a *ControllerAnalyzer) inferReturnType(methodNode *ast.Node, className str
 
 	result := a.walker.WalkType(returnType)
 	elapsed := time.Since(start)
+
+	// Warn when inference produces KindAny — the user gets empty {} schemas
+	// in OpenAPI without knowing why. An explicit return type annotation fixes it.
+	if result.Kind == metadata.KindAny && a.warnings != nil && methodName != "" {
+		location := methodName + "()"
+		if className != "" {
+			location = className + "." + location
+		}
+		if sf := ast.GetSourceFileOfNode(methodNode); sf != nil {
+			line := shimscanner.GetECMALineOfPosition(sf, nameNode.Pos())
+			location = fmt.Sprintf("%s (%s:%d)", location, sourceFile, line+1)
+		} else if sourceFile != "" {
+			location = fmt.Sprintf("%s (%s)", location, sourceFile)
+		}
+		a.warnings.Add(sourceFile, "unresolvable-return-type",
+			fmt.Sprintf("%s has no explicit return type and the inferred type could not be resolved — add an explicit return type annotation like Promise<YourDto>.",
+				location))
+	}
 
 	if elapsed >= returnTypeInferenceWarnThreshold && a.warnings != nil && methodName != "" {
 		// Build a descriptive location: ControllerName.methodName() (file.ts:line)
@@ -1784,7 +1812,7 @@ var _ = strconv.ParseFloat
 // ValidateParameterType checks that a route parameter has a valid type for its category
 // and records warnings via the WarningCollector if not.
 // location is a pre-formatted string like "ControllerName.methodName() (file.ts:line)".
-func ValidateParameterType(param *RouteParameter, wc *WarningCollector, sourceFile string, location string) {
+func ValidateParameterType(param *RouteParameter, wc *WarningCollector, registry *metadata.TypeRegistry, sourceFile string, location string) {
 	if wc == nil {
 		return
 	}
@@ -1825,10 +1853,16 @@ func ValidateParameterType(param *RouteParameter, wc *WarningCollector, sourceFi
 			wc.Add(sourceFile, "param-no-name",
 				fmt.Sprintf("%s — @Param() used without a field name; use @Param('id') to name the path parameter",
 					location))
+			// Whole-object @Param() should not have nested objects.
+			if hasNestedObjects(&param.Type, registry) {
+				wc.Add(sourceFile, "param-complex-type",
+					fmt.Sprintf("%s — param object has nested object type; path params should be flat (no nested objects)",
+						location))
+			}
 		}
 	case "query":
 		// Query params should be flat (no deeply nested objects).
-		if hasNestedObjects(&param.Type) {
+		if hasNestedObjects(&param.Type, registry) {
 			wc.Add(sourceFile, "query-complex-type",
 				fmt.Sprintf("%s — query parameter %q has nested object type; query params should be flat (no nested objects)",
 					location, param.Name))
@@ -1847,7 +1881,7 @@ func ValidateParameterType(param *RouteParameter, wc *WarningCollector, sourceFi
 					location, param.Name))
 		}
 		// Whole-object headers should not have nested objects.
-		if param.Name == "" && hasNestedObjects(&param.Type) {
+		if param.Name == "" && hasNestedObjects(&param.Type, registry) {
 			wc.Add(sourceFile, "header-complex-type",
 				fmt.Sprintf("%s — header object has nested object type; headers should be flat (no nested objects)",
 					location))
@@ -1857,13 +1891,23 @@ func ValidateParameterType(param *RouteParameter, wc *WarningCollector, sourceFi
 
 // hasNestedObjects checks if a metadata type contains nested object types.
 // Returns true if the given type is an object with at least one property
-// whose type is also an object (i.e. nested objects).
-func hasNestedObjects(m *metadata.Metadata) bool {
-	if m.Kind == metadata.KindObject {
-		for _, prop := range m.Properties {
-			if prop.Type.Kind == metadata.KindObject {
-				return true
+// whose type is also an object or a ref to a named object type.
+// For KindRef types, the registry is consulted to resolve the referenced type's properties.
+func hasNestedObjects(m *metadata.Metadata, registry *metadata.TypeRegistry) bool {
+	var props []metadata.Property
+	switch m.Kind {
+	case metadata.KindObject:
+		props = m.Properties
+	case metadata.KindRef:
+		if registry != nil && m.Ref != "" {
+			if resolved, ok := registry.Types[m.Ref]; ok && resolved.Kind == metadata.KindObject {
+				props = resolved.Properties
 			}
+		}
+	}
+	for _, prop := range props {
+		if prop.Type.Kind == metadata.KindObject || prop.Type.Kind == metadata.KindRef {
+			return true
 		}
 	}
 	return false

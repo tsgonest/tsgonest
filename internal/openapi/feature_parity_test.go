@@ -718,7 +718,7 @@ func TestFeature_ParseThrowsTag_WithDescription(t *testing.T) {
 	}
 
 	resp422 := responses["422"].(map[string]any)
-	if resp422["description"] != "OK" { // default since 422 isn't in statusDescription map
+	if resp422["description"] != "Unprocessable Entity" {
 		t.Errorf("expected default 422 description, got %v", resp422["description"])
 	}
 }

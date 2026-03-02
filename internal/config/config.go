@@ -205,7 +205,14 @@ func LoadTS(path string) (*Config, error) {
 		fileURL = "file:///" + strings.ReplaceAll(absPath, "\\", "/")
 	}
 	evalScript := fmt.Sprintf(
-		`import(%q).then(m => {const c = m.default; if (c === undefined || c === null || typeof c !== "object" || Object.keys(c).length === 0) { process.stderr.write("error: config file must have a non-empty default export (export default { ... })\\n"); process.exit(1); } process.stdout.write(JSON.stringify(c));}).catch(e => { process.stderr.write("error: " + e.message + "\\n"); process.exit(1); })`,
+		`import(%q).then(m => {`+
+			`let c = m.default;`+
+			// Unwrap double-default: tsx can wrap defineConfig() exports as { default: { ...config } }
+			`if (c && typeof c === "object" && "default" in c && typeof c.default === "object" && c.default !== null) { c = c.default; }`+
+			`if (c === undefined || c === null || typeof c !== "object" || Object.keys(c).length === 0) {`+
+			`process.stderr.write("error: config file must have a non-empty default export (export default { ... })\\n"); process.exit(1); }`+
+			`process.stdout.write(JSON.stringify(c));`+
+			`}).catch(e => { process.stderr.write("error: " + e.message + "\\n"); process.exit(1); })`,
 		fileURL,
 	)
 
