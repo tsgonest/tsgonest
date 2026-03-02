@@ -786,3 +786,41 @@ func TestPipeline_FullIntegrationWithTSConfig(t *testing.T) {
 		t.Errorf("Target = %v, want ScriptTargetES2022 (CLI override)", finalOpts.Target)
 	}
 }
+
+// --- cleanDir tests (--clean now removes everything including .tsbuildinfo) ---
+
+func TestCleanDir_RemovesEverything(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create files including a fake .tsbuildinfo inside the output dir
+	os.WriteFile(filepath.Join(dir, "main.js"), []byte("console.log('hello')"), 0644)
+	os.WriteFile(filepath.Join(dir, "main.d.ts"), []byte("export {}"), 0644)
+	os.MkdirAll(filepath.Join(dir, "sub"), 0755)
+	os.WriteFile(filepath.Join(dir, "sub", "other.js"), []byte("// other"), 0644)
+
+	err := cleanDir(dir)
+	if err != nil {
+		t.Fatalf("cleanDir error: %v", err)
+	}
+
+	// The entire directory should be removed
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Error("cleanDir should remove the entire directory")
+	}
+}
+
+func TestCleanDir_NonexistentDir(t *testing.T) {
+	err := cleanDir("/tmp/nonexistent-dir-xyz-456")
+	if err != nil {
+		t.Errorf("cleanDir on nonexistent dir should not error: %v", err)
+	}
+}
+
+func TestCleanDir_DangerousPath(t *testing.T) {
+	for _, dangerous := range []string{"/", ".", ".."} {
+		err := cleanDir(dangerous)
+		if err == nil {
+			t.Errorf("cleanDir(%q) should return error for dangerous path", dangerous)
+		}
+	}
+}

@@ -135,7 +135,7 @@ func TestWriteFileCallback_Integration(t *testing.T) {
 			"/src/user.controller.ts": filepath.Join(dir, "user.controller.ts"),
 		},
 		OutputToSource: map[string]string{
-			outputFile: "/src/user.controller.ts",
+			normalizeSlashes(outputFile): "/src/user.controller.ts",
 		},
 	}
 
@@ -161,5 +161,84 @@ console.log(user);`
 	}
 	if strings.Contains(result, `from "tsgonest"`) {
 		t.Errorf("tsgonest import should be removed, got:\n%s", result)
+	}
+}
+
+// ── Windows path normalization tests ──────────────────────────────────────────
+
+func TestBuildOutputToSourceMap_BackslashPaths(t *testing.T) {
+	// tsgo uses forward slashes in WriteFile callbacks, but filepath.Join on
+	// Windows produces backslash paths. The map must normalize to forward slashes.
+	sourceToOutput := map[string]string{
+		`D:\project\src\user.dto.ts`: `D:\project\dist\user.dto.ts`,
+	}
+
+	result := BuildOutputToSourceMap(sourceToOutput)
+
+	// Lookup with forward slashes (as tsgo provides)
+	if src, ok := result["D:/project/dist/user.dto.js"]; !ok || src != "D:/project/src/user.dto.ts" {
+		t.Errorf("expected forward-slash lookup to work, got map: %v", result)
+	}
+
+	// Backslash lookup should NOT match (tsgo never uses backslashes)
+	if _, ok := result[`D:\project\dist\user.dto.js`]; ok {
+		t.Error("backslash key should not exist in normalized map")
+	}
+}
+
+func TestBuildControllerSourceFiles_BackslashPaths(t *testing.T) {
+	controllers := []analyzer.ControllerInfo{
+		{SourceFile: `D:\project\src\user.controller.ts`},
+		{SourceFile: "D:/project/src/auth.controller.ts"},
+	}
+
+	result := BuildControllerSourceFiles(controllers)
+
+	// Both should be accessible via forward-slash paths
+	if !result["D:/project/src/user.controller.ts"] {
+		t.Error("backslash SourceFile should be normalized to forward slashes")
+	}
+	if !result["D:/project/src/auth.controller.ts"] {
+		t.Error("forward-slash SourceFile should remain accessible")
+	}
+}
+
+func TestBuildCompanionMap_BackslashPaths(t *testing.T) {
+	sourceToOutput := map[string]string{
+		`D:\project\src\user.dto.ts`: `D:\project\dist\user.dto.ts`,
+	}
+	typesByFile := map[string][]string{
+		`D:\project\src\user.dto.ts`: {"CreateUserDto"},
+	}
+
+	result := BuildCompanionMap(sourceToOutput, typesByFile)
+
+	path, ok := result["CreateUserDto"]
+	if !ok {
+		t.Fatal("CreateUserDto should be in companion map")
+	}
+	if strings.Contains(path, `\`) {
+		t.Errorf("companion path should use forward slashes, got: %s", path)
+	}
+	expected := "D:/project/dist/user.dto.CreateUserDto.tsgonest.js"
+	if path != expected {
+		t.Errorf("companion path = %q, want %q", path, expected)
+	}
+}
+
+func TestBuildOutputToSourceMap_MixedSlashes(t *testing.T) {
+	// Paths may already be mixed (some forward, some back)
+	sourceToOutput := map[string]string{
+		"D:/project/src/a.ts":       `D:\project\dist\a.ts`,
+		`D:\project\src\b.ts`:       "D:/project/dist/b.ts",
+	}
+
+	result := BuildOutputToSourceMap(sourceToOutput)
+
+	if src, ok := result["D:/project/dist/a.js"]; !ok || src != "D:/project/src/a.ts" {
+		t.Errorf("mixed slash a.ts: got %v", result)
+	}
+	if src, ok := result["D:/project/dist/b.js"]; !ok || src != "D:/project/src/b.ts" {
+		t.Errorf("mixed slash b.ts: got %v", result)
 	}
 }

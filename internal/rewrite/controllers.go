@@ -472,13 +472,16 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 		return edits[i].priority < edits[j].priority
 	})
 
-	// Convert to core.TextChange slice
-	changes := make([]core.TextChange, len(edits))
-	for i, e := range edits {
-		changes[i] = core.TextChange{
+	// Convert to core.TextChange slice, skipping invalid edits (end < pos)
+	var changes []core.TextChange
+	for _, e := range edits {
+		if e.end < e.pos {
+			continue // skip malformed edit
+		}
+		changes = append(changes, core.TextChange{
 			TextRange: core.NewTextRange(e.pos, e.end),
 			NewText:   e.newText,
-		}
+		})
 	}
 
 	return core.ApplyBulkEdits(text, changes)

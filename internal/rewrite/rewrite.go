@@ -1,6 +1,7 @@
 package rewrite
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,14 @@ import (
 	"github.com/tsgonest/tsgonest/internal/analyzer"
 	"github.com/tsgonest/tsgonest/internal/pathalias"
 )
+
+// normalizeSlashes converts all backslashes to forward slashes regardless of OS.
+// filepath.ToSlash only converts os.PathSeparator (no-op on Linux for '\').
+// tsgo always emits forward-slash paths, but Go's filepath.Join uses OS-native
+// separators, so we must normalize unconditionally.
+func normalizeSlashes(p string) string {
+	return strings.ReplaceAll(p, "\\", "/")
+}
 
 // RewriteContext holds all data needed by the WriteFile callback to perform
 // inline rewrites during emit. All fields are read-only after construction,
@@ -58,7 +67,7 @@ func (ctx *RewriteContext) MakeWriteFile() shimcompiler.WriteFile {
 			}
 
 			// 2. Marker call rewriting
-			sourcePath := ctx.OutputToSource[fileName]
+			sourcePath := ctx.OutputToSource[normalizeSlashes(fileName)]
 			if markers, ok := ctx.MarkerCalls[sourcePath]; ok && len(markers) > 0 {
 				text = rewriteMarkers(text, fileName, markers, ctx.CompanionMap, ctx.ModuleFormat)
 			}
@@ -68,16 +77,22 @@ func (ctx *RewriteContext) MakeWriteFile() shimcompiler.WriteFile {
 				// Find controllers matching this source file
 				var matchingControllers []analyzer.ControllerInfo
 				for _, ctrl := range ctx.Controllers {
-					if ctrl.SourceFile == sourcePath {
+				if normalizeSlashes(ctrl.SourceFile) == sourcePath {
 						matchingControllers = append(matchingControllers, ctrl)
 					}
 				}
 				if len(matchingControllers) > 0 {
-					text = rewriteController(text, fileName, matchingControllers, ctx.CompanionMap, ctx.ModuleFormat)
+					func() {
+						defer func() {
+							if r := recover(); r != nil {
+								fmt.Fprintf(os.Stderr, "warning: controller rewrite panicked for %s: %v\n", fileName, r)
+							}
+						}()
+						text = rewriteController(text, fileName, matchingControllers, ctx.CompanionMap, ctx.ModuleFormat)
+					}()
 				}
 			}
 		}
-
 		// Write to disk (replicates default tsgo behavior)
 		return writeFileToDisk(fileName, text, bom)
 	}
@@ -110,7 +125,9 @@ func BuildOutputToSourceMap(sourceToOutput map[string]string) map[string]string 
 		if strings.HasSuffix(jsPath, ".ts") {
 			jsPath = jsPath[:len(jsPath)-3] + ".js"
 		}
-		result[jsPath] = src
+		// Normalize to forward slashes for consistent matching with tsgo's
+		// WriteFile callback which always uses forward slashes.
+		result[normalizeSlashes(jsPath)] = normalizeSlashes(src)
 	}
 	return result
 }
@@ -119,7 +136,8 @@ func BuildOutputToSourceMap(sourceToOutput map[string]string) map[string]string 
 func BuildControllerSourceFiles(controllers []analyzer.ControllerInfo) map[string]bool {
 	result := make(map[string]bool, len(controllers))
 	for _, ctrl := range controllers {
-		result[ctrl.SourceFile] = true
+		// Normalize to forward slashes for consistent matching with tsgo paths.
+		result[normalizeSlashes(ctrl.SourceFile)] = true
 	}
 	return result
 }
@@ -142,7 +160,7 @@ func BuildCompanionMap(sourceToOutput map[string]string, typesByFile map[string]
 					break
 				}
 			}
-			companionPath := base + "." + typeName + ".tsgonest.js"
+			companionPath := normalizeSlashes(base) + "." + typeName + ".tsgonest.js"
 			result[typeName] = companionPath
 		}
 	}
