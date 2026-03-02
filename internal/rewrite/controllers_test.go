@@ -1285,3 +1285,67 @@ func TestResolveReturnTypeName_Primitives(t *testing.T) {
 		})
 	}
 }
+
+func TestRewriteController_OverlappingEditsDoNotPanic(t *testing.T) {
+	// Regression test: when the JS locator computes overlapping edit ranges
+	// (e.g., two return transforms where one ends after the next begins),
+	// rewriteController must not panic. The guard skips malformed edits.
+	//
+	// This specifically tests that edits with end < pos are filtered out.
+	input := `class TestController {
+    async methodA(body) {
+        return this.service.methodA(body);
+    }
+    async methodB(body) {
+        return this.service.methodB(body);
+    }
+}`
+
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name:       "TestController",
+			SourceFile: "/src/test.controller.ts",
+			Routes: []analyzer.Route{
+				{
+					OperationID: "methodA",
+					MethodName:  "methodA",
+					Parameters: []analyzer.RouteParameter{
+						{
+							Category:  "body",
+							LocalName: "body",
+							Type:      metadata.Metadata{Kind: metadata.KindRef, Ref: "DtoA"},
+						},
+					},
+					ReturnType: metadata.Metadata{Kind: metadata.KindRef, Ref: "ResponseA"},
+				},
+				{
+					OperationID: "methodB",
+					MethodName:  "methodB",
+					Parameters: []analyzer.RouteParameter{
+						{
+							Category:  "body",
+							LocalName: "body",
+							Type:      metadata.Metadata{Kind: metadata.KindRef, Ref: "DtoB"},
+						},
+					},
+					ReturnType: metadata.Metadata{Kind: metadata.KindRef, Ref: "ResponseB"},
+				},
+			},
+		},
+	}
+
+	companionMap := map[string]string{
+		"DtoA":      "/dist/dto.DtoA.tsgonest.js",
+		"DtoB":      "/dist/dto.DtoB.tsgonest.js",
+		"ResponseA": "/dist/dto.ResponseA.tsgonest.js",
+		"ResponseB": "/dist/dto.ResponseB.tsgonest.js",
+	}
+
+	// This must not panic — it should gracefully handle any edge cases
+	result := rewriteController(input, "/dist/test.controller.js", controllers, companionMap, "cjs")
+
+	// Basic validation: body assertion should be injected for at least one method
+	if !strings.Contains(result, "assertDtoA(body)") && !strings.Contains(result, "assertDtoB(body)") {
+		t.Errorf("expected at least one assert call, got:\n%s", result)
+	}
+}

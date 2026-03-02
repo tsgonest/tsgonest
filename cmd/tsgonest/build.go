@@ -208,11 +208,14 @@ func runBuildWithIncr(args []string, oldIncrProgram *shimincremental.Program, ou
 	// Clean output directory if requested (using parsed OutDir, no re-parsing needed)
 	if clean && opts.OutDir != "" {
 		tsbuildInfoPath := strings.TrimSuffix(resolvedTsconfigPath, ".json") + ".tsbuildinfo"
-		// Smart clean: preserve .tsbuildinfo so incremental compilation can reuse it.
-		// Only the output files and post-processing cache need to be wiped.
-		if cleanErr := smartCleanDir(opts.OutDir, tsbuildInfoPath); cleanErr != nil {
+		// Full clean: remove output directory and .tsbuildinfo to force a complete rebuild.
+		// Without deleting .tsbuildinfo, the incremental compiler thinks files are up-to-date
+		// and skips emit — which means controller rewriting (in the WriteFile callback) never runs.
+		if cleanErr := cleanDir(opts.OutDir); cleanErr != nil {
 			fmt.Fprintf(os.Stderr, "warning: clean: %v\n", cleanErr)
 		}
+		// Delete .tsbuildinfo so incremental compilation starts fresh
+		os.Remove(tsbuildInfoPath)
 		// Delete the post-processing cache — ensures full companion/OpenAPI regeneration
 		buildcache.Delete(postCachePath)
 	}
