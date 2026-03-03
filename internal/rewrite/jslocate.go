@@ -277,21 +277,23 @@ func extractDecorateCall(text string, stmt *ast.Node, locs *JSLocations) {
 		})
 
 	case ast.KindBinaryExpression:
-		// Class-level: ClassName = __decorate([...], ClassName);
+		// Class-level patterns:
+		//   ESM:  ClassName = __decorate([...], ClassName);
+		//   CJS:  exports.ClassName = ClassName = __decorate([...], ClassName);
+		// Walk through chained assignments to find the __decorate call.
 		bin := expr.AsBinaryExpression()
 		if bin.OperatorToken.Kind != ast.KindEqualsToken {
 			return
 		}
-		// Right side should be __decorate(...)
-		if bin.Right.Kind != ast.KindCallExpression {
+		// Find the __decorate call — it may be bin.Right directly (ESM)
+		// or nested inside a chained assignment (CJS: X = __decorate(...))
+		callNode := findDecorateInAssignment(bin.Right)
+		if callNode == nil {
 			return
 		}
-		call := bin.Right.AsCallExpression()
-		if !isDecorateCallee(call.Expression) {
-			return
-		}
-		// Left side is the class name
-		className := extractIdentifierText(bin.Left)
+		call := callNode.AsCallExpression()
+		// Extract class name from the innermost left-hand side (the identifier, not exports.X)
+		className := extractClassNameFromChain(bin)
 		if className == "" {
 			return
 		}
@@ -341,6 +343,48 @@ func extractPrototypeClassName(node *ast.Node) string {
 		return ""
 	}
 	return extractIdentifierText(pae.Expression)
+}
+
+// findDecorateInAssignment walks a (possibly chained) assignment RHS to find
+// a __decorate(...) call. Handles both:
+//   - direct:  __decorate(...)
+//   - chained: ClassName = __decorate(...)
+func findDecorateInAssignment(node *ast.Node) *ast.Node {
+	if node == nil {
+		return nil
+	}
+	if node.Kind == ast.KindCallExpression {
+		if isDecorateCallee(node.AsCallExpression().Expression) {
+			return node
+		}
+		return nil
+	}
+	if node.Kind == ast.KindBinaryExpression {
+		bin := node.AsBinaryExpression()
+		if bin.OperatorToken.Kind == ast.KindEqualsToken {
+			return findDecorateInAssignment(bin.Right)
+		}
+	}
+	return nil
+}
+
+// extractClassNameFromChain extracts the class name identifier from a
+// (possibly chained) assignment. For `exports.X = X = __decorate(...)`,
+// the innermost LHS identifier `X` is the class name.
+func extractClassNameFromChain(bin *ast.BinaryExpression) string {
+	// Try the direct left side first (simple case: X = __decorate(...))
+	if name := extractIdentifierText(bin.Left); name != "" {
+		return name
+	}
+	// Chained case: exports.X = (X = __decorate(...))
+	// Walk into the right-hand side if it's another assignment
+	if bin.Right.Kind == ast.KindBinaryExpression {
+		inner := bin.Right.AsBinaryExpression()
+		if inner.OperatorToken.Kind == ast.KindEqualsToken {
+			return extractClassNameFromChain(inner)
+		}
+	}
+	return ""
 }
 
 // extractIdentifierText returns the text of an Identifier node, or "" if not an identifier.

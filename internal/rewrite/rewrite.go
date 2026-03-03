@@ -77,7 +77,7 @@ func (ctx *RewriteContext) MakeWriteFile() shimcompiler.WriteFile {
 				// Find controllers matching this source file
 				var matchingControllers []analyzer.ControllerInfo
 				for _, ctrl := range ctx.Controllers {
-				if normalizeSlashes(ctrl.SourceFile) == sourcePath {
+					if normalizeSlashes(ctrl.SourceFile) == sourcePath {
 						matchingControllers = append(matchingControllers, ctrl)
 					}
 				}
@@ -85,7 +85,8 @@ func (ctx *RewriteContext) MakeWriteFile() shimcompiler.WriteFile {
 					func() {
 						defer func() {
 							if r := recover(); r != nil {
-								fmt.Fprintf(os.Stderr, "warning: controller rewrite panicked for %s: %v\n", fileName, r)
+								fmt.Fprintf(os.Stderr, "error: controller rewrite failed for %s: %v\n", fileName, r)
+								os.Exit(1)
 							}
 						}()
 						text = rewriteController(text, fileName, matchingControllers, ctx.CompanionMap, ctx.ModuleFormat)

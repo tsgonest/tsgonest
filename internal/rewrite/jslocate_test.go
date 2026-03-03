@@ -306,6 +306,29 @@ func TestLocateJS_GeneratorMethod(t *testing.T) {
 	}
 }
 
+func TestLocateJS_ClassLevelDecorate_ChainedAssignment(t *testing.T) {
+	// CJS tsgo output uses: exports.X = X = __decorate([...], X);
+	input := `exports.AuthPublicController = AuthPublicController = __decorate([
+    (0, common_1.Controller)('auth/public'),
+    __metadata("design:paramtypes", [auth_service_1.AuthService])
+], AuthPublicController);`
+
+	locs := LocateJS(input)
+	if len(locs.DecorateCalls) != 1 {
+		t.Fatalf("expected 1 decorate call, got %d", len(locs.DecorateCalls))
+	}
+	dc := locs.DecorateCalls[0]
+	if !dc.IsClassLevel {
+		t.Error("expected class-level decorate")
+	}
+	if dc.ClassName != "AuthPublicController" {
+		t.Errorf("expected className AuthPublicController, got %q", dc.ClassName)
+	}
+	if input[dc.ArrayOpenBracket] != '[' {
+		t.Errorf("expected '[' at ArrayOpenBracket, got %q", string(input[dc.ArrayOpenBracket]))
+	}
+}
+
 func TestLocateJS_MultipleParams(t *testing.T) {
 	input := `class Foo {
     bar(a, b, c) {

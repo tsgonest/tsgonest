@@ -1,9 +1,11 @@
 package rewrite
 
 import (
+	"sort"
 	"strings"
 	"testing"
 
+	"github.com/microsoft/typescript-go/shim/core"
 	"github.com/tsgonest/tsgonest/internal/analyzer"
 	"github.com/tsgonest/tsgonest/internal/metadata"
 )
@@ -1347,5 +1349,216 @@ func TestRewriteController_OverlappingEditsDoNotPanic(t *testing.T) {
 	// Basic validation: body assertion should be injected for at least one method
 	if !strings.Contains(result, "assertDtoA(body)") && !strings.Contains(result, "assertDtoB(body)") {
 		t.Errorf("expected at least one assert call, got:\n%s", result)
+	}
+}
+
+func TestMalformedEditsFiltered(t *testing.T) {
+	// Directly tests the end < pos filtering guard in rewriteController's
+	// Phase 4. core.ApplyBulkEdits panics when given edits where end < pos,
+	// so the guard must filter them out before calling ApplyBulkEdits.
+
+	text := "hello world"
+
+	// Simulate the filtering logic from rewriteController Phase 4
+	edits := []prioritizedEdit{
+		{pos: 0, end: 5, newText: "HELLO"},  // valid: replace "hello"
+		{pos: 20, end: 3, newText: "BAD"},   // malformed: end < pos
+		{pos: 6, end: 11, newText: "WORLD"}, // valid: replace "world"
+	}
+
+	// Sort by position (same as rewriteController)
+	sort.Slice(edits, func(i, j int) bool {
+		if edits[i].pos != edits[j].pos {
+			return edits[i].pos < edits[j].pos
+		}
+		return edits[i].priority < edits[j].priority
+	})
+
+	// Apply the same guard as rewriteController
+	var changes []core.TextChange
+	for _, e := range edits {
+		if e.end < e.pos {
+			continue // skip malformed edit
+		}
+		changes = append(changes, core.TextChange{
+			TextRange: core.NewTextRange(e.pos, e.end),
+			NewText:   e.newText,
+		})
+	}
+
+	result := core.ApplyBulkEdits(text, changes)
+	expected := "HELLO WORLD"
+	if result != expected {
+		t.Errorf("filtered edits produced %q, want %q", result, expected)
+	}
+
+	// Verify that WITHOUT filtering, the malformed edit would cause a panic
+	var allChanges []core.TextChange
+	for _, e := range edits {
+		allChanges = append(allChanges, core.TextChange{
+			TextRange: core.NewTextRange(e.pos, e.end),
+			NewText:   e.newText,
+		})
+	}
+
+	panicked := false
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				panicked = true
+			}
+		}()
+		core.ApplyBulkEdits(text, allChanges)
+	}()
+	if !panicked {
+		t.Error("expected ApplyBulkEdits to panic with malformed edits, but it did not")
+	}
+}
+
+func TestRewriteController_InjectsSerializeInterceptor(t *testing.T) {
+	// When a controller has return transforms (DTO or primitive), the rewriter
+	// must inject TsgonestSerializeInterceptor into the class-level __decorate
+	// array. Without it, NestJS/Express returns pre-serialized JSON strings
+	// with Content-Type: text/html instead of application/json.
+
+	input := `var common_1 = require("@nestjs/common");
+UserController = __decorate([
+    (0, common_1.Controller)("users")
+], UserController);
+class UserController {
+    async findAll() {
+        return this.service.findAll();
+    }
+}`
+
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name:       "UserController",
+			SourceFile: "/src/user.controller.ts",
+			Routes: []analyzer.Route{
+				{
+					OperationID: "findAll",
+					MethodName:  "findAll",
+					ReturnType:  metadata.Metadata{Kind: metadata.KindRef, Ref: "UserResponse"},
+				},
+			},
+		},
+	}
+
+	companionMap := map[string]string{
+		"UserResponse": "/dist/user.dto.UserResponse.tsgonest.js",
+	}
+
+	result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "cjs")
+
+	// Must inject the interceptor import
+	if !strings.Contains(result, "TsgonestSerializeInterceptor") {
+		t.Fatalf("expected TsgonestSerializeInterceptor to be present, got:\n%s", result)
+	}
+
+	// Must inject UseInterceptors decorator in __decorate array
+	if !strings.Contains(result, "UseInterceptors)(TsgonestSerializeInterceptor)") {
+		t.Errorf("expected UseInterceptors injection in __decorate, got:\n%s", result)
+	}
+
+	// Must also have the stringify transform
+	if !strings.Contains(result, "stringifyUserResponse(await") {
+		t.Errorf("expected return stringify wrapping, got:\n%s", result)
+	}
+}
+
+func TestRewriteController_InjectsInterceptorForPrimitiveReturn(t *testing.T) {
+	// Primitive return types (string, number, boolean) also need the interceptor.
+	// Without it, Express sets Content-Type: text/html for the pre-serialized string.
+
+	input := `var common_1 = require("@nestjs/common");
+HealthController = __decorate([
+    (0, common_1.Controller)("health")
+], HealthController);
+class HealthController {
+    async getVersion() {
+        return "1.0.0";
+    }
+}`
+
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name:       "HealthController",
+			SourceFile: "/src/health.controller.ts",
+			Routes: []analyzer.Route{
+				{
+					OperationID: "getVersion",
+					MethodName:  "getVersion",
+					ReturnType:  metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"},
+				},
+			},
+		},
+	}
+
+	companionMap := map[string]string{}
+
+	result := rewriteController(input, "/dist/health.controller.js", controllers, companionMap, "cjs")
+
+	// Must inject the interceptor even for primitive returns
+	if !strings.Contains(result, "UseInterceptors)(TsgonestSerializeInterceptor)") {
+		t.Errorf("expected interceptor injection for primitive return, got:\n%s", result)
+	}
+
+	// Must have JSON serialization for string return
+	if !strings.Contains(result, "JSON.stringify(") {
+		t.Errorf("expected JSON.stringify for string return, got:\n%s", result)
+	}
+}
+
+func TestRewriteController_NoInterceptorForBodyOnly(t *testing.T) {
+	// When a controller only has body validation (no return transforms),
+	// the serialize interceptor must NOT be injected — there are no
+	// pre-serialized string returns to protect.
+
+	input := `var common_1 = require("@nestjs/common");
+UserController = __decorate([
+    (0, common_1.Controller)("users")
+], UserController);
+class UserController {
+    async create(body) {
+        return this.service.create(body);
+    }
+}`
+
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name:       "UserController",
+			SourceFile: "/src/user.controller.ts",
+			Routes: []analyzer.Route{
+				{
+					OperationID: "create",
+					MethodName:  "create",
+					Parameters: []analyzer.RouteParameter{
+						{
+							Category:  "body",
+							LocalName: "body",
+							Type:      metadata.Metadata{Kind: metadata.KindRef, Ref: "CreateUserDto"},
+						},
+					},
+					// No ReturnType — void
+				},
+			},
+		},
+	}
+
+	companionMap := map[string]string{
+		"CreateUserDto": "/dist/user.dto.CreateUserDto.tsgonest.js",
+	}
+
+	result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "cjs")
+
+	// Body validation should still be injected
+	if !strings.Contains(result, "assertCreateUserDto(body)") {
+		t.Errorf("expected body validation, got:\n%s", result)
+	}
+
+	// But NO interceptor — no return transforms means no pre-serialized strings
+	if strings.Contains(result, "UseInterceptors)(TsgonestSerializeInterceptor)") {
+		t.Errorf("interceptor should NOT be injected for body-only controller, got:\n%s", result)
 	}
 }

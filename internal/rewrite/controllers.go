@@ -453,11 +453,12 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 		})
 	}
 
-	// (g) Imports at position 0
+	// (g) Imports after "use strict" directive (or position 0 if none)
 	if len(importLines) > 0 {
+		insertPos := findUseStrictEnd(text)
 		edits = append(edits, prioritizedEdit{
-			pos:      0,
-			end:      0,
+			pos:      insertPos,
+			end:      insertPos,
 			priority: 0,
 			newText:  strings.Join(importLines, "\n") + "\n",
 		})
@@ -485,6 +486,17 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 	}
 
 	return core.ApplyBulkEdits(text, changes)
+}
+
+// findUseStrictEnd returns the byte offset after the "use strict"; directive prologue
+// (including its trailing newline), or 0 if the file doesn't start with one.
+func findUseStrictEnd(text string) int {
+	for _, prefix := range []string{"\"use strict\";\n", "'use strict';\n"} {
+		if strings.HasPrefix(text, prefix) {
+			return len(prefix)
+		}
+	}
+	return 0
 }
 
 // findClassLevelDecorate finds the class-level __decorate call for a given class name.

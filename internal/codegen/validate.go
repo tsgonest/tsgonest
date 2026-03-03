@@ -18,7 +18,7 @@ func GenerateCompanion(typeName string, meta *metadata.Metadata, registry *metad
 // CompanionGenOptions holds optional feature flags for companion file generation.
 type CompanionGenOptions struct {
 	StandardSchema    bool   // Generate Standard Schema v1 wrappers
-	ResponseTypeCheck string // "safe" (default), "guard", or "none"
+	ResponseSerializer string // "guard" (default), "safe", or "none"
 }
 
 // GenerateCompanionSelective generates a companion file with optional sections.
@@ -27,11 +27,11 @@ type CompanionGenOptions struct {
 // An optional CompanionGenOptions can be passed to control Standard Schema and response type check.
 func GenerateCompanionSelective(typeName string, meta *metadata.Metadata, registry *metadata.TypeRegistry, includeValidation bool, includeSerialization bool, opts ...CompanionGenOptions) string {
 	var standardSchema bool
-	rtc := "safe"
+	rtc := "guard"
 	if len(opts) > 0 {
 		standardSchema = opts[0].StandardSchema
-		if opts[0].ResponseTypeCheck != "" {
-			rtc = opts[0].ResponseTypeCheck
+		if opts[0].ResponseSerializer != "" {
+			rtc = opts[0].ResponseSerializer
 		}
 	}
 	e := NewEmitter()

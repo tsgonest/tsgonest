@@ -43,7 +43,7 @@ type TransformsConfig struct {
 	Validation        bool     `json:"validation"`
 	Serialization     bool     `json:"serialization"`
 	StandardSchema    bool     `json:"standardSchema,omitempty"`    // Generate Standard Schema v1 wrappers (default: false)
-	ResponseTypeCheck string   `json:"responseTypeCheck,omitempty"` // "safe" (default), "guard", or "none" — controls type checking on response serialization
+	ResponseSerializer string   `json:"responseSerializer,omitempty"` // "guard" (default), "safe", or "none" — controls type checking on response serialization
 	Include           []string `json:"include,omitempty"`           // Glob patterns for source files to generate companions for (e.g., ["src/**/*.dto.ts"])
 	Exclude           []string `json:"exclude,omitempty"`           // Type name patterns to exclude from codegen (e.g., "Legacy*", "SomeInternalDto")
 }
@@ -125,7 +125,7 @@ func DefaultConfig() Config {
 		Transforms: TransformsConfig{
 			Validation:        true,
 			Serialization:     true,
-			ResponseTypeCheck: "safe",
+			ResponseSerializer: "guard",
 		},
 		OpenAPI: OpenAPIConfig{
 			Output: "dist/openapi.json",
@@ -292,12 +292,12 @@ func (c *Config) Validate() error {
 		}
 	}
 
-	// Validate responseTypeCheck
-	switch c.Transforms.ResponseTypeCheck {
+	// Validate responseSerializer
+	switch c.Transforms.ResponseSerializer {
 	case "", "safe", "guard", "none":
-		// valid — empty defaults to "safe"
+		// valid — empty defaults to "guard"
 	default:
-		return fmt.Errorf("transforms.responseTypeCheck must be one of \"safe\", \"guard\", \"none\", got %q", c.Transforms.ResponseTypeCheck)
+		return fmt.Errorf("transforms.responseSerializer must be one of \"guard\", \"safe\", \"none\", got %q", c.Transforms.ResponseSerializer)
 	}
 
 	return nil

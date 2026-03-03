@@ -18,7 +18,7 @@ type CompanionFile struct {
 type CompanionOptions struct {
 	ModuleFormat      string // "cjs" or "esm" (default: "esm")
 	StandardSchema    bool   // Generate Standard Schema v1 wrappers (default: false)
-	ResponseTypeCheck string // "safe" (default), "guard", or "none" — controls type checking in stringify
+	ResponseSerializer string // "guard" (default), "safe", or "none" — controls type checking in stringify
 }
 
 // GenerateCompanionFiles generates consolidated companion files (.tsgonest.js)
@@ -58,7 +58,7 @@ func GenerateCompanionFiles(sourceFileName string, types map[string]*metadata.Me
 		jsPath := companionPath(sourceFileName, typeName)
 		jsContent := GenerateCompanionSelective(typeName, resolved, registry, includeValidation, includeSerialization, CompanionGenOptions{
 			StandardSchema:    opts.StandardSchema,
-			ResponseTypeCheck: opts.ResponseTypeCheck,
+			ResponseSerializer: opts.ResponseSerializer,
 		})
 		if isCJS {
 			jsContent = ConvertToCommonJS(jsContent)

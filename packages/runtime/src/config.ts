@@ -72,12 +72,25 @@ export interface TsgonestConfig {
     /** Generate Standard Schema v1 wrappers for 60+ framework interop. */
     standardSchema?: boolean;
     /**
-     * Controls type checking on response serialization.
-     * - "safe" (default): full validation before serialization, throws with detailed errors
-     * - "guard": lightweight boolean type guard check before serialization
-     * - "none": no runtime check, serialize directly (maximum performance)
+     * Controls the level of runtime type checking applied to controller return
+     * values before they are serialized into JSON.
+     *
+     * - `"guard"` **(default)** — Runs a lightweight `is<Type>()` boolean check
+     *   before calling `serialize<Type>()`. Throws a `TypeError` on mismatch.
+     *   Near-zero overhead on the happy path (no error object allocation).
+     *
+     * - `"safe"` — Runs the full `validate<Type>()` check, which collects
+     *   every validation error into an array. Throws a `TypeError` with a
+     *   `.errors` property containing detailed diagnostics. Useful during
+     *   development or when you need precise error reporting.
+     *
+     * - `"none"` — Skips all runtime checks and calls `serialize<Type>()`
+     *   directly. Maximum performance, but if the return value doesn't match
+     *   the declared type the serialized JSON may be malformed.
+     *
+     * @default "guard"
      */
-    responseTypeCheck?: 'safe' | 'guard' | 'none';
+    responseSerializer?: 'guard' | 'safe' | 'none';
     /** Glob patterns for source files to generate companions for (e.g., ["src/**\/*.dto.ts"]). */
     include?: string[];
     /** Type name patterns to exclude from codegen (e.g., "Legacy*", "SomeInternalDto"). */

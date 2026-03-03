@@ -312,7 +312,7 @@ func generateCompanionsInMemory(program *shimcompiler.Program, cfg *config.Confi
 	companionOpts := codegen.CompanionOptions{
 		ModuleFormat:      moduleFormat,
 		StandardSchema:    cfg.Transforms.StandardSchema,
-		ResponseTypeCheck: cfg.Transforms.ResponseTypeCheck,
+		ResponseSerializer: cfg.Transforms.ResponseSerializer,
 	}
 
 	type codegenResult struct {

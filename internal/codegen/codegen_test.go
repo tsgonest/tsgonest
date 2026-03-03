@@ -2418,7 +2418,7 @@ func TestGenerateStringify_SafeMode(t *testing.T) {
 	}
 
 	code := GenerateCompanionSelective("Dto", meta, reg, true, true, CompanionGenOptions{
-		ResponseTypeCheck: "safe",
+		ResponseSerializer: "safe",
 	})
 
 	// Safe mode: validate then serialize, with detailed errors
@@ -2438,7 +2438,7 @@ func TestGenerateStringify_GuardMode(t *testing.T) {
 	}
 
 	code := GenerateCompanionSelective("Dto", meta, reg, true, true, CompanionGenOptions{
-		ResponseTypeCheck: "guard",
+		ResponseSerializer: "guard",
 	})
 
 	// Guard mode: lightweight is() check, no validate call in stringify
@@ -2460,7 +2460,7 @@ func TestGenerateStringify_NoneMode(t *testing.T) {
 	}
 
 	code := GenerateCompanionSelective("Dto", meta, reg, true, true, CompanionGenOptions{
-		ResponseTypeCheck: "none",
+		ResponseSerializer: "none",
 	})
 
 	// None mode: serialize directly, no validation at all in stringify
@@ -2472,7 +2472,7 @@ func TestGenerateStringify_NoneMode(t *testing.T) {
 	assertNotContains(t, code, "r.errors")
 }
 
-func TestGenerateStringify_DefaultIsSafe(t *testing.T) {
+func TestGenerateStringify_DefaultIsGuard(t *testing.T) {
 	reg := metadata.NewTypeRegistry()
 	meta := &metadata.Metadata{
 		Kind: metadata.KindObject,
@@ -2481,11 +2481,12 @@ func TestGenerateStringify_DefaultIsSafe(t *testing.T) {
 		},
 	}
 
-	// No options → defaults to safe
+	// No options → defaults to guard
 	code := GenerateCompanionSelective("Dto", meta, reg, true, true)
 
-	assertContains(t, code, "validateDto(input)")
-	assertContains(t, code, "r.errors")
+	assertContains(t, code, "!isDto(input)")
+	assertContains(t, code, "serializeDto(input)")
+	assertNotContains(t, code, "const r = validateDto(input)")
 }
 
 // --- Enum serialization tests ---

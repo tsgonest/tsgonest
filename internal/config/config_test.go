@@ -485,14 +485,14 @@ func TestLoadConfig_TransformsExclude(t *testing.T) {
 	}
 }
 
-func TestLoadConfig_ResponseTypeCheck(t *testing.T) {
+func TestLoadConfig_ResponseSerializer(t *testing.T) {
 	for _, mode := range []string{"safe", "guard", "none"} {
 		t.Run(mode, func(t *testing.T) {
 			dir := t.TempDir()
 			configPath := filepath.Join(dir, "tsgonest.config.json")
 			content := fmt.Sprintf(`{
 				"controllers": { "include": ["src/**/*.controller.ts"] },
-				"transforms": { "validation": true, "serialization": true, "responseTypeCheck": %q },
+				"transforms": { "validation": true, "serialization": true, "responseSerializer": %q },
 				"openapi": { "output": "dist/openapi.json" }
 			}`, mode)
 			if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
@@ -503,8 +503,8 @@ func TestLoadConfig_ResponseTypeCheck(t *testing.T) {
 			if err != nil {
 				t.Fatalf("unexpected error for mode %q: %v", mode, err)
 			}
-			if cfg.Transforms.ResponseTypeCheck != mode {
-				t.Errorf("expected responseTypeCheck=%q, got %q", mode, cfg.Transforms.ResponseTypeCheck)
+			if cfg.Transforms.ResponseSerializer != mode {
+				t.Errorf("expected responseSerializer=%q, got %q", mode, cfg.Transforms.ResponseSerializer)
 			}
 		})
 	}
@@ -515,7 +515,7 @@ func TestLoadConfig_ResponseTypeCheck(t *testing.T) {
 		configPath := filepath.Join(dir, "tsgonest.config.json")
 		content := `{
 			"controllers": { "include": ["src/**/*.controller.ts"] },
-			"transforms": { "validation": true, "serialization": true, "responseTypeCheck": "invalid" },
+			"transforms": { "validation": true, "serialization": true, "responseSerializer": "invalid" },
 			"openapi": { "output": "dist/openapi.json" }
 		}`
 		if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
@@ -524,10 +524,10 @@ func TestLoadConfig_ResponseTypeCheck(t *testing.T) {
 
 		_, err := Load(configPath)
 		if err == nil {
-			t.Fatal("expected validation error for invalid responseTypeCheck")
+			t.Fatal("expected validation error for invalid responseSerializer")
 		}
-		if !strings.Contains(err.Error(), "responseTypeCheck") {
-			t.Fatalf("expected error about responseTypeCheck, got: %v", err)
+		if !strings.Contains(err.Error(), "responseSerializer") {
+			t.Fatalf("expected error about responseSerializer, got: %v", err)
 		}
 	})
 }

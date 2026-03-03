@@ -122,6 +122,25 @@ describe("tsgonest controller auto-rewriting", () => {
     }
   });
 
+  it("should inject TsgonestSerializeInterceptor for Content-Type: application/json", () => {
+    const controllerFile = resolve(distDir, "user.controller.js");
+    const content = readFileSync(controllerFile, "utf-8");
+
+    // Without the interceptor, Express returns pre-serialized JSON strings
+    // with Content-Type: text/html. The interceptor sets application/json.
+    expect(content).toContain("TsgonestSerializeInterceptor");
+    expect(content).toContain("UseInterceptors)(TsgonestSerializeInterceptor)");
+  });
+
+  it("should import TsgonestSerializeInterceptor from @tsgonest/runtime", () => {
+    const controllerFile = resolve(distDir, "user.controller.js");
+    const content = readFileSync(controllerFile, "utf-8");
+
+    // The interceptor import must reference @tsgonest/runtime
+    expect(content).toContain("@tsgonest/runtime");
+    expect(content).toContain("TsgonestSerializeInterceptor");
+  });
+
   it("should generate stringify functions in companion files", () => {
     const responseCompanion = resolve(
       distDir,

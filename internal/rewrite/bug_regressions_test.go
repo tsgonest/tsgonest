@@ -270,6 +270,170 @@ func TestBugRegressions_Rewrite(t *testing.T) {
 		}
 	})
 
+	t.Run("Bug19_cjs_chained_assignment_interceptor_not_injected", func(t *testing.T) {
+		// Real tsgo CJS output uses: exports.X = X = __decorate([...], X);
+		// The rewriter must detect this chained assignment pattern and inject
+		// the interceptor into the __decorate array.
+		input := `"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.AuthController = void 0;
+const common_1 = require("@nestjs/common");
+let AuthController = class AuthController {
+    async login(body) {
+        return this.authService.login(body);
+    }
+};
+exports.AuthController = AuthController;
+__decorate([
+    (0, common_1.Post)('login'),
+    __param(0, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object]),
+    __metadata("design:returntype", Promise)
+], AuthController.prototype, "login", null);
+exports.AuthController = AuthController = __decorate([
+    (0, common_1.Controller)('auth'),
+    __metadata("design:paramtypes", [Object])
+], AuthController);`
+
+		controllers := []analyzer.ControllerInfo{{
+			Name:       "AuthController",
+			SourceFile: "/src/auth.controller.ts",
+			Routes: []analyzer.Route{{
+				OperationID: "login",
+				MethodName:  "login",
+				Parameters: []analyzer.RouteParameter{{
+					Category:  "body",
+					LocalName: "body",
+					Type:      metadata.Metadata{Kind: metadata.KindRef, Ref: "LoginRequest"},
+				}},
+				ReturnType: metadata.Metadata{Kind: metadata.KindRef, Ref: "LoginResponse"},
+			}},
+		}}
+
+		companionMap := map[string]string{
+			"LoginRequest":  "/dist/dto/auth.dto.LoginRequest.tsgonest.js",
+			"LoginResponse": "/dist/dto/auth.dto.LoginResponse.tsgonest.js",
+		}
+
+		result := rewriteController(input, "/dist/auth.controller.js", controllers, companionMap, "cjs")
+
+		if !strings.Contains(result, "UseInterceptors)(TsgonestSerializeInterceptor)") {
+			t.Fatalf("expected interceptor injection for CJS chained assignment, got:\n%s", result)
+		}
+		if !strings.Contains(result, "assertLoginRequest(body)") {
+			t.Errorf("expected body validation, got:\n%s", result)
+		}
+		if !strings.Contains(result, "stringifyLoginResponse(await") {
+			t.Errorf("expected return stringify wrapping, got:\n%s", result)
+		}
+	})
+
+	t.Run("Bug20_cjs_imports_before_use_strict", func(t *testing.T) {
+		// CJS imports must be inserted AFTER "use strict"; directive,
+		// not before it (which would make strict mode a no-op).
+		input := `"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+const common_1 = require("@nestjs/common");
+let UserController = class UserController {
+    async findAll() {
+        return this.service.findAll();
+    }
+};
+UserController = __decorate([
+    (0, common_1.Controller)("users")
+], UserController);`
+
+		controllers := []analyzer.ControllerInfo{{
+			Name:       "UserController",
+			SourceFile: "/src/user.controller.ts",
+			Routes: []analyzer.Route{{
+				OperationID: "findAll",
+				MethodName:  "findAll",
+				ReturnType:  metadata.Metadata{Kind: metadata.KindRef, Ref: "UserResponse"},
+			}},
+		}}
+
+		companionMap := map[string]string{
+			"UserResponse": "/dist/user.dto.UserResponse.tsgonest.js",
+		}
+
+		result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "cjs")
+
+		// "use strict" must remain the very first statement
+		if !strings.HasPrefix(result, `"use strict";`) {
+			t.Fatalf("expected \"use strict\" to remain first line, got:\n%s", result)
+		}
+
+		// Imports must come after "use strict"
+		useStrictIdx := strings.Index(result, `"use strict";`)
+		requireIdx := strings.Index(result, `require(`)
+		if requireIdx < useStrictIdx+len(`"use strict";`) {
+			t.Fatalf("expected require() after \"use strict\", got:\n%s", result)
+		}
+	})
+
+	t.Run("Bug21_esm_no_use_strict_unchanged", func(t *testing.T) {
+		// ESM files don't have "use strict" — imports should go at position 0.
+		input := `var __decorate = (this && this.__decorate) || function() {};
+class UserController {
+    async findAll() {
+        return this.service.findAll();
+    }
+}
+UserController = __decorate([
+    Controller("users")
+], UserController);`
+
+		controllers := []analyzer.ControllerInfo{{
+			Name:       "UserController",
+			SourceFile: "/src/user.controller.ts",
+			Routes: []analyzer.Route{{
+				OperationID: "findAll",
+				MethodName:  "findAll",
+				ReturnType:  metadata.Metadata{Kind: metadata.KindRef, Ref: "UserResponse"},
+			}},
+		}}
+
+		companionMap := map[string]string{
+			"UserResponse": "/dist/user.dto.UserResponse.tsgonest.js",
+		}
+
+		result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm")
+
+		// Import should be at the very beginning (no "use strict" to skip past)
+		if !strings.HasPrefix(result, `import {`) {
+			t.Fatalf("expected ESM import at position 0, got:\n%s", result)
+		}
+	})
+
+	t.Run("Bug22_markers_rewrite_preserves_use_strict", func(t *testing.T) {
+		input := `"use strict";
+const { is } = require("tsgonest");
+const ok = is(body);`
+
+		calls := []MarkerCall{
+			{FunctionName: "is", TypeName: "CreateUserDto", SourcePos: 0},
+		}
+		companionMap := map[string]string{
+			"CreateUserDto": "/dist/user.dto.CreateUserDto.tsgonest.js",
+		}
+
+		result := rewriteMarkers(input, "/dist/test.js", calls, companionMap, "cjs")
+
+		// "use strict" must remain first (before sentinel and imports)
+		if !strings.HasPrefix(result, `"use strict";`) {
+			t.Fatalf("expected \"use strict\" to remain first, got:\n%s", result)
+		}
+
+		// Sentinel and imports should come after
+		useStrictEnd := strings.Index(result, "\n") + 1
+		rest := result[useStrictEnd:]
+		if !strings.HasPrefix(rest, rewriteSentinel) {
+			t.Fatalf("expected sentinel after \"use strict\", got:\n%s", result)
+		}
+	})
+
 	t.Run("Bug18_duplicate_class_interceptor_injection", func(t *testing.T) {
 		input := `var common_1 = require("@nestjs/common");
 UserController = __decorate([

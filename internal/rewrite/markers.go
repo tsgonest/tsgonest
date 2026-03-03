@@ -60,8 +60,18 @@ func rewriteMarkers(text string, outputFile string, calls []MarkerCall, companio
 		joined = replaceMarkerCalls(joined, funcName, typeNames, &occurrenceIndex)
 	}
 
-	// Reassemble: sentinel + companion imports + rewritten body
+	// Reassemble: [use strict +] sentinel + companion imports + rewritten body
 	var parts []string
+
+	// Preserve "use strict" directive before sentinel and imports
+	for _, prefix := range []string{"\"use strict\";\n", "'use strict';\n"} {
+		if strings.HasPrefix(joined, prefix) {
+			parts = append(parts, strings.TrimSuffix(prefix, "\n"))
+			joined = joined[len(prefix):]
+			break
+		}
+	}
+
 	parts = append(parts, rewriteSentinel)
 	parts = append(parts, importLines...)
 	parts = append(parts, joined)
