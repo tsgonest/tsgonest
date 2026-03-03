@@ -3727,6 +3727,238 @@ func TestControllerAnalyzer_GenericTypeAliasReturn_MultipleInstantiations(t *tes
 	}
 }
 
+// --- Bug: Generic interface return types collapse to base name in OpenAPI ---
+//
+// Root cause: WalkTypeNode sets result.Name to the identifier text from the type reference
+// node. For PagedResult<ItemADto>, the identifier is "PagedResult", so
+// result.Name = "PagedResult" even though result.Ref = "PagedResult_ItemADto".
+// The OpenAPI generator's convertRef uses m.Name as the schema name when non-empty,
+// so it produces $ref: "PagedResult" instead of "PagedResult_ItemADto".
+// This only manifests when the return type is NOT wrapped in Promise (Promise is excluded
+// from Name setting).
+
+// TestControllerAnalyzer_GenericInterfaceReturn_NoPromise_NameCollision verifies that
+// when a controller method's return type annotation is PagedResult<ItemADto>
+// (without Promise wrapper), the ReturnType.Name field is NOT set to "PagedResult".
+// Setting Name to the generic base causes convertRef to produce the wrong $ref.
+func TestControllerAnalyzer_GenericInterfaceReturn_NoPromise_NameCollision(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+
+		interface PagedResult<T> {
+			items: T[];
+			totalCount: number;
+		}
+
+		interface ItemADto { id: string; value: number; }
+		interface ItemBDto { id: string; label: string; }
+
+		@Controller("api")
+		export class ApiController {
+			@Get("a")
+			getA(): PagedResult<ItemADto> {
+				return {} as any;
+			}
+
+			@Get("b")
+			getB(): PagedResult<ItemBDto> {
+				return {} as any;
+			}
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 {
+		t.Fatalf("expected 1 controller, got %d", len(controllers))
+	}
+	if len(controllers[0].Routes) != 2 {
+		t.Fatalf("expected 2 routes, got %d", len(controllers[0].Routes))
+	}
+
+	r0 := controllers[0].Routes[0] // getA
+	r1 := controllers[0].Routes[1] // getB
+
+	if r0.ReturnType.Kind != metadata.KindRef {
+		t.Errorf("getA: expected return type KindRef, got %s", r0.ReturnType.Kind)
+	}
+	if r1.ReturnType.Kind != metadata.KindRef {
+		t.Errorf("getB: expected return type KindRef, got %s", r1.ReturnType.Kind)
+	}
+
+	// The Ref must be distinct composite names, not the generic base
+	if r0.ReturnType.Kind == metadata.KindRef {
+		if r0.ReturnType.Ref == "PagedResult" {
+			t.Errorf("getA: ReturnType.Ref is %q (generic base) — should be composite like PagedResult_ItemADto", r0.ReturnType.Ref)
+		}
+	}
+	if r1.ReturnType.Kind == metadata.KindRef {
+		if r1.ReturnType.Ref == "PagedResult" {
+			t.Errorf("getB: ReturnType.Ref is %q (generic base) — should be composite like PagedResult_ItemBDto", r1.ReturnType.Ref)
+		}
+		if r0.ReturnType.Kind == metadata.KindRef && r0.ReturnType.Ref == r1.ReturnType.Ref {
+			t.Errorf("GENERIC COLLAPSE: getA and getB both return ref %q", r0.ReturnType.Ref)
+		}
+	}
+
+	// Critical: the Name field must NOT be set to the generic base "PagedResult".
+	// If it is, convertRef in the OpenAPI generator will use it as schemaName, producing
+	// $ref: "#/components/schemas/PagedResult" instead of the composite ref.
+	if r0.ReturnType.Kind == metadata.KindRef && r0.ReturnType.Name == "PagedResult" {
+		t.Errorf("getA: ReturnType.Name is %q (generic base) — convertRef will produce wrong $ref in OpenAPI", r0.ReturnType.Name)
+	}
+	if r1.ReturnType.Kind == metadata.KindRef && r1.ReturnType.Name == "PagedResult" {
+		t.Errorf("getB: ReturnType.Name is %q (generic base) — convertRef will produce wrong $ref in OpenAPI", r1.ReturnType.Name)
+	}
+}
+
+// TestControllerAnalyzer_GenericInterfaceReturn_PromiseWrapped_MultipleInstantiations
+// verifies that two controller methods returning Promise<PagedResult<A>> and
+// Promise<PagedResult<B>> where PagedResult is an INTERFACE (not a type alias)
+// produce distinct return type refs.
+func TestControllerAnalyzer_GenericInterfaceReturn_PromiseWrapped_MultipleInstantiations(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+
+		interface PagedResult<T> {
+			items: T[];
+			totalCount: number;
+			totalPages: number;
+		}
+
+		interface ItemADto { id: string; title: string; }
+		interface ItemBDto { id: string; count: number; }
+
+		@Controller("api")
+		export class ApiController {
+			@Get("a")
+			getA(): Promise<PagedResult<ItemADto>> {
+				return {} as any;
+			}
+
+			@Get("b")
+			getB(): Promise<PagedResult<ItemBDto>> {
+				return {} as any;
+			}
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 {
+		t.Fatalf("expected 1 controller, got %d", len(controllers))
+	}
+	if len(controllers[0].Routes) != 2 {
+		t.Fatalf("expected 2 routes, got %d", len(controllers[0].Routes))
+	}
+
+	r0 := controllers[0].Routes[0] // getA
+	r1 := controllers[0].Routes[1] // getB
+
+	if r0.ReturnType.Kind != metadata.KindRef {
+		t.Errorf("getA: expected return type KindRef, got %s", r0.ReturnType.Kind)
+	}
+	if r1.ReturnType.Kind != metadata.KindRef {
+		t.Errorf("getB: expected return type KindRef, got %s", r1.ReturnType.Kind)
+	}
+
+	if r0.ReturnType.Kind == metadata.KindRef && r1.ReturnType.Kind == metadata.KindRef {
+		if r0.ReturnType.Ref == r1.ReturnType.Ref {
+			t.Errorf("GENERIC COLLAPSE: getA and getB both return ref %q — they should be different (e.g. PagedResult_ItemADto vs PagedResult_ItemBDto)",
+				r0.ReturnType.Ref)
+		}
+		if r0.ReturnType.Ref == "PagedResult" {
+			t.Errorf("getA: ref %q is the generic declaration name, not a concrete instantiation name", r0.ReturnType.Ref)
+		}
+		if r1.ReturnType.Ref == "PagedResult" {
+			t.Errorf("getB: ref %q is the generic declaration name, not a concrete instantiation name", r1.ReturnType.Ref)
+		}
+	}
+}
+
+// TestControllerAnalyzer_GenericInterfaceReturn_MultipleControllers verifies
+// that when two separate controllers each return Promise<PagedResult<T>> with
+// different concrete T values and share a walker (as in production), each gets
+// a distinct schema reference.
+func TestControllerAnalyzer_GenericInterfaceReturn_MultipleControllers(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+
+		interface PagedResult<T> {
+			items: T[];
+			totalCount: number;
+		}
+
+		interface ItemADto { id: string; value: number; }
+		interface ItemBDto { id: string; label: string; }
+
+		@Controller("resource-a")
+		export class ResourceAController {
+			@Get()
+			getAll(): Promise<PagedResult<ItemADto>> {
+				return {} as any;
+			}
+		}
+
+		@Controller("resource-b")
+		export class ResourceBController {
+			@Get()
+			getAll(): Promise<PagedResult<ItemBDto>> {
+				return {} as any;
+			}
+		}
+	`)
+	defer env.release()
+
+	// Use a single shared walker (matching production behavior in build.go)
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 2 {
+		t.Fatalf("expected 2 controllers, got %d", len(controllers))
+	}
+
+	if len(controllers[0].Routes) != 1 {
+		t.Fatalf("ResourceAController: expected 1 route, got %d", len(controllers[0].Routes))
+	}
+	if len(controllers[1].Routes) != 1 {
+		t.Fatalf("ResourceBController: expected 1 route, got %d", len(controllers[1].Routes))
+	}
+
+	aReturn := controllers[0].Routes[0].ReturnType
+	bReturn := controllers[1].Routes[0].ReturnType
+
+	if aReturn.Kind != metadata.KindRef {
+		t.Errorf("ResourceAController.getAll: expected KindRef, got %s", aReturn.Kind)
+	}
+	if bReturn.Kind != metadata.KindRef {
+		t.Errorf("ResourceBController.getAll: expected KindRef, got %s", bReturn.Kind)
+	}
+
+	if aReturn.Kind == metadata.KindRef && bReturn.Kind == metadata.KindRef {
+		if aReturn.Ref == bReturn.Ref {
+			t.Errorf("GENERIC COLLAPSE: ResourceAController and ResourceBController both return ref %q — should be distinct (e.g. PagedResult_ItemADto vs PagedResult_ItemBDto)",
+				aReturn.Ref)
+		}
+		if aReturn.Ref == "PagedResult" {
+			t.Errorf("ResourceAController: ref is generic declaration name %q, not concrete instantiation", aReturn.Ref)
+		}
+		if bReturn.Ref == "PagedResult" {
+			t.Errorf("ResourceBController: ref is generic declaration name %q, not concrete instantiation", bReturn.Ref)
+		}
+	}
+}
+
 // --- Bug 2: KindAny return type inference warning ---
 
 // TestControllerAnalyzer_InferReturnType_WarnsOnKindAny verifies that when
