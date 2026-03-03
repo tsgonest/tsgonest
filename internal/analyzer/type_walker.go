@@ -1372,7 +1372,15 @@ func (w *TypeWalker) WalkTypeNode(node *ast.Node) metadata.Metadata {
 			name := ref.TypeName.Text()
 			if name != "Promise" && name != "Observable" && name != "Array" &&
 				name != "AsyncGenerator" && name != "AsyncIterable" && name != "AsyncIterableIterator" {
-				result.Name = name
+				// Only set Name when it matches the resolved Ref (or when the result is
+				// not a KindRef at all). For generic instantiations like PaginatedResponse<LeadDto>,
+				// WalkType produces Ref="PaginatedResponse_LeadDto" (composite). Setting
+				// Name to "PaginatedResponse" would cause convertRef in the OpenAPI generator
+				// to use "PaginatedResponse" as the schema name, collapsing all instantiations
+				// to the same (wrong) schema.
+				if result.Kind != metadata.KindRef || result.Ref == name {
+					result.Name = name
+				}
 			}
 		}
 	}
