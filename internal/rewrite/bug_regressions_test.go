@@ -717,4 +717,98 @@ class UserController {}
 		}
 	})
 
+	t.Run("Bug27_interceptor_sentinel_scans_past_current_class", func(t *testing.T) {
+		// Bug: text[dc.ArrayOpenBracket:] scans to end-of-file for deduplication.
+		// If ControllerB (later in file) already has the interceptor, the sentinel
+		// would find it when scanning from ControllerA's bracket position and
+		// incorrectly skip injecting into ControllerA.
+		// Fixed by scoping the check to text[dc.ArrayOpenBracket:dc.StmtEnd].
+		input := `var common_1 = require("@nestjs/common");
+let ControllerA = class ControllerA {
+    async findAll() { return null; }
+};
+ControllerA = __decorate([
+    (0, common_1.Controller)('a')
+], ControllerA);
+let ControllerB = class ControllerB {
+    async findAll() { return null; }
+};
+ControllerB = __decorate([
+    (0, common_1.UseInterceptors)(TsgonestSerializeInterceptor),
+    (0, common_1.Controller)('b')
+], ControllerB);`
+
+		controllers := []analyzer.ControllerInfo{
+			{Name: "ControllerA"},
+			{Name: "ControllerB"},
+		}
+		got := injectClassInterceptor(input, controllers, "TsgonestSerializeInterceptor")
+		// ControllerA needs the interceptor; ControllerB already has it.
+		// Both should have exactly one interceptor each.
+		count := strings.Count(got, "UseInterceptors)(TsgonestSerializeInterceptor)")
+		if count != 2 {
+			t.Fatalf("expected 2 interceptors (one per controller), got %d\n%s", count, got)
+		}
+	})
+
+	t.Run("optional_chaining_in_return_is_wrapped", func(t *testing.T) {
+		// Optional chaining ?. in the return expression must be preserved and wrapped.
+		input := `class C {
+    async m() {
+        return this.service?.getUser();
+    }
+}`
+		got := wrapReturnsInMethod(input, "m", "stringifyUser", false)
+		if !strings.Contains(got, "stringifyUser(await this.service?.getUser())") {
+			t.Fatalf("expected optional chaining to be preserved in wrapped return, got:\n%s", got)
+		}
+	})
+
+	t.Run("super_delegation_in_return_is_wrapped", func(t *testing.T) {
+		// super.method() delegation in a return must be wrapped.
+		input := `class C {
+    async m() {
+        return super.findAll();
+    }
+}`
+		got := wrapReturnsInMethod(input, "m", "stringifyUser", false)
+		if !strings.Contains(got, "stringifyUser(await super.findAll())") {
+			t.Fatalf("expected super delegation to be preserved in wrapped return, got:\n%s", got)
+		}
+	})
+
+	t.Run("ternary_in_return_is_wrapped", func(t *testing.T) {
+		// Ternary expression in return: condition ? branchA : branchB.
+		// Since await has higher precedence than ?:, the expression becomes
+		// await(condition) ? branchA : branchB. When condition is a resolved
+		// boolean (not a Promise), this evaluates correctly.
+		input := `class C {
+    async m() {
+        const user = await this.service.get();
+        return user ? user : null;
+    }
+}`
+		got := wrapReturnsInMethod(input, "m", "stringifyUser", false)
+		if !strings.Contains(got, "stringifyUser(await user ? user : null)") {
+			t.Fatalf("expected ternary in return to be wrapped, got:\n%s", got)
+		}
+	})
+
+	t.Run("non_async_method_made_async_on_wrap", func(t *testing.T) {
+		// When a sync method has its return wrapped, wrapReturnsInMethod must
+		// insert async keyword before the method name.
+		input := `class C {
+    m() {
+        return this.service.getUser();
+    }
+}`
+		got := wrapReturnsInMethod(input, "m", "stringifyUser", false)
+		if !strings.Contains(got, "async m()") {
+			t.Fatalf("expected async to be inserted before method name, got:\n%s", got)
+		}
+		if !strings.Contains(got, "stringifyUser(await this.service.getUser())") {
+			t.Fatalf("expected return to be wrapped with await, got:\n%s", got)
+		}
+	})
+
 }

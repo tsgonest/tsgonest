@@ -416,7 +416,11 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 			if dc == nil {
 				continue
 			}
-			if strings.Contains(text[dc.ArrayOpenBracket:], "UseInterceptors)(TsgonestSerializeInterceptor)") {
+			stmtEnd := dc.StmtEnd
+			if stmtEnd > len(text) {
+				stmtEnd = len(text)
+			}
+			if strings.Contains(text[dc.ArrayOpenBracket:stmtEnd], "UseInterceptors)(TsgonestSerializeInterceptor)") {
 				continue
 			}
 			edits = append(edits, prioritizedEdit{
@@ -447,7 +451,11 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 			if dc == nil {
 				continue
 			}
-			if strings.Contains(text[dc.ArrayOpenBracket:], "UseInterceptors)(TsgonestSseInterceptor)") {
+			stmtEnd2 := dc.StmtEnd
+			if stmtEnd2 > len(text) {
+				stmtEnd2 = len(text)
+			}
+			if strings.Contains(text[dc.ArrayOpenBracket:stmtEnd2], "UseInterceptors)(TsgonestSseInterceptor)") {
 				continue
 			}
 			edits = append(edits, prioritizedEdit{
@@ -805,7 +813,11 @@ func injectClassInterceptor(text string, controllers []analyzer.ControllerInfo, 
 		if dc == nil {
 			continue
 		}
-		if strings.Contains(text[dc.ArrayOpenBracket:], "UseInterceptors)("+interceptorName+")") {
+		stmtEnd := dc.StmtEnd
+		if stmtEnd > len(text) {
+			stmtEnd = len(text)
+		}
+		if strings.Contains(text[dc.ArrayOpenBracket:stmtEnd], "UseInterceptors)("+interceptorName+")") {
 			continue
 		}
 		edits = append(edits, prioritizedEdit{
