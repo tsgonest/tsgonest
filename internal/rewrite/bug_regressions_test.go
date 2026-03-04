@@ -168,7 +168,7 @@ func TestBugRegressions_Rewrite(t *testing.T) {
         return id;
     }
 }`
-		got := findBodyParamName(input, "create")
+		got := findBodyParamName(input, "C", "create")
 		if got != "" {
 			t.Fatalf("expected destructured @Body param to be rejected (empty name), got %q", got)
 		}
@@ -431,6 +431,274 @@ const ok = is(body);`
 		rest := result[useStrictEnd:]
 		if !strings.HasPrefix(rest, rewriteSentinel) {
 			t.Fatalf("expected sentinel after \"use strict\", got:\n%s", result)
+		}
+	})
+
+	t.Run("Bug23_multiple_controllers_same_method_name_panics", func(t *testing.T) {
+		// When two controllers in the same file both have a method with the same name
+		// (e.g., "findAll"), methodLookup only retains one MethodLoc for that name.
+		// Both transforms then build edits targeting the exact same return statement
+		// range [RP, SE]. ApplyBulkEdits applies edit 1, sets lastEnd=SE, then tries
+		// text[SE:RP] for edit 2 → panic: slice bounds out of range [SE:RP].
+		input := `"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.RefundsController = exports.PaymentsController = void 0;
+const common_1 = require("@nestjs/common");
+let PaymentsController = class PaymentsController {
+    async findAll() {
+        return this.paymentsService.findAll();
+    }
+};
+exports.PaymentsController = PaymentsController;
+__decorate([
+    (0, common_1.Get)(),
+    __metadata("design:type", Function),
+    __metadata("design:returntype", Promise)
+], PaymentsController.prototype, "findAll", null);
+exports.PaymentsController = PaymentsController = __decorate([
+    (0, common_1.Controller)('payments'),
+    __metadata("design:paramtypes", [Object])
+], PaymentsController);
+let RefundsController = class RefundsController {
+    async findAll() {
+        return this.refundsService.findAll();
+    }
+};
+exports.RefundsController = RefundsController;
+__decorate([
+    (0, common_1.Get)(),
+    __metadata("design:type", Function),
+    __metadata("design:returntype", Promise)
+], RefundsController.prototype, "findAll", null);
+exports.RefundsController = RefundsController = __decorate([
+    (0, common_1.Controller)('refunds'),
+    __metadata("design:paramtypes", [Object])
+], RefundsController);`
+
+		controllers := []analyzer.ControllerInfo{
+			{
+				Name:       "PaymentsController",
+				SourceFile: "/src/payments.controller.ts",
+				Routes: []analyzer.Route{{
+					MethodName: "findAll",
+					ReturnType: metadata.Metadata{Kind: metadata.KindRef, Ref: "PaymentDto"},
+				}},
+			},
+			{
+				Name:       "RefundsController",
+				SourceFile: "/src/payments.controller.ts",
+				Routes: []analyzer.Route{{
+					MethodName: "findAll",
+					ReturnType: metadata.Metadata{Kind: metadata.KindRef, Ref: "RefundDto"},
+				}},
+			},
+		}
+		companionMap := map[string]string{
+			"PaymentDto": "/dist/payment.dto.PaymentDto.tsgonest.js",
+			"RefundDto":  "/dist/refund.dto.RefundDto.tsgonest.js",
+		}
+
+		// Should not panic. Each controller's findAll must be wrapped with its own DTO.
+		result := rewriteController(input, "/dist/payments.controller.js", controllers, companionMap, "cjs")
+		if !strings.Contains(result, "stringifyPaymentDto") {
+			t.Errorf("expected PaymentDto stringify in result, got:\n%s", result)
+		}
+		if !strings.Contains(result, "stringifyRefundDto") {
+			t.Errorf("expected RefundDto stringify in result, got:\n%s", result)
+		}
+	})
+
+	t.Run("Bug24_same_method_name_body_validations_double_inject", func(t *testing.T) {
+		// Two controllers in the same file both have a method named "create" with a
+		// @Body param. methodLookup["create"] resolves to only ONE MethodLoc, so
+		// BOTH assert insertions land at the same BodyOpenBrace+1. Result: one method
+		// gets two assertions (assertPaymentInput then assertRefundInput), the other
+		// method gets none.
+		input := `"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+const common_1 = require("@nestjs/common");
+let PaymentsController = class PaymentsController {
+    async create(body) {
+        return this.paymentsService.create(body);
+    }
+};
+exports.PaymentsController = PaymentsController = __decorate([
+    (0, common_1.Controller)('payments')
+], PaymentsController);
+let RefundsController = class RefundsController {
+    async create(body) {
+        return this.refundsService.create(body);
+    }
+};
+exports.RefundsController = RefundsController = __decorate([
+    (0, common_1.Controller)('refunds')
+], RefundsController);`
+
+		controllers := []analyzer.ControllerInfo{
+			{
+				Name:       "PaymentsController",
+				SourceFile: "/src/payments.controller.ts",
+				Routes: []analyzer.Route{{
+					MethodName: "create",
+					Parameters: []analyzer.RouteParameter{{
+						Category:  "body",
+						LocalName: "body",
+						Type:      metadata.Metadata{Kind: metadata.KindRef, Ref: "CreatePaymentInput"},
+					}},
+				}},
+			},
+			{
+				Name:       "RefundsController",
+				SourceFile: "/src/payments.controller.ts",
+				Routes: []analyzer.Route{{
+					MethodName: "create",
+					Parameters: []analyzer.RouteParameter{{
+						Category:  "body",
+						LocalName: "body",
+						Type:      metadata.Metadata{Kind: metadata.KindRef, Ref: "CreateRefundInput"},
+					}},
+				}},
+			},
+		}
+		companionMap := map[string]string{
+			"CreatePaymentInput": "/dist/payment.dto.CreatePaymentInput.tsgonest.js",
+			"CreateRefundInput":  "/dist/refund.dto.CreateRefundInput.tsgonest.js",
+		}
+
+		result := rewriteController(input, "/dist/payments.controller.js", controllers, companionMap, "cjs")
+		// Use service-call positions as anchors: paymentsService precedes refundsService in
+		// the file. assertCreatePaymentInput must appear before paymentsService (i.e. injected
+		// at the start of PaymentsController.create). assertCreateRefundInput must appear after
+		// paymentsService but before refundsService (i.e. in RefundsController.create, not
+		// accidentally in PaymentsController.create).
+		payAssertIdx := strings.Index(result, "assertCreatePaymentInput(body)")
+		refAssertIdx := strings.Index(result, "assertCreateRefundInput(body)")
+		payServiceIdx := strings.Index(result, "paymentsService")
+		refServiceIdx := strings.Index(result, "refundsService")
+		if payAssertIdx == -1 || payAssertIdx > payServiceIdx {
+			t.Errorf("assertCreatePaymentInput not injected into PaymentsController.create body:\n%s", result)
+		}
+		if refAssertIdx == -1 || refAssertIdx < payServiceIdx || refAssertIdx > refServiceIdx {
+			t.Errorf("assertCreateRefundInput not injected into RefundsController.create body:\n%s", result)
+		}
+	})
+
+	t.Run("Bug25_same_method_name_primitive_return_panics", func(t *testing.T) {
+		// Same root cause as Bug23 but with primitiveTransforms instead of DTO transforms.
+		// Both controllers have a method "getStatus" returning string.
+		// methodLookup["getStatus"] resolves to one MethodLoc; both primitiveTransforms
+		// emit replacement edits [RP, SE] for that same return statement → panic in ApplyBulkEdits.
+		input := `"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+const common_1 = require("@nestjs/common");
+let PaymentsController = class PaymentsController {
+    async getStatus() {
+        return this.paymentsService.getStatus();
+    }
+};
+exports.PaymentsController = PaymentsController = __decorate([
+    (0, common_1.Controller)('payments')
+], PaymentsController);
+let RefundsController = class RefundsController {
+    async getStatus() {
+        return this.refundsService.getStatus();
+    }
+};
+exports.RefundsController = RefundsController = __decorate([
+    (0, common_1.Controller)('refunds')
+], RefundsController);`
+
+		controllers := []analyzer.ControllerInfo{
+			{
+				Name:       "PaymentsController",
+				SourceFile: "/src/payments.controller.ts",
+				Routes: []analyzer.Route{{
+					MethodName: "getStatus",
+					ReturnType: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"},
+				}},
+			},
+			{
+				Name:       "RefundsController",
+				SourceFile: "/src/payments.controller.ts",
+				Routes: []analyzer.Route{{
+					MethodName: "getStatus",
+					ReturnType: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"},
+				}},
+			},
+		}
+
+		// Should not panic. Each controller's getStatus must be wrapped independently.
+		result := rewriteController(input, "/dist/payments.controller.js", controllers, map[string]string{}, "cjs")
+		if strings.Count(result, "JSON.stringify") != 2 {
+			t.Errorf("expected two JSON.stringify wrappings (one per controller), got:\n%s", result)
+		}
+	})
+
+	t.Run("Bug26_interceptor_injected_into_all_controllers_when_only_one_has_transform", func(t *testing.T) {
+		// When ANY controller in the file has a return transform, the interceptor
+		// injection loop iterates ALL controllers and injects TsgonestSerializeInterceptor
+		// into every class-level __decorate, even controllers that have no return
+		// transforms (e.g. only @Body validation). This is wrong: the interceptor
+		// should only be added to controllers that actually have serialized return types.
+		input := `"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+const common_1 = require("@nestjs/common");
+let PaymentsController = class PaymentsController {
+    async findAll() {
+        return this.paymentsService.findAll();
+    }
+};
+exports.PaymentsController = PaymentsController = __decorate([
+    (0, common_1.Controller)('payments')
+], PaymentsController);
+let WebhooksController = class WebhooksController {
+    async handle(body) {
+        this.webhooksService.handle(body);
+    }
+};
+exports.WebhooksController = WebhooksController = __decorate([
+    (0, common_1.Controller)('webhooks')
+], WebhooksController);`
+
+		controllers := []analyzer.ControllerInfo{
+			{
+				Name:       "PaymentsController",
+				SourceFile: "/src/payments.controller.ts",
+				Routes: []analyzer.Route{{
+					MethodName: "findAll",
+					ReturnType: metadata.Metadata{Kind: metadata.KindRef, Ref: "PaymentDto"},
+				}},
+			},
+			{
+				Name:       "WebhooksController",
+				SourceFile: "/src/payments.controller.ts",
+				Routes: []analyzer.Route{{
+					MethodName: "handle",
+					Parameters: []analyzer.RouteParameter{{
+						Category:  "body",
+						LocalName: "body",
+						Type:      metadata.Metadata{Kind: metadata.KindRef, Ref: "WebhookPayload"},
+					}},
+				}},
+			},
+		}
+		companionMap := map[string]string{
+			"PaymentDto":     "/dist/payment.dto.PaymentDto.tsgonest.js",
+			"WebhookPayload": "/dist/webhook.dto.WebhookPayload.tsgonest.js",
+		}
+
+		result := rewriteController(input, "/dist/payments.controller.js", controllers, companionMap, "cjs")
+		// TsgonestSerializeInterceptor must appear only once — in PaymentsController's
+		// __decorate. WebhooksController has no return transforms and must not get it.
+		count := strings.Count(result, "UseInterceptors)(TsgonestSerializeInterceptor)")
+		if count != 1 {
+			t.Errorf("expected TsgonestSerializeInterceptor in exactly 1 controller's __decorate, got %d\n%s", count, result)
+		}
+		// The interceptor must appear before WebhooksController's __decorate bracket.
+		interceptorIdx := strings.Index(result, "UseInterceptors)(TsgonestSerializeInterceptor)")
+		webhooksDecorateIdx := strings.Index(result, "Controller)('webhooks')")
+		if interceptorIdx != -1 && webhooksDecorateIdx != -1 && interceptorIdx > webhooksDecorateIdx {
+			t.Errorf("interceptor leaked into WebhooksController's __decorate:\n%s", result)
 		}
 	})
 

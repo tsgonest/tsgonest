@@ -45,21 +45,25 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 	// ── Phase 1: Collect transform specifications (unchanged metadata logic) ──
 
 	type bodyValidation struct {
+		className  string
 		methodName string
 		paramName  string
 		typeName   string
 	}
 	type returnTransform struct {
+		className  string
 		methodName string
 		typeName   string
 		isArray    bool
 	}
 	type primitiveReturnTransform struct {
+		className  string
 		methodName string
 		atomic     string // "string", "number", or "boolean"
 		nullable   bool
 	}
 	type scalarCoercion struct {
+		className  string
 		methodName string
 		paramName  string
 		atomic     string // "number" or "boolean"
@@ -97,12 +101,13 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 						paramName = param.Name
 					}
 					if paramName == "" {
-						paramName = findBodyParamName(text, route.MethodName)
+						paramName = findBodyParamName(text, ctrl.Name, route.MethodName)
 						if paramName == "" {
 							continue
 						}
 					}
 					validations = append(validations, bodyValidation{
+						className:  ctrl.Name,
 						methodName: route.MethodName,
 						paramName:  paramName,
 						typeName:   typeName,
@@ -123,6 +128,7 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 							continue
 						}
 						validations = append(validations, bodyValidation{
+							className:  ctrl.Name,
 							methodName: route.MethodName,
 							paramName:  paramName,
 							typeName:   typeName,
@@ -135,6 +141,7 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 								paramName = param.Name
 							}
 							scalarCoercions = append(scalarCoercions, scalarCoercion{
+								className:  ctrl.Name,
 								methodName: route.MethodName,
 								paramName:  paramName,
 								atomic:     param.Type.Atomic,
@@ -184,6 +191,7 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 			primitiveAtomic, primitiveNullable := resolvePrimitiveReturn(&route.ReturnType)
 			if primitiveAtomic != "" {
 				primitiveTransforms = append(primitiveTransforms, primitiveReturnTransform{
+					className:  ctrl.Name,
 					methodName: route.MethodName,
 					atomic:     primitiveAtomic,
 					nullable:   primitiveNullable,
@@ -200,6 +208,7 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 			}
 			isArray := route.ReturnType.Kind == metadata.KindArray
 			transforms = append(transforms, returnTransform{
+				className:  ctrl.Name,
 				methodName: route.MethodName,
 				typeName:   returnTypeName,
 				isArray:    isArray,
@@ -216,12 +225,22 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 
 	locs := LocateJS(text)
 
-	// Build method lookup: methodName → *MethodLoc (across all classes)
-	methodLookup := make(map[string]*MethodLoc)
-	for _, cls := range locs.Classes {
+	// Build method lookup: className → methodName → *MethodLoc
+	// Keyed by class name so same-named methods in different controllers
+	// resolve to their own MethodLoc and never clobber each other.
+	classMethodLookup := make(map[string]map[string]*MethodLoc)
+	for className, cls := range locs.Classes {
+		methods := make(map[string]*MethodLoc, len(cls.Methods))
 		for name, ml := range cls.Methods {
-			methodLookup[name] = ml
+			methods[name] = ml
 		}
+		classMethodLookup[className] = methods
+	}
+	lookupMethod := func(className, methodName string) *MethodLoc {
+		if cls, ok := classMethodLookup[className]; ok {
+			return cls[methodName]
+		}
+		return nil
 	}
 
 	// ── Phase 3: Build prioritized edits ──
@@ -230,7 +249,7 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 
 	// (a) Body validation injection at method body start
 	for _, v := range validations {
-		ml := methodLookup[v.methodName]
+		ml := lookupMethod(v.className, v.methodName)
 		if ml == nil {
 			continue
 		}
@@ -246,7 +265,7 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 
 	// (b) Scalar coercion injection at method body start
 	for _, sc := range scalarCoercions {
-		ml := methodLookup[sc.methodName]
+		ml := lookupMethod(sc.className, sc.methodName)
 		if ml == nil {
 			continue
 		}
@@ -271,7 +290,7 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 
 	// (c) Return expression wrapping for DTO transforms
 	for _, tr := range transforms {
-		ml := methodLookup[tr.methodName]
+		ml := lookupMethod(tr.className, tr.methodName)
 		if ml == nil {
 			continue
 		}
@@ -313,7 +332,7 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 
 	// (d) Return expression wrapping for primitive transforms
 	for _, pt := range primitiveTransforms {
-		ml := methodLookup[pt.methodName]
+		ml := lookupMethod(pt.className, pt.methodName)
 		if ml == nil {
 			continue
 		}
@@ -381,8 +400,18 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 		} else {
 			importLines = append(importLines, `import { TsgonestSerializeInterceptor } from "@tsgonest/runtime";`)
 		}
-		// Inject interceptor at class-level __decorate bracket
+		// Only inject the interceptor into controllers that actually have return transforms.
+		controllersWithTransforms := make(map[string]bool)
+		for _, tr := range transforms {
+			controllersWithTransforms[tr.className] = true
+		}
+		for _, pt := range primitiveTransforms {
+			controllersWithTransforms[pt.className] = true
+		}
 		for _, ctrl := range controllers {
+			if !controllersWithTransforms[ctrl.Name] {
+				continue
+			}
 			dc := findClassLevelDecorate(locs, ctrl.Name)
 			if dc == nil {
 				continue
@@ -405,7 +434,15 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 		} else {
 			importLines = append(importLines, `import { TsgonestSseInterceptor } from "@tsgonest/runtime";`)
 		}
+		// Only inject the SSE interceptor into controllers that have SSE event streams.
+		controllersWithSseTransforms := make(map[string]bool)
+		for _, st := range sseTransforms {
+			controllersWithSseTransforms[st.className] = true
+		}
 		for _, ctrl := range controllers {
+			if !controllersWithSseTransforms[ctrl.Name] {
+				continue
+			}
 			dc := findClassLevelDecorate(locs, ctrl.Name)
 			if dc == nil {
 				continue
@@ -658,19 +695,25 @@ func resolvePrimitiveReturn(m *metadata.Metadata) (atomic string, nullable bool)
 
 // findBodyParamName finds the parameter name for an unnamed @Body() decorator
 // by looking at the method signature in the emitted JS via AST parsing.
-func findBodyParamName(text string, methodName string) string {
+// className scopes the search to the correct class so that same-named methods
+// in different controllers don't return each other's parameter names.
+func findBodyParamName(text string, className string, methodName string) string {
 	locs := LocateJS(text)
-	for _, cls := range locs.Classes {
-		if m, ok := cls.Methods[methodName]; ok {
-			if len(m.Parameters) > 0 {
-				name := m.Parameters[0]
-				// Reject destructured parameters
-				if strings.ContainsAny(name, "{}[]") {
-					return ""
-				}
-				return name
-			}
+	cls, ok := locs.Classes[className]
+	if !ok {
+		return ""
+	}
+	m, ok := cls.Methods[methodName]
+	if !ok {
+		return ""
+	}
+	if len(m.Parameters) > 0 {
+		name := m.Parameters[0]
+		// Reject destructured parameters
+		if strings.ContainsAny(name, "{}[]") {
+			return ""
 		}
+		return name
 	}
 	return ""
 }

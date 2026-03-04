@@ -397,17 +397,17 @@ func TestFindMethodBody(t *testing.T) {
 
 func TestFindBodyParamName(t *testing.T) {
 	tests := []struct {
-		text, methodName, expected string
+		text, className, methodName, expected string
 	}{
-		{"class C {\n    async create(body) { return body; }\n}", "create", "body"},
-		{"class C {\n    create(dto) { return dto; }\n}", "create", "dto"},
-		{"class C {\n    async update(id, body) { return id; }\n}", "update", "id"},
+		{"class C {\n    async create(body) { return body; }\n}", "C", "create", "body"},
+		{"class C {\n    create(dto) { return dto; }\n}", "C", "create", "dto"},
+		{"class C {\n    async update(id, body) { return id; }\n}", "C", "update", "id"},
 	}
 
 	for _, tt := range tests {
-		got := findBodyParamName(tt.text, tt.methodName)
+		got := findBodyParamName(tt.text, tt.className, tt.methodName)
 		if got != tt.expected {
-			t.Errorf("findBodyParamName(%q, %q) = %q, want %q", tt.text, tt.methodName, got, tt.expected)
+			t.Errorf("findBodyParamName(%q, %q, %q) = %q, want %q", tt.text, tt.className, tt.methodName, got, tt.expected)
 		}
 	}
 }
