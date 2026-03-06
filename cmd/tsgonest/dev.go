@@ -13,6 +13,7 @@ import (
 	"time"
 
 	shimincremental "github.com/microsoft/typescript-go/shim/execute/incremental"
+	"github.com/tsgonest/tsgonest/internal/compiler"
 	"github.com/tsgonest/tsgonest/internal/runner"
 	"github.com/tsgonest/tsgonest/internal/watcher"
 )
@@ -128,7 +129,8 @@ func runDev(args []string) int {
 	builder := &devBuilder{buildArgs: watchBuildArgs}
 
 	// Initial build (with --clean if deleteOutDir is set)
-	fmt.Fprintln(os.Stderr, "performing initial build...")
+	pretty := compiler.IsPrettyOutput()
+	printStatus(os.Stderr, pretty, "◆", "performing initial build...")
 	initialBuildArgs := append([]string{}, watchBuildArgs...)
 	if deleteOutDir {
 		initialBuildArgs = append(initialBuildArgs, "--clean")
@@ -140,9 +142,9 @@ func runDev(args []string) int {
 	buildResult := runBuildWithIncr(initialBuildArgs, nil, &builder.incrProgram)
 	builder.mu.Unlock()
 	if buildResult != 0 {
-		fmt.Fprintln(os.Stderr, "initial build failed, watching for changes...")
+		printStatus(os.Stderr, pretty, "✗", "initial build failed, watching for changes...")
 	} else {
-		fmt.Fprintln(os.Stderr, "initial build succeeded")
+		printStatus(os.Stderr, pretty, "✓", "initial build succeeded")
 	}
 
 	// Determine entry point (after build, so dist/ exists)
@@ -184,9 +186,9 @@ func runDev(args []string) int {
 
 	if proc != nil && buildResult == 0 {
 		if execCmd != "" {
-			fmt.Fprintf(os.Stderr, "starting: %s\n", execCmd)
+			printStatus(os.Stderr, pretty, "▶", "starting: %s", execCmd)
 		} else {
-			fmt.Fprintf(os.Stderr, "starting: node %s\n", strings.Join(buildNodeArgs(entryPoint, debugFlag, envFile, noSourceMaps, passthroughArgs), " "))
+			printStatus(os.Stderr, pretty, "▶", "starting: node %s", strings.Join(buildNodeArgs(entryPoint, debugFlag, envFile, noSourceMaps, passthroughArgs), " "))
 		}
 		if err := proc.Start(); err != nil {
 			fmt.Fprintf(os.Stderr, "error starting process: %v\n", err)
@@ -293,7 +295,7 @@ func runDev(args []string) int {
 		fmt.Fprintln(os.Stderr, "To restart at any time, enter \"rs\".")
 	}
 
-	fmt.Fprintln(os.Stderr, "watching for changes...")
+	printStatus(os.Stderr, pretty, "◇", "watching for changes...")
 	w.Watch()
 
 	return 0

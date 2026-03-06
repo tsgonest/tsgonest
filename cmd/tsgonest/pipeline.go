@@ -4,9 +4,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/microsoft/typescript-go/shim/core"
+	"github.com/tsgonest/tsgonest/internal/compiler"
 	"github.com/tsgonest/tsgonest/internal/config"
 	"github.com/tsgonest/tsgonest/internal/pathalias"
 )
@@ -28,17 +30,24 @@ type TimingReport struct {
 
 // Print outputs the build timing breakdown to stderr.
 func (t *TimingReport) Print() {
-	fmt.Fprintf(os.Stderr, "\n--- timing ---\n")
-	fmt.Fprintf(os.Stderr, "  tsconfig:      %s\n", t.TSConfig.Round(time.Millisecond))
-	fmt.Fprintf(os.Stderr, "  program:       %s\n", t.Program.Round(time.Millisecond))
-	fmt.Fprintf(os.Stderr, "  diagnostics:   %s\n", t.Diagnostics.Round(time.Millisecond))
-	fmt.Fprintf(os.Stderr, "  emit:          %s\n", t.Emit.Round(time.Millisecond))
-	fmt.Fprintf(os.Stderr, "  aliases:       %s\n", t.Aliases.Round(time.Millisecond))
-	fmt.Fprintf(os.Stderr, "  checker:       %s\n", t.Checker.Round(time.Millisecond))
-	fmt.Fprintf(os.Stderr, "  companions:    %s\n", t.Companions.Round(time.Millisecond))
-	fmt.Fprintf(os.Stderr, "  controllers:   %s\n", t.Controllers.Round(time.Millisecond))
-	fmt.Fprintf(os.Stderr, "  openapi:       %s\n", t.OpenAPI.Round(time.Millisecond))
-	fmt.Fprintf(os.Stderr, "  total:         %s\n", t.Total.Round(time.Millisecond))
+	pretty := compiler.IsPrettyOutput()
+	dim, reset := "", ""
+	if pretty {
+		dim = "\u001b[2m"
+		reset = "\u001b[0m"
+	}
+	fmt.Fprintf(os.Stderr, "\n%s── timing ──────────────────────────%s\n", dim, reset)
+	fmt.Fprintf(os.Stderr, "%s  tsconfig      %s%s\n", dim, t.TSConfig.Round(time.Millisecond), reset)
+	fmt.Fprintf(os.Stderr, "%s  program       %s%s\n", dim, t.Program.Round(time.Millisecond), reset)
+	fmt.Fprintf(os.Stderr, "%s  diagnostics   %s%s\n", dim, t.Diagnostics.Round(time.Millisecond), reset)
+	fmt.Fprintf(os.Stderr, "%s  emit          %s%s\n", dim, t.Emit.Round(time.Millisecond), reset)
+	fmt.Fprintf(os.Stderr, "%s  aliases       %s%s\n", dim, t.Aliases.Round(time.Millisecond), reset)
+	fmt.Fprintf(os.Stderr, "%s  checker       %s%s\n", dim, t.Checker.Round(time.Millisecond), reset)
+	fmt.Fprintf(os.Stderr, "%s  companions    %s%s\n", dim, t.Companions.Round(time.Millisecond), reset)
+	fmt.Fprintf(os.Stderr, "%s  controllers   %s%s\n", dim, t.Controllers.Round(time.Millisecond), reset)
+	fmt.Fprintf(os.Stderr, "%s  openapi       %s%s\n", dim, t.OpenAPI.Round(time.Millisecond), reset)
+	fmt.Fprintf(os.Stderr, "%s  total         %s%s\n", dim, t.Total.Round(time.Millisecond), reset)
+	fmt.Fprintf(os.Stderr, "%s────────────────────────────────────%s\n", dim, reset)
 }
 
 // ConfigResult holds the result of loading a tsgonest config file.
@@ -113,8 +122,45 @@ func resolvePathAliases(opts *core.CompilerOptions, cwd string, emittedFiles []s
 		return dur, fmt.Errorf("path alias resolution: %w", err)
 	}
 	if count > 0 {
-		fmt.Fprintf(os.Stderr, "resolved path aliases in %d file(s)\n", count)
+		printStatus(os.Stderr, compiler.IsPrettyOutput(), "✓", "resolved path aliases in %d file(s)", count)
 	}
 
 	return dur, nil
+}
+
+// printStatus prints a formatted status line with an icon.
+// When pretty=true, the icon is colored (green for ✓, red for ✗, cyan for info icons).
+func printStatus(w *os.File, pretty bool, icon string, format string, args ...any) {
+	msg := fmt.Sprintf(format, args...)
+	if !pretty {
+		fmt.Fprintf(w, "%s %s\n", icon, msg)
+		return
+	}
+	green := "\u001b[32m"
+	red := "\u001b[91m"
+	cyan := "\u001b[96m"
+	reset := "\u001b[0m"
+	var color string
+	switch icon {
+	case "✓":
+		color = green
+	case "✗":
+		color = red
+	default:
+		color = cyan
+	}
+	fmt.Fprintf(w, "%s%s%s %s\n", color, icon, reset, msg)
+}
+
+// formatLocation splits a warning location like "Controller.method() (file:line)"
+// into the method name (bold white) and file path (blue/underlined).
+// If no parens are found, the whole string is returned in methodColor.
+func formatLocation(loc, methodColor, bold, pathColor, reset string) string {
+	// Location format: "ClassName.method() (path/to/file.ts:42)"
+	if open := strings.LastIndex(loc, " ("); open != -1 && strings.HasSuffix(loc, ")") {
+		method := loc[:open]
+		path := loc[open+2 : len(loc)-1] // strip " (" and ")"
+		return fmt.Sprintf("%s%s%s%s %s%s%s", bold, methodColor, method, reset, pathColor, path, reset)
+	}
+	return fmt.Sprintf("%s%s%s%s", bold, methodColor, loc, reset)
 }
