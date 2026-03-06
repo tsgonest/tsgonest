@@ -59,7 +59,7 @@ type RewriteContext struct {
 // 3. Injects @Body() validation into controller methods
 // 4. Writes the transformed file to disk
 func (ctx *RewriteContext) MakeWriteFile() shimcompiler.WriteFile {
-	return func(fileName string, text string, bom bool, data *shimcompiler.WriteFileData) error {
+	return func(fileName string, text string, data *shimcompiler.WriteFileData) error {
 		if strings.HasSuffix(fileName, ".js") {
 			// 1. Path alias resolution
 			if ctx.PathResolver != nil && ctx.PathResolver.HasAliases() {
@@ -95,24 +95,19 @@ func (ctx *RewriteContext) MakeWriteFile() shimcompiler.WriteFile {
 			}
 		}
 		// Write to disk (replicates default tsgo behavior)
-		return writeFileToDisk(fileName, text, bom)
+		return writeFileToDisk(fileName, text)
 	}
 }
 
 // writeFileToDisk writes a file to disk, creating parent directories as needed.
 // This replicates the default behavior of tsgo's host.WriteFile.
-func writeFileToDisk(fileName string, text string, writeByteOrderMark bool) error {
+func writeFileToDisk(fileName string, text string) error {
 	dir := filepath.Dir(fileName)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return err
 	}
 
-	content := text
-	if writeByteOrderMark {
-		content = "\xEF\xBB\xBF" + content
-	}
-
-	return os.WriteFile(fileName, []byte(content), 0644)
+	return os.WriteFile(fileName, []byte(text), 0644)
 }
 
 // BuildOutputToSourceMap creates the reverse mapping from output file paths

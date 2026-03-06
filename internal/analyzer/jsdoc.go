@@ -105,6 +105,38 @@ func extractMethodJSDoc(node *ast.Node) (summary string, description string, dep
 	}
 
 	for _, tagNode := range jsdoc.Tags.Nodes {
+		// Handle @throws tags specially — TS 6.0+ parses @throws as KindJSDocThrowsTag
+		// instead of KindJSDocTag. TS interprets {400} as a type expression, so we
+		// reconstruct the "{statusCode} TypeName" format for parseThrowsTag.
+		if tagNode.Kind == ast.KindJSDocThrowsTag {
+			throwsTag := tagNode.AsJSDocThrowsTag()
+			if throwsTag != nil {
+				var throwsComment string
+				// Reconstruct: {typeExprText} commentText
+				// TypeExpression is a JSDocTypeExpression wrapping a LiteralType for the status code.
+				if throwsTag.TypeExpression != nil {
+					typeExpr := throwsTag.TypeExpression.AsJSDocTypeExpression()
+					if typeExpr != nil && typeExpr.Type != nil {
+						// For @throws {400}, Type is a LiteralType with text "400"
+						throwsComment = "{" + extractTypeNodeText(typeExpr.Type) + "}"
+					}
+				}
+				if throwsTag.Comment != nil {
+					ctext := strings.TrimSpace(extractNodeListText(throwsTag.Comment))
+					if ctext != "" {
+						throwsComment += " " + ctext
+					}
+				}
+				if throwsComment != "" {
+					er := parseThrowsTag(strings.TrimSpace(throwsComment))
+					if er != nil {
+						errorResponses = append(errorResponses, *er)
+					}
+				}
+			}
+			continue
+		}
+
 		// Handle @param tags specially — they use KindJSDocParameterTag, not KindJSDocTag
 		if tagNode.Kind == ast.KindJSDocParameterTag {
 			paramTag := tagNode.AsJSDocParameterOrPropertyTag()
@@ -241,4 +273,21 @@ func parseThrowsTag(comment string) *ErrorResponse {
 		TypeName:    typeName,
 		Description: description,
 	}
+}
+
+// extractTypeNodeText returns the source text of a type node.
+// For @throws {400}, the type is a LiteralTypeNode wrapping a NumericLiteral.
+func extractTypeNodeText(node *ast.Node) string {
+	if node == nil {
+		return ""
+	}
+	// LiteralTypeNode wraps a literal — get the inner literal's text
+	if node.Kind == ast.KindLiteralType {
+		lit := node.AsLiteralTypeNode()
+		if lit != nil && lit.Literal != nil {
+			return lit.Literal.Text()
+		}
+	}
+	// Fallback: try Text() directly (works for identifiers, literals)
+	return node.Text()
 }

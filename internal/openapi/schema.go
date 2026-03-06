@@ -442,7 +442,7 @@ func (g *SchemaGenerator) convertNative(m *metadata.Metadata) *Schema {
 		return &Schema{Type: "array", Items: &Schema{Type: "number"}}
 	case "ArrayBuffer", "SharedArrayBuffer":
 		return &Schema{Type: "string", Format: "binary"}
-	case "File", "Blob":
+	case "File", "Blob", "StreamableFile":
 		return &Schema{Type: "string", Format: "binary"}
 	case "Error":
 		return &Schema{

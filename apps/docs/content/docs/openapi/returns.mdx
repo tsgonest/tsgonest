@@ -117,6 +117,45 @@ health(@Res() res: Response): void { ... }
 ```
 :::
 
+## StreamableFile Responses
+
+NestJS's `StreamableFile` is automatically detected and produces an `application/octet-stream` binary response:
+
+```ts
+import { StreamableFile } from '@nestjs/common';
+
+@Get('download')
+download(): StreamableFile {
+  const file = createReadStream(join(process.cwd(), 'report.pdf'));
+  return new StreamableFile(file);
+}
+```
+
+```json
+{
+  "200": {
+    "description": "OK",
+    "content": {
+      "application/octet-stream": {
+        "schema": { "type": "string", "format": "binary" }
+      }
+    }
+  }
+}
+```
+
+To override the content type (e.g., for PDF files), use `@Returns`:
+
+```ts
+@Get('invoice')
+@Returns<Buffer>({ contentType: 'application/pdf' })
+getInvoice(): StreamableFile {
+  return new StreamableFile(createReadStream('invoice.pdf'));
+}
+```
+
+The `@Returns` content type always takes precedence over the auto-detected `application/octet-stream`.
+
 ## Array Responses
 
 Array return types produce array schemas in the response:

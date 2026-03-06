@@ -263,6 +263,20 @@ func (g *Generator) buildOperation(route analyzer.Route, controllerName string) 
 		}
 	}
 
+	// Pre-scan named query and header params to deduplicate when decomposing object params.
+	// e.g., @Query('page') page: number + @Query() query: {page: number, total: number}
+	// should produce only 2 params (page, total), not 3 (page from named, page+total from object).
+	namedQueryParams := map[string]bool{}
+	namedHeaderParams := map[string]bool{}
+	for _, param := range route.Parameters {
+		if param.Category == "query" && param.Name != "" {
+			namedQueryParams[param.Name] = true
+		}
+		if param.Category == "headers" && param.Name != "" {
+			namedHeaderParams[param.Name] = true
+		}
+	}
+
 	// Process parameters
 	for _, param := range route.Parameters {
 		switch param.Category {
@@ -285,11 +299,11 @@ func (g *Generator) buildOperation(route analyzer.Route, controllerName string) 
 		case "query":
 			// Query parameters: if the type is an object, decompose into individual params
 			if param.Type.Kind == metadata.KindObject && param.Name == "" {
-				g.decomposeQueryObject(op, &param.Type)
+				g.decomposeQueryObject(op, &param.Type, namedQueryParams)
 			} else if param.Type.Kind == metadata.KindRef && param.Name == "" {
 				// Resolve ref and decompose
 				if resolved, ok := g.schemaGen.registry.Types[param.Type.Ref]; ok {
-					g.decomposeQueryObject(op, resolved)
+					g.decomposeQueryObject(op, resolved, namedQueryParams)
 				} else {
 					op.Parameters = append(op.Parameters, Parameter{
 						Name:        param.Name,
@@ -304,12 +318,16 @@ func (g *Generator) buildOperation(route analyzer.Route, controllerName string) 
 				if name == "" {
 					name = "query"
 				}
+				schema := g.schemaGen.MetadataToSchema(&param.Type)
+				if param.HasDefault && param.DefaultValue != nil {
+					schema.Default = param.DefaultValue
+				}
 				op.Parameters = append(op.Parameters, Parameter{
 					Name:        name,
 					In:          "query",
 					Description: param.Description,
 					Required:    param.Required,
-					Schema:      g.schemaGen.MetadataToSchema(&param.Type),
+					Schema:      schema,
 				})
 			}
 
@@ -318,21 +336,25 @@ func (g *Generator) buildOperation(route analyzer.Route, controllerName string) 
 			if name == "" {
 				name = "id" // fallback
 			}
+			schema := g.schemaGen.MetadataToSchema(&param.Type)
+			if param.HasDefault && param.DefaultValue != nil {
+				schema.Default = param.DefaultValue
+			}
 			op.Parameters = append(op.Parameters, Parameter{
 				Name:        name,
 				In:          "path",
 				Description: param.Description,
 				Required:    true, // path params are always required
-				Schema:      g.schemaGen.MetadataToSchema(&param.Type),
+				Schema:      schema,
 			})
 
 		case "headers":
 			// Headers: if the type is an object and no field name, decompose into individual header params
 			if param.Type.Kind == metadata.KindObject && param.Name == "" {
-				g.decomposeHeaderObject(op, &param.Type)
+				g.decomposeHeaderObject(op, &param.Type, namedHeaderParams)
 			} else if param.Type.Kind == metadata.KindRef && param.Name == "" {
 				if resolved, ok := g.schemaGen.registry.Types[param.Type.Ref]; ok {
-					g.decomposeHeaderObject(op, resolved)
+					g.decomposeHeaderObject(op, resolved, namedHeaderParams)
 				} else {
 					op.Parameters = append(op.Parameters, Parameter{
 						Name:        param.Name,
@@ -347,12 +369,16 @@ func (g *Generator) buildOperation(route analyzer.Route, controllerName string) 
 				if name == "" {
 					name = "headers"
 				}
+				schema := g.schemaGen.MetadataToSchema(&param.Type)
+				if param.HasDefault && param.DefaultValue != nil {
+					schema.Default = param.DefaultValue
+				}
 				op.Parameters = append(op.Parameters, Parameter{
 					Name:        name,
 					In:          "header",
 					Description: param.Description,
 					Required:    param.Required,
-					Schema:      g.schemaGen.MetadataToSchema(&param.Type),
+					Schema:      schema,
 				})
 			}
 		}
@@ -487,8 +513,12 @@ func (g *Generator) buildOperation(route analyzer.Route, controllerName string) 
 // decomposeQueryObject breaks an object type into individual query parameters.
 // Array-typed properties get style: "form" and explode: true so that
 // repeated query params like ?status=A&status=B are properly documented.
-func (g *Generator) decomposeQueryObject(op *Operation, m *metadata.Metadata) {
+// The seen map contains names of named @Query('name') params to skip during decomposition.
+func (g *Generator) decomposeQueryObject(op *Operation, m *metadata.Metadata, seen map[string]bool) {
 	for _, prop := range m.Properties {
+		if seen[prop.Name] {
+			continue // already emitted by a named @Query('name') param
+		}
 		propSchema := g.schemaGen.MetadataToSchema(&prop.Type)
 		param := Parameter{
 			Name:     prop.Name,
@@ -507,8 +537,12 @@ func (g *Generator) decomposeQueryObject(op *Operation, m *metadata.Metadata) {
 }
 
 // decomposeHeaderObject breaks an object type into individual header parameters.
-func (g *Generator) decomposeHeaderObject(op *Operation, m *metadata.Metadata) {
+// The seen map contains names of named @Headers('name') params to skip during decomposition.
+func (g *Generator) decomposeHeaderObject(op *Operation, m *metadata.Metadata, seen map[string]bool) {
 	for _, prop := range m.Properties {
+		if seen[prop.Name] {
+			continue // already emitted by a named @Headers('name') param
+		}
 		propSchema := g.schemaGen.MetadataToSchema(&prop.Type)
 		op.Parameters = append(op.Parameters, Parameter{
 			Name:     prop.Name,

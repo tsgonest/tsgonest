@@ -96,6 +96,44 @@ findAll(@Query('status') status: string[]): OrderDto[] { ... }
 
 This allows clients to send `?status=active&status=pending` to filter by multiple values.
 
+### Default Values
+
+Parameters with default values are automatically marked as **not required** in the OpenAPI document. Literal defaults (numbers, strings, booleans) are included in the schema:
+
+```ts
+@Get()
+findAll(
+  @Query('page') page: number = 1,
+  @Query('sort') sort: string = 'createdAt',
+  @Query('active') active: boolean = true,
+): UserDto[] { ... }
+```
+
+```json
+{
+  "name": "page",
+  "in": "query",
+  "required": false,
+  "schema": { "type": "number", "default": 1 }
+}
+```
+
+Non-literal defaults (e.g., `Date.now()`, function calls) still make the parameter optional but don't include a `default` in the schema since the value can't be determined statically.
+
+### Deduplication
+
+When you use both a named `@Query('name')` and an object `@Query()` that contains the same property, tsgonest deduplicates them. The named parameter wins:
+
+```ts
+@Get()
+findAll(
+  @Query('page') page: number,
+  @Query() query: { page: number; total: number },
+): ItemDto[] { ... }
+```
+
+This produces exactly **two** query parameters (`page` and `total`), not three. The `page` from the named `@Query('page')` takes precedence, and the duplicate `page` inside the object is skipped.
+
 ### Auto-Coercion
 
 Query parameters typed as `number` or `boolean` in TypeScript automatically get coercion metadata. The OpenAPI schema reflects the actual intended type:

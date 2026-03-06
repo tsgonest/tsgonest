@@ -2520,3 +2520,185 @@ func TestIntegration_FormDataBody_WithConstraints(t *testing.T) {
 		t.Error("expected format: binary for File property")
 	}
 }
+
+func TestIntegration_ParameterDefaultInOpenAPI(t *testing.T) {
+	registry := metadata.NewTypeRegistry()
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name: "ItemController",
+			Path: "items",
+			Routes: []analyzer.Route{
+				{
+					Method:      "GET",
+					Path:        "/items",
+					OperationID: "Item_list",
+					StatusCode:  200,
+					ReturnType:  metadata.Metadata{Kind: metadata.KindVoid},
+					Parameters: []analyzer.RouteParameter{
+						{
+							Category:     "query",
+							Name:         "page",
+							Type:         metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "number"},
+							Required:     false,
+							HasDefault:   true,
+							DefaultValue: 1.0,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	gen := NewGenerator(registry)
+	doc := gen.Generate(controllers)
+	data := requireValidDoc(t, doc)
+	jsonStr := string(data)
+
+	// Verify default value is present
+	if !strings.Contains(jsonStr, `"default": 1`) {
+		t.Error("expected 'default: 1' in OpenAPI output")
+	}
+
+	// Verify required is false
+	raw := parseJSON(t, data)
+	paths := raw["paths"].(map[string]any)
+	itemsPath := paths["/items"].(map[string]any)
+	getOp := itemsPath["get"].(map[string]any)
+	params := getOp["parameters"].([]any)
+	if len(params) != 1 {
+		t.Fatalf("expected 1 param, got %d", len(params))
+	}
+	param := params[0].(map[string]any)
+	if param["required"] != false {
+		t.Errorf("expected required=false, got %v", param["required"])
+	}
+}
+
+func TestIntegration_QueryParamDeduplication(t *testing.T) {
+	// @Query('page') page: number + @Query() query: {page: number, total: number}
+	// should produce exactly 2 params (page, total), not 3.
+	registry := metadata.NewTypeRegistry()
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name: "ItemController",
+			Path: "items",
+			Routes: []analyzer.Route{
+				{
+					Method:      "GET",
+					Path:        "/items",
+					OperationID: "Item_list",
+					StatusCode:  200,
+					ReturnType:  metadata.Metadata{Kind: metadata.KindVoid},
+					Parameters: []analyzer.RouteParameter{
+						{
+							Category: "query",
+							Name:     "page",
+							Type:     metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "number"},
+							Required: true,
+						},
+						{
+							Category: "query",
+							Name:     "",
+							Type: metadata.Metadata{
+								Kind: metadata.KindObject,
+								Properties: []metadata.Property{
+									{Name: "page", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "number"}, Required: false},
+									{Name: "total", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "number"}, Required: false},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	gen := NewGenerator(registry)
+	doc := gen.Generate(controllers)
+	data := requireValidDoc(t, doc)
+
+	// Parse and inspect params
+	raw := parseJSON(t, data)
+	paths := raw["paths"].(map[string]any)
+	itemsPath := paths["/items"].(map[string]any)
+	getOp := itemsPath["get"].(map[string]any)
+	params := getOp["parameters"].([]any)
+
+	if len(params) != 2 {
+		t.Fatalf("expected 2 query params, got %d", len(params))
+	}
+
+	names := map[string]bool{}
+	for _, p := range params {
+		pm := p.(map[string]any)
+		names[pm["name"].(string)] = true
+	}
+	if !names["page"] {
+		t.Error("expected 'page' param")
+	}
+	if !names["total"] {
+		t.Error("expected 'total' param")
+	}
+}
+
+func TestIntegration_QueryParamDeduplication_NoCollision(t *testing.T) {
+	// @Query('page') page: number + @Query() query: {total: number}
+	// should produce exactly 2 params — no false dedup.
+	registry := metadata.NewTypeRegistry()
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name: "ItemController",
+			Path: "items",
+			Routes: []analyzer.Route{
+				{
+					Method:      "GET",
+					Path:        "/items",
+					OperationID: "Item_list",
+					StatusCode:  200,
+					ReturnType:  metadata.Metadata{Kind: metadata.KindVoid},
+					Parameters: []analyzer.RouteParameter{
+						{
+							Category: "query",
+							Name:     "page",
+							Type:     metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "number"},
+							Required: true,
+						},
+						{
+							Category: "query",
+							Name:     "",
+							Type: metadata.Metadata{
+								Kind: metadata.KindObject,
+								Properties: []metadata.Property{
+									{Name: "total", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "number"}, Required: false},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	gen := NewGenerator(registry)
+	doc := gen.Generate(controllers)
+	data := requireValidDoc(t, doc)
+
+	raw := parseJSON(t, data)
+	paths := raw["paths"].(map[string]any)
+	itemsPath := paths["/items"].(map[string]any)
+	getOp := itemsPath["get"].(map[string]any)
+	params := getOp["parameters"].([]any)
+
+	if len(params) != 2 {
+		t.Fatalf("expected 2 query params, got %d", len(params))
+	}
+
+	names := map[string]bool{}
+	for _, p := range params {
+		pm := p.(map[string]any)
+		names[pm["name"].(string)] = true
+	}
+	if !names["page"] || !names["total"] {
+		t.Errorf("expected page and total params, got %v", names)
+	}
+}

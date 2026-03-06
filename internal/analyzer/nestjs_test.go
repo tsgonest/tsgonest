@@ -4730,5 +4730,461 @@ func TestControllerAnalyzer_QueryFlatNoWarning(t *testing.T) {
 	}
 }
 
+func TestControllerAnalyzer_InheritedRoutes_Basic(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+		function Post(path?: string): MethodDecorator { return (t, k, d) => d; }
+		function Body(): ParameterDecorator { return () => {}; }
+
+		class CrudBase {
+			@Get()
+			findAll(): string[] { return []; }
+
+			@Post()
+			create(@Body() body: any): string { return ""; }
+		}
+
+		@Controller("users")
+		export class UserController extends CrudBase {}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 {
+		t.Fatalf("expected 1 controller, got %d", len(controllers))
+	}
+	ctrl := controllers[0]
+	if len(ctrl.Routes) != 2 {
+		t.Fatalf("expected 2 inherited routes, got %d", len(ctrl.Routes))
+	}
+	// Tags should use child's class name
+	for _, route := range ctrl.Routes {
+		if len(route.Tags) == 0 || route.Tags[0] != "User" {
+			t.Errorf("expected tag 'User', got %v", route.Tags)
+		}
+	}
+}
+
+func TestControllerAnalyzer_InheritedRoutes_MethodOverride(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+		function Post(path?: string): MethodDecorator { return (t, k, d) => d; }
+
+		class CrudBase {
+			@Get()
+			findAll(): string { return "base"; }
+
+			@Post()
+			create(): string { return "base"; }
+		}
+
+		@Controller("items")
+		export class ItemController extends CrudBase {
+			@Get()
+			findAll(): string { return "child"; }
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 {
+		t.Fatalf("expected 1 controller, got %d", len(controllers))
+	}
+	ctrl := controllers[0]
+	if len(ctrl.Routes) != 2 {
+		t.Fatalf("expected 2 routes (1 own + 1 inherited), got %d", len(ctrl.Routes))
+	}
+	// findAll should be the child's (first), create should be inherited
+	methods := map[string]bool{}
+	for _, r := range ctrl.Routes {
+		methods[r.MethodName] = true
+	}
+	if !methods["findAll"] || !methods["create"] {
+		t.Errorf("expected findAll and create methods, got %v", methods)
+	}
+}
+
+func TestControllerAnalyzer_InheritedRoutes_MultiLevel(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+		function Post(path?: string): MethodDecorator { return (t, k, d) => d; }
+		function Delete(path?: string): MethodDecorator { return (t, k, d) => d; }
+
+		class GrandBase {
+			@Delete(":id")
+			remove(): void {}
+		}
+
+		class MiddleBase extends GrandBase {
+			@Get()
+			findAll(): string { return ""; }
+		}
+
+		@Controller("deep")
+		export class DeepController extends MiddleBase {
+			@Post()
+			create(): string { return ""; }
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 {
+		t.Fatalf("expected 1 controller, got %d", len(controllers))
+	}
+	ctrl := controllers[0]
+	if len(ctrl.Routes) != 3 {
+		t.Fatalf("expected 3 routes (1 own + 1 middle + 1 grand), got %d", len(ctrl.Routes))
+	}
+}
+
+func TestControllerAnalyzer_InheritedRoutes_NoHTTPDecorators(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+
+		class PlainBase {
+			helper(): void {}
+		}
+
+		@Controller("test")
+		export class TestController extends PlainBase {}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 {
+		t.Fatalf("expected 1 controller, got %d", len(controllers))
+	}
+	if len(controllers[0].Routes) != 0 {
+		t.Errorf("expected 0 routes (no HTTP decorators on base), got %d", len(controllers[0].Routes))
+	}
+}
+
+func TestControllerAnalyzer_InheritedRoutes_Abstract(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+
+		abstract class AbstractBase {
+			@Get()
+			findAll(): string { return ""; }
+		}
+
+		@Controller("abs")
+		export class ConcreteController extends AbstractBase {}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 {
+		t.Fatalf("expected 1 controller, got %d", len(controllers))
+	}
+	if len(controllers[0].Routes) != 1 {
+		t.Fatalf("expected 1 inherited route from abstract base, got %d", len(controllers[0].Routes))
+	}
+}
+
+func TestControllerAnalyzer_InheritedRoutes_ChildTagsWin(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+
+		/** @tag BaseTag */
+		class BaseController {
+			@Get()
+			findAll(): string { return ""; }
+		}
+
+		/** @tag ChildTag */
+		@Controller("items")
+		export class ItemController extends BaseController {}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 {
+		t.Fatalf("expected 1 controller, got %d", len(controllers))
+	}
+	route := controllers[0].Routes[0]
+	if len(route.Tags) != 1 || route.Tags[0] != "ChildTag" {
+		t.Errorf("expected tag 'ChildTag', got %v", route.Tags)
+	}
+}
+
+func TestControllerAnalyzer_InheritedRoutes_ImplementsIgnored(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+
+		interface HasCreate {
+			create(): void;
+		}
+
+		@Controller("test")
+		export class TestController implements HasCreate {
+			@Get()
+			findAll(): string { return ""; }
+
+			create(): void {}
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 {
+		t.Fatalf("expected 1 controller, got %d", len(controllers))
+	}
+	// Only the own methods with HTTP decorators should appear, not interface methods
+	if len(controllers[0].Routes) != 1 {
+		t.Errorf("expected 1 route (only @Get findAll), got %d", len(controllers[0].Routes))
+	}
+}
+
+func TestControllerAnalyzer_ParameterDefaultNumber(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+		function Query(name: string): ParameterDecorator { return () => {}; }
+
+		@Controller("items")
+		export class ItemController {
+			@Get()
+			async list(@Query("page") page: number = 1): Promise<void> {}
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 || len(controllers[0].Routes) != 1 {
+		t.Fatalf("expected 1 controller with 1 route")
+	}
+	param := controllers[0].Routes[0].Parameters[0]
+	if !param.HasDefault {
+		t.Error("expected HasDefault=true")
+	}
+	if param.DefaultValue != 1.0 {
+		t.Errorf("expected DefaultValue=1.0, got %v", param.DefaultValue)
+	}
+	if param.Required {
+		t.Error("expected Required=false for param with default")
+	}
+}
+
+func TestControllerAnalyzer_ParameterDefaultString(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+		function Query(name: string): ParameterDecorator { return () => {}; }
+
+		@Controller("items")
+		export class ItemController {
+			@Get()
+			async list(@Query("sort") sort: string = "name"): Promise<void> {}
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	param := controllers[0].Routes[0].Parameters[0]
+	if !param.HasDefault {
+		t.Error("expected HasDefault=true")
+	}
+	if param.DefaultValue != "name" {
+		t.Errorf("expected DefaultValue=\"name\", got %v", param.DefaultValue)
+	}
+}
+
+func TestControllerAnalyzer_ParameterDefaultBoolean(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+		function Query(name: string): ParameterDecorator { return () => {}; }
+
+		@Controller("items")
+		export class ItemController {
+			@Get()
+			async list(@Query("active") active: boolean = true): Promise<void> {}
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	param := controllers[0].Routes[0].Parameters[0]
+	if !param.HasDefault {
+		t.Error("expected HasDefault=true")
+	}
+	if param.DefaultValue != true {
+		t.Errorf("expected DefaultValue=true, got %v", param.DefaultValue)
+	}
+}
+
+func TestControllerAnalyzer_ParameterDefaultExpression_Skipped(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+		function Query(name: string): ParameterDecorator { return () => {}; }
+
+		@Controller("items")
+		export class ItemController {
+			@Get()
+			async list(@Query("ts") ts: number = Date.now()): Promise<void> {}
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	param := controllers[0].Routes[0].Parameters[0]
+	if !param.HasDefault {
+		t.Error("expected HasDefault=true")
+	}
+	if param.DefaultValue != nil {
+		t.Errorf("expected DefaultValue=nil for non-literal expression, got %v", param.DefaultValue)
+	}
+	if param.Required {
+		t.Error("expected Required=false for param with default")
+	}
+}
+
+func TestControllerAnalyzer_ParameterNoDefault_StillRequired(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+		function Query(name: string): ParameterDecorator { return () => {}; }
+
+		@Controller("items")
+		export class ItemController {
+			@Get()
+			async list(@Query("page") page: number): Promise<void> {}
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	param := controllers[0].Routes[0].Parameters[0]
+	if param.HasDefault {
+		t.Error("expected HasDefault=false")
+	}
+	if !param.Required {
+		t.Error("expected Required=true for param without default")
+	}
+}
+
+func TestControllerAnalyzer_StreamableFileAutoContentType(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+		declare class StreamableFile {}
+
+		@Controller("files")
+		export class FileController {
+			@Get("download")
+			download(): StreamableFile {
+				return {} as StreamableFile;
+			}
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 {
+		t.Fatalf("expected 1 controller, got %d", len(controllers))
+	}
+	if len(controllers[0].Routes) != 1 {
+		t.Fatalf("expected 1 route, got %d", len(controllers[0].Routes))
+	}
+	route := controllers[0].Routes[0]
+	if route.ResponseContentType != "application/octet-stream" {
+		t.Errorf("expected ResponseContentType='application/octet-stream', got %q", route.ResponseContentType)
+	}
+	if route.ReturnType.NativeType != "StreamableFile" {
+		t.Errorf("expected ReturnType.NativeType='StreamableFile', got %q", route.ReturnType.NativeType)
+	}
+}
+
+func TestControllerAnalyzer_StreamableFileReturnsOverride(t *testing.T) {
+	env := setupWalkerMultiFile(t, map[string]string{
+		"tsgonest-runtime.d.ts": `
+			declare module "@tsgonest/runtime" {
+				export function Returns<T>(options?: { contentType?: string; description?: string; status?: number }): MethodDecorator;
+			}
+		`,
+		"controller.ts": `
+			function Controller(path: string): ClassDecorator { return (target) => target; }
+			function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+			import { Returns } from "@tsgonest/runtime";
+			declare class StreamableFile {}
+			declare class Buffer {}
+
+			@Controller("files")
+			export class FileController {
+				@Returns<Buffer>({ contentType: 'application/pdf' })
+				@Get("invoice")
+				getInvoice(): StreamableFile {
+					return {} as StreamableFile;
+				}
+			}
+		`,
+	}, "controller.ts")
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 {
+		t.Fatalf("expected 1 controller, got %d", len(controllers))
+	}
+	if len(controllers[0].Routes) != 1 {
+		t.Fatalf("expected 1 route, got %d", len(controllers[0].Routes))
+	}
+	route := controllers[0].Routes[0]
+	// @Returns contentType should win over auto-detected application/octet-stream
+	if route.ResponseContentType != "application/pdf" {
+		t.Errorf("expected ResponseContentType='application/pdf', got %q", route.ResponseContentType)
+	}
+}
+
 // The following ensures we're using the shimcompiler import correctly.
 var _ = (*shimcompiler.Program)(nil)

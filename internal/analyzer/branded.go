@@ -131,13 +131,13 @@ func (w *TypeWalker) extractBrandedConstraints(rawPhantomTypes []*shimchecker.Ty
 // Extracts the function's symbol name and source file path into c.ValidateFn and c.ValidateModule.
 func (w *TypeWalker) extractValidateFnConstraint(c *metadata.Constraints, rawPhantomType *shimchecker.Type, propName string) bool {
 	// Get the __tsgonest_validate property from the raw phantom type
-	validatePropSym := shimchecker.Checker_getPropertyOfType(w.checker, rawPhantomType, propName)
+	validatePropSym := w.checker.GetPropertyOfType(rawPhantomType, propName)
 	if validatePropSym == nil {
 		return false
 	}
 
 	// Get the type of the __tsgonest_validate property — this is the function type
-	fnType := shimchecker.Checker_getTypeOfSymbol(w.checker, validatePropSym)
+	fnType := w.checker.GetTypeOfSymbol(validatePropSym)
 	if fnType == nil {
 		return false
 	}

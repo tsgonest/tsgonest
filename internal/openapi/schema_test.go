@@ -3259,6 +3259,19 @@ func TestSchemaGenerator_Blob(t *testing.T) {
 	}
 }
 
+func TestSchemaGenerator_StreamableFile(t *testing.T) {
+	gen := NewSchemaGenerator(metadata.NewTypeRegistry())
+	m := &metadata.Metadata{Kind: metadata.KindNative, NativeType: "StreamableFile"}
+	schema := gen.MetadataToSchema(m)
+
+	if schema.Type != "string" {
+		t.Errorf("expected type='string', got %q", schema.Type)
+	}
+	if schema.Format != "binary" {
+		t.Errorf("expected format='binary', got %q", schema.Format)
+	}
+}
+
 // TestSchemaGenerator_BrandedArrayItemConstraints verifies that constraints on
 // array element types (e.g., (string & tags.Pattern<...>)[]) are applied to the
 // items schema, not lost.

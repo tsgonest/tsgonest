@@ -116,11 +116,11 @@ func (o *OverlayVFS) Realpath(path string) string {
 	return o.fs.Realpath(path)
 }
 
-func (o *OverlayVFS) WriteFile(path string, data string, writeByteOrderMark bool) error {
+func (o *OverlayVFS) WriteFile(path string, data string) error {
 	if _, ok := o.VirtualFiles[path]; ok {
 		panic("cannot write to overlay virtual file")
 	}
-	return o.fs.WriteFile(path, data, writeByteOrderMark)
+	return o.fs.WriteFile(path, data)
 }
 
 func (o *OverlayVFS) Remove(path string) error {

@@ -213,7 +213,7 @@ func generateCompanionsInMemory(program *shimcompiler.Program, cfg *config.Confi
 				}
 				line := shimscanner.GetECMALineOfPosition(sf, decl.Name().Pos())
 				walker.SetRootContext(fmt.Sprintf("%s (%s:%d)", name, sf.FileName(), line+1))
-				resolvedType := shimchecker.Checker_getTypeFromTypeNode(checker, decl.Type)
+				resolvedType := checker.GetTypeFromTypeNode(decl.Type)
 				m := walker.WalkNamedType(name, resolvedType)
 				walker.SetRootContext("")
 				types[name] = &m
@@ -231,7 +231,7 @@ func generateCompanionsInMemory(program *shimcompiler.Program, cfg *config.Confi
 				walker.SetRootContext(fmt.Sprintf("%s (%s:%d)", name, sf.FileName(), line+1))
 				sym := checker.GetSymbolAtLocation(decl.Name())
 				if sym != nil {
-					resolvedType := shimchecker.Checker_getDeclaredTypeOfSymbol(checker, sym)
+					resolvedType := checker.GetDeclaredTypeOfSymbol(sym)
 					m := walker.WalkType(resolvedType)
 					types[name] = &m
 				}

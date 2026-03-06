@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/microsoft/typescript-go/shim/ast"
-	shimchecker "github.com/microsoft/typescript-go/shim/checker"
 	"github.com/tsgonest/tsgonest/internal/analyzer"
 	"github.com/tsgonest/tsgonest/internal/metadata"
 )
@@ -601,6 +600,20 @@ func TestWalkNativeURL(t *testing.T) {
 	assertKind(t, m, metadata.KindNative)
 	if m.NativeType != "URL" {
 		t.Errorf("expected NativeType=URL, got %q", m.NativeType)
+	}
+}
+
+func TestWalkNativeStreamableFile(t *testing.T) {
+	env := setupWalker(t, `
+		declare class StreamableFile {}
+		type T = StreamableFile;
+	`)
+	defer env.release()
+
+	m := env.walkExportedType(t, "T")
+	assertKind(t, m, metadata.KindNative)
+	if m.NativeType != "StreamableFile" {
+		t.Errorf("expected NativeType=StreamableFile, got %q", m.NativeType)
 	}
 }
 
@@ -5560,7 +5573,7 @@ type MyItemList = PagedResult<Item>;
 				continue
 			}
 			name := decl.Name().Text()
-			resolvedType := shimchecker.Checker_getTypeFromTypeNode(env.checker, decl.Type)
+			resolvedType := env.checker.GetTypeFromTypeNode(decl.Type)
 			m := walker.WalkNamedType(name, resolvedType)
 
 			if name == "MyItemList" {
@@ -5805,7 +5818,7 @@ type ChannelResponse = {
 			name := decl.Name().Text()
 			// Only walk ChannelResponse — skip Thread and generic aliases
 			if name == "ChannelResponse" {
-				resolvedType := shimchecker.Checker_getTypeFromTypeNode(env.checker, decl.Type)
+				resolvedType := env.checker.GetTypeFromTypeNode(decl.Type)
 				walker.WalkNamedType(name, resolvedType)
 			}
 		}

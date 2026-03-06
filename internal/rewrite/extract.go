@@ -149,12 +149,12 @@ func walkNode(node *ast.Node, importedNames map[string]string, checker *shimchec
 // resolveTypeArgName resolves a type argument node to a named type string.
 // Uses the checker to get the type, then extracts the symbol name.
 func resolveTypeArgName(typeNode *ast.Node, checker *shimchecker.Checker) string {
-	resolvedType := shimchecker.Checker_getTypeFromTypeNode(checker, typeNode)
+	resolvedType := checker.GetTypeFromTypeNode(typeNode)
 	if resolvedType == nil {
 		return ""
 	}
 
-	sym := shimchecker.Type_symbol(resolvedType)
+	sym := resolvedType.Symbol()
 	if sym == nil {
 		return ""
 	}

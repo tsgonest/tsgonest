@@ -324,7 +324,7 @@ func (w *TypeWalker) walkSingleType(t *shimchecker.Type) metadata.Metadata {
 
 	// Unresolved types: try getBaseConstraintOfType as a fallback
 	if flags&(shimchecker.TypeFlagsTypeParameter|shimchecker.TypeFlagsConditional|shimchecker.TypeFlagsIndexedAccess|shimchecker.TypeFlagsIndex) != 0 {
-		constraint := shimchecker.Checker_getBaseConstraintOfType(w.checker, t)
+		constraint := w.checker.GetBaseConstraintOfType(t)
 		if constraint != nil && constraint != t {
 			return w.WalkType(constraint)
 		}
@@ -696,7 +696,7 @@ func (w *TypeWalker) tryFastBrandedLiteral(t *shimchecker.Type) (metadata.Metada
 		} else if memberFlags&shimchecker.TypeFlagsObject != 0 {
 			// Check if this object is a phantom using the checker API directly,
 			// avoiding WalkType and the breadth counter.
-			props := shimchecker.Checker_getPropertiesOfType(w.checker, member)
+			props := w.checker.GetPropertiesOfType(member)
 			if len(props) == 0 {
 				return metadata.Metadata{}, false
 			}
@@ -708,7 +708,7 @@ func (w *TypeWalker) tryFastBrandedLiteral(t *shimchecker.Type) (metadata.Metada
 					break
 				}
 				// Walk just the property type for constraint extraction
-				propType := shimchecker.Checker_getTypeOfSymbol(w.checker, prop)
+				propType := w.checker.GetTypeOfSymbol(prop)
 				propMeta := w.WalkType(propType)
 				propMetadata = append(propMetadata, metadata.Property{
 					Name: prop.Name,
@@ -919,8 +919,8 @@ func mergeProperties(allProps []metadata.Property) []metadata.Property {
 // walkObjectType handles object types (interfaces, arrays, tuples, native types).
 func (w *TypeWalker) walkObjectType(t *shimchecker.Type) metadata.Metadata {
 	// Check for array first
-	if shimchecker.Checker_isArrayType(w.checker, t) {
-		typeArgs := shimchecker.Checker_getTypeArguments(w.checker, t)
+	if shimchecker.Checker_isArrayType(w.checker,t) {
+		typeArgs := w.checker.GetTypeArguments(t)
 		if len(typeArgs) > 0 {
 			elem := w.WalkType(typeArgs[0])
 			return metadata.Metadata{Kind: metadata.KindArray, ElementType: &elem}
@@ -933,12 +933,12 @@ func (w *TypeWalker) walkObjectType(t *shimchecker.Type) metadata.Metadata {
 	// isArrayType returns false for named interfaces that extend Array, but their
 	// base types include the Array<T> instantiation. Detect this and treat as array.
 	// Only check class/interface types — getBaseTypes panics on anonymous object types.
-	objFlags := shimchecker.Type_objectFlags(t)
+	objFlags := t.ObjectFlags()
 	if objFlags&shimchecker.ObjectFlagsClassOrInterface != 0 {
-		baseTypes := shimchecker.Checker_getBaseTypes(w.checker, t)
+		baseTypes := w.checker.GetBaseTypes(t)
 		for _, base := range baseTypes {
-			if shimchecker.Checker_isArrayType(w.checker, base) {
-				typeArgs := shimchecker.Checker_getTypeArguments(w.checker, base)
+			if shimchecker.Checker_isArrayType(w.checker,base) {
+				typeArgs := w.checker.GetTypeArguments(base)
 				if len(typeArgs) > 0 {
 					elem := w.WalkType(typeArgs[0])
 					return metadata.Metadata{Kind: metadata.KindArray, ElementType: &elem}
@@ -969,7 +969,7 @@ func (w *TypeWalker) walkObjectType(t *shimchecker.Type) metadata.Metadata {
 			return w.walkGenericNative(t, "Set")
 		case "Promise":
 			// Unwrap Promise<T> to T
-			typeArgs := shimchecker.Checker_getTypeArguments(w.checker, t)
+			typeArgs := w.checker.GetTypeArguments(t)
 			if len(typeArgs) > 0 {
 				return w.WalkType(typeArgs[0])
 			}
@@ -977,7 +977,7 @@ func (w *TypeWalker) walkObjectType(t *shimchecker.Type) metadata.Metadata {
 		case "Observable":
 			// Unwrap Observable<T> to T (rxjs Observable, used for SSE endpoints)
 			// Combined with Promise unwrapping, this handles Promise<Observable<T>> → T
-			typeArgs := shimchecker.Checker_getTypeArguments(w.checker, t)
+			typeArgs := w.checker.GetTypeArguments(t)
 			if len(typeArgs) > 0 {
 				return w.WalkType(typeArgs[0])
 			}
@@ -985,14 +985,14 @@ func (w *TypeWalker) walkObjectType(t *shimchecker.Type) metadata.Metadata {
 		case "AsyncGenerator":
 			// Unwrap AsyncGenerator<Y, R, N> → Y (yield type, first type arg).
 			// Used by @EventStream() which returns AsyncGenerator<SseEvent<...>>.
-			typeArgs := shimchecker.Checker_getTypeArguments(w.checker, t)
+			typeArgs := w.checker.GetTypeArguments(t)
 			if len(typeArgs) > 0 {
 				return w.WalkType(typeArgs[0])
 			}
 			return metadata.Metadata{Kind: metadata.KindAny}
 		case "AsyncIterable", "AsyncIterableIterator":
 			// Unwrap AsyncIterable<T> / AsyncIterableIterator<T> → T.
-			typeArgs := shimchecker.Checker_getTypeArguments(w.checker, t)
+			typeArgs := w.checker.GetTypeArguments(t)
 			if len(typeArgs) > 0 {
 				return w.WalkType(typeArgs[0])
 			}
@@ -1005,7 +1005,7 @@ func (w *TypeWalker) walkObjectType(t *shimchecker.Type) metadata.Metadata {
 			return metadata.Metadata{Kind: metadata.KindNative, NativeType: name}
 		case "URL", "URLSearchParams":
 			return metadata.Metadata{Kind: metadata.KindNative, NativeType: name}
-		case "File", "Blob":
+		case "File", "Blob", "StreamableFile":
 			return metadata.Metadata{Kind: metadata.KindNative, NativeType: name}
 		case "Error":
 			return metadata.Metadata{Kind: metadata.KindNative, NativeType: "Error"}
@@ -1013,8 +1013,8 @@ func (w *TypeWalker) walkObjectType(t *shimchecker.Type) metadata.Metadata {
 	}
 
 	// Check if this is a function type (has call signatures, no properties of interest)
-	callSigs := shimchecker.Checker_getSignaturesOfType(w.checker, t, shimchecker.SignatureKindCall)
-	props := shimchecker.Checker_getPropertiesOfType(w.checker, t)
+	callSigs := w.checker.GetSignaturesOfType(t, shimchecker.SignatureKindCall)
+	props := w.checker.GetPropertiesOfType(t)
 	if len(callSigs) > 0 && len(props) == 0 {
 		return metadata.Metadata{Kind: metadata.KindAny, Name: "function"}
 	}
@@ -1027,9 +1027,9 @@ func (w *TypeWalker) walkObjectType(t *shimchecker.Type) metadata.Metadata {
 		// Generate a unique composite name per instantiation to prevent the first one from
 		// "winning" and all others incorrectly referencing it.
 		// Only check type arguments on Reference types (generic instantiations have ObjectFlagsReference).
-		objFlags := shimchecker.Type_objectFlags(t)
+		objFlags := t.ObjectFlags()
 		if objFlags&shimchecker.ObjectFlagsReference != 0 {
-			typeArgs := shimchecker.Checker_getTypeArguments(w.checker, t)
+			typeArgs := w.checker.GetTypeArguments(t)
 			if len(typeArgs) > 0 {
 				if compositeName, ok := w.buildGenericInstantiationName(typeName, typeArgs); ok {
 					typeName = compositeName
@@ -1168,11 +1168,11 @@ func (w *TypeWalker) disambiguateName(baseName string, t *shimchecker.Type) stri
 
 // analyzeObjectProperties extracts properties from an object type.
 func (w *TypeWalker) analyzeObjectProperties(t *shimchecker.Type, name string) metadata.Metadata {
-	props := shimchecker.Checker_getPropertiesOfType(w.checker, t)
+	props := w.checker.GetPropertiesOfType(t)
 	var properties []metadata.Property
 
 	for _, prop := range props {
-		propType := shimchecker.Checker_getTypeOfSymbol(w.checker, prop)
+		propType := w.checker.GetTypeOfSymbol(prop)
 
 		propMeta := w.WalkType(propType)
 
@@ -1242,11 +1242,11 @@ func (w *TypeWalker) analyzeObjectProperties(t *shimchecker.Type, name string) m
 	}
 
 	// Check for index signatures
-	indexInfos := shimchecker.Checker_getIndexInfosOfType(w.checker, t)
+	indexInfos := w.checker.GetIndexInfosOfType(t)
 	if len(indexInfos) > 0 {
 		info := indexInfos[0]
-		keyMeta := w.WalkType(shimchecker.IndexInfo_keyType(info))
-		valMeta := w.WalkType(shimchecker.IndexInfo_valueType(info))
+		keyMeta := w.WalkType(info.KeyType())
+		valMeta := w.WalkType(info.ValueType())
 		result.IndexSignature = &metadata.IndexSignature{
 			KeyType:   keyMeta,
 			ValueType: valMeta,
@@ -1258,13 +1258,13 @@ func (w *TypeWalker) analyzeObjectProperties(t *shimchecker.Type, name string) m
 
 // walkTupleType handles tuple types like [string, number].
 func (w *TypeWalker) walkTupleType(t *shimchecker.Type) metadata.Metadata {
-	typeArgs := shimchecker.Checker_getTypeArguments(w.checker, t)
+	typeArgs := w.checker.GetTypeArguments(t)
 	tupleType := t.TargetTupleType()
 
 	var elements []metadata.TupleElement
 	var elementInfos []shimchecker.TupleElementInfo
 	if tupleType != nil {
-		elementInfos = shimchecker.TupleType_elementInfos(tupleType)
+		elementInfos = tupleType.ElementInfos()
 	}
 
 	for i, arg := range typeArgs {
@@ -1292,7 +1292,7 @@ func (w *TypeWalker) walkTupleType(t *shimchecker.Type) metadata.Metadata {
 
 // walkGenericNative handles generic native types like Map<K,V> and Set<T>.
 func (w *TypeWalker) walkGenericNative(t *shimchecker.Type, name string) metadata.Metadata {
-	typeArgs := shimchecker.Checker_getTypeArguments(w.checker, t)
+	typeArgs := w.checker.GetTypeArguments(t)
 	var args []metadata.Metadata
 	for _, arg := range typeArgs {
 		args = append(args, w.WalkType(arg))
@@ -1334,7 +1334,7 @@ func normalizeLiteralValue(v any) any {
 // not for anonymous object literals or type alias targets.
 func (w *TypeWalker) getTypeName(t *shimchecker.Type) string {
 	// Anonymous objects (inline { x: number }) should not be named
-	objFlags := shimchecker.Type_objectFlags(t)
+	objFlags := t.ObjectFlags()
 	if objFlags&shimchecker.ObjectFlagsAnonymous != 0 {
 		return ""
 	}
@@ -1361,7 +1361,7 @@ func (w *TypeWalker) getTypeName(t *shimchecker.Type) string {
 // If the node is a named type reference (e.g., `LoginRequest`), the Name field
 // of the result will be set to the type name.
 func (w *TypeWalker) WalkTypeNode(node *ast.Node) metadata.Metadata {
-	t := shimchecker.Checker_getTypeFromTypeNode(w.checker, node)
+	t := w.checker.GetTypeFromTypeNode(node)
 	result := w.WalkType(t)
 
 	// Preserve the type name for named type references.
@@ -1509,8 +1509,8 @@ func (w *TypeWalker) deriveTypeArgName(t *shimchecker.Type) (string, bool) {
 		}
 
 		// Arrays: derive from element type
-		if shimchecker.Checker_isArrayType(w.checker, t) {
-			elemArgs := shimchecker.Checker_getTypeArguments(w.checker, t)
+		if shimchecker.Checker_isArrayType(w.checker,t) {
+			elemArgs := w.checker.GetTypeArguments(t)
 			if len(elemArgs) > 0 {
 				if elemName, ok := w.deriveTypeArgName(elemArgs[0]); ok {
 					return elemName + "Array", true
@@ -1527,9 +1527,9 @@ func (w *TypeWalker) deriveTypeArgName(t *shimchecker.Type) (string, bool) {
 				return "", false
 			}
 			// For nested generic instantiations, recurse (only Reference types have type args)
-			objFlags := shimchecker.Type_objectFlags(t)
+			objFlags := t.ObjectFlags()
 			if objFlags&shimchecker.ObjectFlagsReference != 0 {
-				innerArgs := shimchecker.Checker_getTypeArguments(w.checker, t)
+				innerArgs := w.checker.GetTypeArguments(t)
 				if len(innerArgs) > 0 {
 					return w.buildGenericInstantiationName(name, innerArgs)
 				}

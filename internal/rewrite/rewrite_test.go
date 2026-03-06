@@ -13,7 +13,7 @@ func TestWriteFileToDisk(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "sub", "test.js")
 
-	err := writeFileToDisk(path, "console.log('hello');", false)
+	err := writeFileToDisk(path, "console.log('hello');")
 	if err != nil {
 		t.Fatalf("writeFileToDisk failed: %v", err)
 	}
@@ -27,11 +27,11 @@ func TestWriteFileToDisk(t *testing.T) {
 	}
 }
 
-func TestWriteFileToDisk_BOM(t *testing.T) {
+func TestWriteFileToDisk_NoBOM(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "bom.js")
+	path := filepath.Join(dir, "nobom.js")
 
-	err := writeFileToDisk(path, "test", true)
+	err := writeFileToDisk(path, "test")
 	if err != nil {
 		t.Fatalf("writeFileToDisk failed: %v", err)
 	}
@@ -40,8 +40,8 @@ func TestWriteFileToDisk_BOM(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reading file: %v", err)
 	}
-	if !strings.HasPrefix(string(content), "\xEF\xBB\xBF") {
-		t.Error("expected BOM prefix")
+	if string(content) != "test" {
+		t.Errorf("unexpected content: %s", string(content))
 	}
 }
 
@@ -145,7 +145,7 @@ func TestWriteFileCallback_Integration(t *testing.T) {
 const user = assert(body);
 console.log(user);`
 
-	err := writeFile(outputFile, input, false, nil)
+	err := writeFile(outputFile, input, nil)
 	if err != nil {
 		t.Fatalf("WriteFile failed: %v", err)
 	}

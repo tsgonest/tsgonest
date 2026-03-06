@@ -9,7 +9,6 @@ import (
 	"os"
 
 	"github.com/microsoft/typescript-go/shim/ast"
-	shimchecker "github.com/microsoft/typescript-go/shim/checker"
 	shimcompiler "github.com/microsoft/typescript-go/shim/compiler"
 	"github.com/microsoft/typescript-go/shim/core"
 	"github.com/tsgonest/tsgonest/internal/analyzer"
@@ -55,7 +54,7 @@ func runDumpMetadata(program *shimcompiler.Program, opts *core.CompilerOptions) 
 			case ast.KindTypeAliasDeclaration:
 				decl := stmt.AsTypeAliasDeclaration()
 				name := decl.Name().Text()
-				resolvedType := shimchecker.Checker_getTypeFromTypeNode(checker, decl.Type)
+				resolvedType := checker.GetTypeFromTypeNode(decl.Type)
 				m := walker.WalkNamedType(name, resolvedType)
 				types[name] = m
 
@@ -64,7 +63,7 @@ func runDumpMetadata(program *shimcompiler.Program, opts *core.CompilerOptions) 
 				name := decl.Name().Text()
 				sym := checker.GetSymbolAtLocation(decl.Name())
 				if sym != nil {
-					resolvedType := shimchecker.Checker_getDeclaredTypeOfSymbol(checker, sym)
+					resolvedType := checker.GetDeclaredTypeOfSymbol(sym)
 					types[name] = walker.WalkType(resolvedType)
 				}
 
@@ -74,7 +73,7 @@ func runDumpMetadata(program *shimcompiler.Program, opts *core.CompilerOptions) 
 					name := decl.Name().Text()
 					sym := checker.GetSymbolAtLocation(decl.Name())
 					if sym != nil {
-						resolvedType := shimchecker.Checker_getDeclaredTypeOfSymbol(checker, sym)
+						resolvedType := checker.GetDeclaredTypeOfSymbol(sym)
 						types[name] = walker.WalkType(resolvedType)
 					}
 				}
@@ -84,7 +83,7 @@ func runDumpMetadata(program *shimcompiler.Program, opts *core.CompilerOptions) 
 				name := decl.Name().Text()
 				sym := checker.GetSymbolAtLocation(decl.Name())
 				if sym != nil {
-					resolvedType := shimchecker.Checker_getDeclaredTypeOfSymbol(checker, sym)
+					resolvedType := checker.GetDeclaredTypeOfSymbol(sym)
 					types[name] = walker.WalkType(resolvedType)
 				}
 			}

@@ -183,6 +183,12 @@ type RouteParameter struct {
 	Type metadata.Metadata
 	// Required indicates whether the parameter is required.
 	Required bool
+	// HasDefault is true when the parameter has an initializer (e.g., page: number = 1).
+	// Parameters with defaults are not required in OpenAPI.
+	HasDefault bool
+	// DefaultValue is the extracted literal default value (number, string, bool, or nil for non-literals).
+	// Only set when HasDefault is true and the initializer is a literal expression.
+	DefaultValue any
 	// ContentType is the request body content type.
 	// Default is "application/json". Other values: "text/plain", "multipart/form-data", "application/x-www-form-urlencoded".
 	// Only meaningful for body parameters.
@@ -344,6 +350,22 @@ func (a *ControllerAnalyzer) analyzeClass(classNode *ast.Node, sourceFile string
 		}
 	}
 
+	// Collect child method names for inheritance deduplication.
+	childMethodNames := map[string]bool{}
+	if classDecl.Members != nil {
+		for _, member := range classDecl.Members.Nodes {
+			if member.Kind == ast.KindMethodDeclaration {
+				md := member.AsMethodDeclaration()
+				if md.Name() != nil {
+					childMethodNames[md.Name().Text()] = true
+				}
+			}
+		}
+	}
+
+	// Collect inherited methods from base classes (for OpenAPI only).
+	inheritedMethods := a.collectInheritedMethods(classNode, childMethodNames, nil)
+
 	// For each controller path, analyze methods and produce a ControllerInfo.
 	// Usually there's just one path, but @Controller(['v1/users', 'v2/users']) produces multiple.
 	var result []ControllerInfo
@@ -378,6 +400,26 @@ func (a *ControllerAnalyzer) analyzeClass(classNode *ast.Node, sourceFile string
 			}
 		}
 
+		// Analyze inherited methods from base classes using the child's class name and tags.
+		for _, inheritedMethod := range inheritedMethods {
+			methodRoutes := a.analyzeMethod(inheritedMethod, controllerPath, "", className, sourceFile)
+			for _, route := range methodRoutes {
+				if len(route.Tags) == 0 {
+					route.Tags = defaultTags
+				}
+				if len(route.Security) == 0 && len(classInfo.Security) > 0 {
+					route.Security = classInfo.Security
+				}
+				if !route.IsPublic && classInfo.IsPublic {
+					route.IsPublic = true
+				}
+				if route.Version == "" && controllerVersion != "" {
+					route.Version = controllerVersion
+				}
+				routes = append(routes, *route)
+			}
+		}
+
 		result = append(result, ControllerInfo{
 			Name:          className,
 			Path:          controllerPath,
@@ -388,6 +430,84 @@ func (a *ControllerAnalyzer) analyzeClass(classNode *ast.Node, sourceFile string
 	}
 
 	return result
+}
+
+// collectInheritedMethods walks the class hierarchy via extends clauses and collects
+// method declarations from base classes that are not overridden by the child.
+// Only follows extends (not implements) to collect actual method implementations.
+func (a *ControllerAnalyzer) collectInheritedMethods(
+	classNode *ast.Node,
+	childMethodNames map[string]bool,
+	visited map[*ast.Node]bool,
+) []*ast.Node {
+	if visited == nil {
+		visited = map[*ast.Node]bool{}
+	}
+	if visited[classNode] {
+		return nil // cycle protection
+	}
+	visited[classNode] = true
+
+	classDecl := classNode.AsClassDeclaration()
+	if classDecl.HeritageClauses == nil {
+		return nil
+	}
+
+	var methods []*ast.Node
+	for _, clause := range classDecl.HeritageClauses.Nodes {
+		hc := clause.AsHeritageClause()
+		if hc.Token != ast.KindExtendsKeyword {
+			continue // skip implements
+		}
+		if hc.Types == nil {
+			continue
+		}
+		for _, typeExpr := range hc.Types.Nodes {
+			expr := typeExpr.AsExpressionWithTypeArguments()
+			if expr.Expression == nil {
+				continue
+			}
+			sym := a.checker.GetSymbolAtLocation(expr.Expression)
+			if sym == nil {
+				continue
+			}
+			baseDecl := sym.ValueDeclaration
+			if baseDecl == nil || baseDecl.Kind != ast.KindClassDeclaration {
+				continue
+			}
+			baseClassDecl := baseDecl.AsClassDeclaration()
+			if baseClassDecl.Members == nil {
+				continue
+			}
+
+			// Collect methods not overridden by child, tracking names from this level too
+			allNames := map[string]bool{}
+			for k, v := range childMethodNames {
+				allNames[k] = v
+			}
+
+			for _, member := range baseClassDecl.Members.Nodes {
+				if member.Kind != ast.KindMethodDeclaration {
+					continue
+				}
+				md := member.AsMethodDeclaration()
+				if md.Name() == nil {
+					continue
+				}
+				name := md.Name().Text()
+				if childMethodNames[name] {
+					continue // overridden by child
+				}
+				methods = append(methods, member)
+				allNames[name] = true
+			}
+
+			// Recurse into grandparent classes
+			methods = append(methods, a.collectInheritedMethods(baseDecl, allNames, visited)...)
+		}
+	}
+
+	return methods
 }
 
 // analyzeMethod attempts to parse a method declaration as a NestJS route handler.
@@ -629,6 +749,11 @@ func (a *ControllerAnalyzer) analyzeMethod(methodNode *ast.Node, controllerPath 
 		returnType = metadata.Metadata{Kind: metadata.KindVoid}
 	} else {
 		returnType = a.extractReturnType(methodNode, className, operationID, sourceFile)
+	}
+
+	// StreamableFile returns binary content — auto-set content type if not overridden by @Returns.
+	if returnType.Kind == metadata.KindNative && returnType.NativeType == "StreamableFile" && responseContentType == "" {
+		responseContentType = "application/octet-stream"
 	}
 
 	// For @EventStream routes, extract SSE event variants (discriminated event types).
@@ -1218,7 +1343,7 @@ func (a *ControllerAnalyzer) analyzeParameter(paramNode *ast.Node, className str
 		// Try to infer from checker
 		sym := a.checker.GetSymbolAtLocation(paramNode)
 		if sym != nil {
-			t := shimchecker.Checker_getTypeOfSymbol(a.checker, sym)
+			t := a.checker.GetTypeOfSymbol(sym)
 			paramType = a.walker.WalkType(t)
 		} else {
 			paramType = metadata.Metadata{Kind: metadata.KindAny}
@@ -1233,6 +1358,14 @@ func (a *ControllerAnalyzer) analyzeParameter(paramNode *ast.Node, className str
 
 	// Determine if required (not optional, not nullable)
 	required := paramDecl.QuestionToken == nil && !paramType.Optional && !paramType.Nullable
+
+	// Extract default value from initializer (e.g., page: number = 1)
+	hasDefault := paramDecl.Initializer != nil
+	var defaultValue any
+	if hasDefault {
+		defaultValue, _ = extractInitializerLiteralValue(paramDecl.Initializer)
+		required = false
+	}
 
 	// Extract local variable name from the parameter declaration.
 	// Binding patterns (destructured params like `{ page, limit }: Dto`) don't
@@ -1251,12 +1384,14 @@ func (a *ControllerAnalyzer) analyzeParameter(paramNode *ast.Node, className str
 	}
 
 	rp := &RouteParameter{
-		Category:  category,
-		Name:      paramName,
-		LocalName: localName,
-		TypeName:  paramTypeName,
-		Type:      paramType,
-		Required:  required,
+		Category:     category,
+		Name:         paramName,
+		LocalName:    localName,
+		TypeName:     paramTypeName,
+		Type:         paramType,
+		Required:     required,
+		HasDefault:   hasDefault,
+		DefaultValue: defaultValue,
 	}
 
 	// @FormDataBody always uses multipart/form-data content type
@@ -1265,6 +1400,49 @@ func (a *ControllerAnalyzer) analyzeParameter(paramNode *ast.Node, className str
 	}
 
 	return rp
+}
+
+// extractInitializerLiteralValue extracts a Go value from an AST literal expression.
+// Returns the value and true for supported literals (string, number, boolean, null,
+// prefix unary +/- on number, no-substitution template). Returns nil, false for
+// non-literal expressions like function calls.
+func extractInitializerLiteralValue(expr *ast.Node) (any, bool) {
+	if expr == nil {
+		return nil, false
+	}
+	switch expr.Kind {
+	case ast.KindStringLiteral:
+		return expr.Text(), true
+	case ast.KindNoSubstitutionTemplateLiteral:
+		return expr.Text(), true
+	case ast.KindNumericLiteral:
+		val, err := strconv.ParseFloat(expr.Text(), 64)
+		if err != nil {
+			return nil, false
+		}
+		return val, true
+	case ast.KindTrueKeyword:
+		return true, true
+	case ast.KindFalseKeyword:
+		return false, true
+	case ast.KindNullKeyword:
+		return nil, true
+	case ast.KindPrefixUnaryExpression:
+		prefix := expr.AsPrefixUnaryExpression()
+		if prefix.Operand != nil && prefix.Operand.Kind == ast.KindNumericLiteral {
+			val, err := strconv.ParseFloat(prefix.Operand.Text(), 64)
+			if err != nil {
+				return nil, false
+			}
+			if prefix.Operator == ast.KindMinusToken {
+				return -val, true
+			}
+			return val, true
+		}
+		return nil, false
+	default:
+		return nil, false
+	}
 }
 
 // resolveTypeNodeName extracts the type name from a type annotation AST node.
@@ -1538,18 +1716,18 @@ func (a *ControllerAnalyzer) inferReturnType(methodNode *ast.Node, className str
 		return metadata.Metadata{Kind: metadata.KindAny}
 	}
 
-	methodType := shimchecker.Checker_getTypeOfSymbol(a.checker, sym)
+	methodType := a.checker.GetTypeOfSymbol(sym)
 	if methodType == nil {
 		return metadata.Metadata{Kind: metadata.KindAny}
 	}
 
-	sigs := shimchecker.Checker_getSignaturesOfType(a.checker, methodType, shimchecker.SignatureKindCall)
+	sigs := a.checker.GetSignaturesOfType(methodType, shimchecker.SignatureKindCall)
 	if len(sigs) == 0 {
 		return metadata.Metadata{Kind: metadata.KindAny}
 	}
 
 	// Use the last signature (overload resolution picks the implementation signature last).
-	returnType := shimchecker.Checker_getReturnTypeOfSignature(a.checker, sigs[len(sigs)-1])
+	returnType := a.checker.GetReturnTypeOfSignature(sigs[len(sigs)-1])
 	if returnType == nil {
 		return metadata.Metadata{Kind: metadata.KindAny}
 	}
@@ -1612,7 +1790,7 @@ func (a *ControllerAnalyzer) extractReturnsDecoratorType(info *DecoratorInfo) (r
 		typeArgNode := info.TypeArgNodes[0]
 
 		// Resolve the type through the checker → type walker
-		t := shimchecker.Checker_getTypeFromTypeNode(a.checker, typeArgNode)
+		t := a.checker.GetTypeFromTypeNode(typeArgNode)
 		if t != nil {
 			returnType = a.walker.WalkType(t)
 		} else {

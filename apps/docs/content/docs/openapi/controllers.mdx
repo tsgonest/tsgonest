@@ -92,6 +92,42 @@ export class UsersController {
 }
 ```
 
+## Controller Inheritance
+
+tsgonest follows `extends` clauses to collect routes from base classes. This lets you define shared CRUD routes in an abstract or concrete base class and inherit them:
+
+```ts
+abstract class CrudBase<T> {
+  @Get()
+  findAll(): T[] { ... }
+
+  @Get(':id')
+  findOne(@Param('id') id: string): T { ... }
+
+  @Post()
+  create(@Body() body: T): T { ... }
+}
+
+@Controller('users')
+export class UsersController extends CrudBase<UserDto> {
+  // Inherits GET /users, GET /users/:id, POST /users
+  // All tagged "User" (from the child class name)
+}
+```
+
+### How it works
+
+- Routes from base classes are included in the child controller's OpenAPI output
+- **Method overrides win** — if the child redefines a method, only the child's version is used
+- **Tags come from the child** — inherited routes use the child controller's class name and `@tag`
+- **Multi-level inheritance** works — `A extends B extends C` collects routes from all ancestors
+- **`implements` is ignored** — only `extends` is followed (interfaces have no method bodies)
+- **Abstract base classes** work the same as concrete ones
+
+:::note[OpenAPI only]
+Controller inheritance affects **OpenAPI generation only**. The rewriter cannot inject validation into inherited methods because they only exist on `Base.prototype` in the emitted JS. If you need validation on inherited route handlers, override them in the child class.
+:::
+
 ## Operation IDs
 
 The **method name** becomes the `operationId` in the OpenAPI document:

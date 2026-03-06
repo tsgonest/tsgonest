@@ -152,7 +152,7 @@ func (env *walkerEnv) walkExportedType(t *testing.T, typeName string) metadata.M
 		if stmt.Kind == ast.KindTypeAliasDeclaration {
 			decl := stmt.AsTypeAliasDeclaration()
 			if decl.Name().Text() == typeName {
-				resolvedType := shimchecker.Checker_getTypeFromTypeNode(env.checker, decl.Type)
+				resolvedType := env.checker.GetTypeFromTypeNode(decl.Type)
 				return walker.WalkType(resolvedType)
 			}
 		}
@@ -161,7 +161,7 @@ func (env *walkerEnv) walkExportedType(t *testing.T, typeName string) metadata.M
 			if decl.Name().Text() == typeName {
 				sym := env.checker.GetSymbolAtLocation(decl.Name())
 				if sym != nil {
-					resolvedType := shimchecker.Checker_getDeclaredTypeOfSymbol(env.checker, sym)
+					resolvedType := env.checker.GetDeclaredTypeOfSymbol(sym)
 					return walker.WalkType(resolvedType)
 				}
 			}
@@ -171,7 +171,7 @@ func (env *walkerEnv) walkExportedType(t *testing.T, typeName string) metadata.M
 			if decl.Name().Text() == typeName {
 				sym := env.checker.GetSymbolAtLocation(decl.Name())
 				if sym != nil {
-					resolvedType := shimchecker.Checker_getDeclaredTypeOfSymbol(env.checker, sym)
+					resolvedType := env.checker.GetDeclaredTypeOfSymbol(sym)
 					return walker.WalkType(resolvedType)
 				}
 			}
@@ -181,7 +181,7 @@ func (env *walkerEnv) walkExportedType(t *testing.T, typeName string) metadata.M
 			if decl.Name() != nil && decl.Name().Text() == typeName {
 				sym := env.checker.GetSymbolAtLocation(decl.Name())
 				if sym != nil {
-					resolvedType := shimchecker.Checker_getDeclaredTypeOfSymbol(env.checker, sym)
+					resolvedType := env.checker.GetDeclaredTypeOfSymbol(sym)
 					return walker.WalkType(resolvedType)
 				}
 			}
@@ -209,7 +209,7 @@ func (env *walkerEnv) walkExportedTypeWithRegistry(t *testing.T, typeName string
 		if stmt.Kind == ast.KindTypeAliasDeclaration {
 			decl := stmt.AsTypeAliasDeclaration()
 			if decl.Name().Text() == typeName {
-				resolvedType := shimchecker.Checker_getTypeFromTypeNode(env.checker, decl.Type)
+				resolvedType := env.checker.GetTypeFromTypeNode(decl.Type)
 				m := walker.WalkType(resolvedType)
 				return m, walker.Registry()
 			}
@@ -219,7 +219,7 @@ func (env *walkerEnv) walkExportedTypeWithRegistry(t *testing.T, typeName string
 			if decl.Name().Text() == typeName {
 				sym := env.checker.GetSymbolAtLocation(decl.Name())
 				if sym != nil {
-					resolvedType := shimchecker.Checker_getDeclaredTypeOfSymbol(env.checker, sym)
+					resolvedType := env.checker.GetDeclaredTypeOfSymbol(sym)
 					m := walker.WalkType(resolvedType)
 					return m, walker.Registry()
 				}
@@ -230,7 +230,7 @@ func (env *walkerEnv) walkExportedTypeWithRegistry(t *testing.T, typeName string
 			if decl.Name().Text() == typeName {
 				sym := env.checker.GetSymbolAtLocation(decl.Name())
 				if sym != nil {
-					resolvedType := shimchecker.Checker_getDeclaredTypeOfSymbol(env.checker, sym)
+					resolvedType := env.checker.GetDeclaredTypeOfSymbol(sym)
 					m := walker.WalkType(resolvedType)
 					return m, walker.Registry()
 				}
@@ -241,7 +241,7 @@ func (env *walkerEnv) walkExportedTypeWithRegistry(t *testing.T, typeName string
 			if decl.Name() != nil && decl.Name().Text() == typeName {
 				sym := env.checker.GetSymbolAtLocation(decl.Name())
 				if sym != nil {
-					resolvedType := shimchecker.Checker_getDeclaredTypeOfSymbol(env.checker, sym)
+					resolvedType := env.checker.GetDeclaredTypeOfSymbol(sym)
 					m := walker.WalkType(resolvedType)
 					return m, walker.Registry()
 				}
@@ -269,14 +269,14 @@ func (env *walkerEnv) walkAllNamedTypes(t *testing.T) *analyzer.TypeWalker {
 				continue
 			}
 			name := decl.Name().Text()
-			resolvedType := shimchecker.Checker_getTypeFromTypeNode(env.checker, decl.Type)
+			resolvedType := env.checker.GetTypeFromTypeNode(decl.Type)
 			walker.WalkNamedType(name, resolvedType)
 		}
 		if stmt.Kind == ast.KindInterfaceDeclaration {
 			decl := stmt.AsInterfaceDeclaration()
 			sym := env.checker.GetSymbolAtLocation(decl.Name())
 			if sym != nil {
-				resolvedType := shimchecker.Checker_getDeclaredTypeOfSymbol(env.checker, sym)
+				resolvedType := env.checker.GetDeclaredTypeOfSymbol(sym)
 				walker.WalkType(resolvedType)
 			}
 		}

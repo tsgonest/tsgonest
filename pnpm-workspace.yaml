@@ -3,3 +3,4 @@ packages:
   - 'packages/*'
   - 'e2e'
   - 'benchmarks'
+  - 'testdata/integration'
