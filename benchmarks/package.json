@@ -16,7 +16,7 @@
     "class-transformer": "^0.5.1",
     "class-validator": "^0.14.1",
     "reflect-metadata": "^0.2.2",
-    "tinybench": "^3.0.8",
+    "tinybench": "^6.0.0",
     "tsx": "^4.21.0",
     "zod": "^4.3.6"
   }
