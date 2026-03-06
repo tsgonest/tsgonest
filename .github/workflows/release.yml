@@ -47,6 +47,9 @@ jobs:
       - name: Build binary
         run: just build
 
+      - name: Build TypeScript packages
+        run: pnpm build:packages
+
       - name: Build migrate script
         run: pnpm --filter tsgonest build:migrate
 
