@@ -48,7 +48,7 @@ export const metadata: Metadata = {
     'tsgonest',
     'nestjs',
     'typescript-go',
-    'openapi 3.1',
+    'openapi 3.2',
     'typescript validation',
     'typescript serialization',
     'runtime validation pipe',

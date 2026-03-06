@@ -7,7 +7,7 @@ tsgonest provides two subcommands: `build` for production compilation and `dev` 
 
 ## tsgonest build
 
-Compiles TypeScript via tsgo, generates companion files, writes the manifest, and produces the OpenAPI document.
+Compiles TypeScript via tsgo, generates companion files, and produces the OpenAPI document.
 
 ```bash
 tsgonest build [flags]
@@ -25,21 +25,6 @@ tsgonest build [flags]
 | `--dump-metadata` | | Dump type metadata JSON to stdout and exit | `false` |
 | `--version` | | Print version and exit | |
 | `--help` | | Print usage and exit | |
-
-### Pipeline
-
-When you run `tsgonest build`, the following steps execute in order:
-
-1. **Resolve config** — Load `tsgonest.config.json` from `--config` or auto-detect in the working directory.
-2. **Parse tsconfig** — Read `tsconfig.json` (or the path given by `--project`) using tsgo's native JSONC parser.
-3. **Create program** — Build a tsgo program (incremental if configured in tsconfig).
-4. **Type-check** — Gather diagnostics. If errors exist and `--no-check` is not set, exit with code 1.
-5. **Emit JavaScript** — Write compiled JS to the output directory.
-6. **Check cache** — If the post-processing cache is valid (source files unchanged), skip steps 7-9.
-7. **Generate companions** — Walk the AST, extract type metadata, generate `*.tsgonest.js` and `*.tsgonest.d.ts` files.
-8. **Write manifest** — Generate `__tsgonest_manifest.json` with companion and route mappings.
-9. **Generate OpenAPI** — Static analysis of NestJS controllers produces `openapi.json`.
-10. **Copy assets** — If `--assets` is set, copy non-TS files to the output directory.
 
 ### Examples
 
@@ -134,6 +119,31 @@ tsgonest dev --project tsconfig.build.json --config tsgonest.config.json
 
 # Don't clear terminal on rebuild
 tsgonest dev --preserveWatchOutput
+```
+
+---
+
+## Path Alias Resolution
+
+tsgonest automatically resolves TypeScript path aliases (`paths` in `tsconfig.json`) in the compiled output. Import statements like `@app/users/user.dto` are rewritten to relative paths in the emitted JavaScript — no additional tooling (like `tsconfig-paths` or `tsc-alias`) required.
+
+```json title="tsconfig.json"
+{
+  "compilerOptions": {
+    "paths": {
+      "@app/*": ["src/*"],
+      "@shared/*": ["src/shared/*"]
+    }
+  }
+}
+```
+
+```ts
+// Source
+import { UserDto } from '@app/users/user.dto';
+
+// Compiled output — path alias resolved automatically
+import { UserDto } from './users/user.dto.js';
 ```
 
 ---

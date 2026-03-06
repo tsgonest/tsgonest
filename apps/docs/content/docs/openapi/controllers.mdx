@@ -62,35 +62,7 @@ export class UsersController {
 
 ## Static analysis limits
 
-tsgonest only uses static analysis. The following patterns are not supported for route extraction:
-
-- Runtime-generated controllers (for example, `@Controller()` classes declared inside factory functions)
-- Dynamic decorator path arguments (for example, `@Controller(prefix)`, `@Get(dynamicPath)`, `@Sse(eventPath)`)
-
-When detected, tsgonest emits a warning during build and excludes those controllers/routes from the OpenAPI output.
-
-```ts
-// Not supported: runtime-generated controller class
-export const makeController = (prefix: string) => {
-  @Controller(prefix)
-  class RuntimeController {
-    @Get('ok')
-    ok() { ... }
-  }
-  return RuntimeController;
-};
-```
-
-```ts
-// Not supported: dynamic path argument
-const dynamicPath = 'active';
-
-@Controller('users')
-export class UsersController {
-  @Get(dynamicPath)
-  findActive() { ... }
-}
-```
+Runtime-generated controllers and dynamic decorator path arguments (e.g., `@Controller(prefix)`, `@Get(dynamicPath)`) are not supported. tsgonest emits a warning and excludes these from OpenAPI output. See [Rules & Limitations](/docs/rules) for full details.
 
 ## Controller Inheritance
 

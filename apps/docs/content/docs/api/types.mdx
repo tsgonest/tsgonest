@@ -1,0 +1,233 @@
+---
+title: "@tsgonest/types"
+description: API reference for the @tsgonest/types package — zero-runtime branded types for validation.
+---
+
+```package-install
+@tsgonest/types
+```
+
+Zero-runtime branded types that the tsgonest compiler reads at build time to generate validation and serialization code. These types produce **no runtime code** — they exist purely for type safety and IDE autocomplete.
+
+```ts
+import { tags } from '@tsgonest/types';
+
+interface CreateUserDto {
+  email: string & tags.Email;
+  name: string & tags.Trim & tags.Min<1> & tags.Max<255>;
+  age: number & tags.Min<0> & tags.Max<150>;
+}
+```
+
+All types are exported under the `tags` namespace.
+
+---
+
+## String Formats
+
+### `Format<F>`
+
+Validates a string against a well-known format.
+
+```ts
+email: string & tags.Format<"email">
+id: string & tags.Format<"uuid">
+```
+
+With custom error:
+
+```ts
+email: string & tags.Format<{ type: "email", error: "Must be a valid email" }>
+```
+
+**Supported formats:**
+
+| Category | Formats |
+| --- | --- |
+| Email | `email`, `idn-email` |
+| URL / URI | `url`, `uri`, `uri-reference`, `uri-template`, `iri`, `iri-reference` |
+| Network | `ipv4`, `ipv6`, `hostname`, `idn-hostname`, `cidrv4`, `cidrv6`, `mac` |
+| Identity | `uuid`, `nanoid`, `cuid`, `cuid2`, `ulid`, `jwt` |
+| Date / Time | `date-time`, `date`, `time`, `duration` |
+| Encoding | `byte`, `base64url`, `hex`, `json-pointer`, `relative-json-pointer` |
+| Other | `regex`, `password`, `emoji` |
+
+**Format aliases** (shorthand for common formats):
+
+| Alias | Equivalent |
+| --- | --- |
+| `Email` | `Format<"email">` |
+| `Uuid` | `Format<"uuid">` |
+| `Url` | `Format<"url">` |
+| `Uri` | `Format<"uri">` |
+| `IPv4` | `Format<"ipv4">` |
+| `IPv6` | `Format<"ipv6">` |
+| `DateTime` | `Format<"date-time">` |
+| `DateOnly` | `Format<"date">` |
+| `Time` | `Format<"time">` |
+| `Duration` | `Format<"duration">` |
+| `Jwt` | `Format<"jwt">` |
+| `Ulid` | `Format<"ulid">` |
+| `Cuid` | `Format<"cuid">` |
+| `Cuid2` | `Format<"cuid2">` |
+| `NanoId` | `Format<"nanoid">` |
+
+---
+
+## String Constraints
+
+| Type | Description | Example |
+| --- | --- | --- |
+| `MinLength<N>` | Minimum string length | `MinLength<1>` |
+| `MaxLength<N>` | Maximum string length | `MaxLength<255>` |
+| `Pattern<P>` | Regex pattern | `Pattern<"^[a-z]+$">` |
+| `StartsWith<S>` | Must start with prefix | `StartsWith<"https://">` |
+| `EndsWith<S>` | Must end with suffix | `EndsWith<".json">` |
+| `Includes<S>` | Must contain substring | `Includes<"@">` |
+| `Uppercase` | Must be all uppercase | `Uppercase` |
+| `Lowercase` | Must be all lowercase | `Lowercase` |
+
+All accept an extended form with custom errors:
+
+```ts
+name: string & tags.MinLength<{ value: 1, error: "Name is required" }>
+```
+
+---
+
+## Numeric Constraints
+
+| Type | Alias | Description | Example |
+| --- | --- | --- | --- |
+| `Minimum<N>` | `Min<N>`, `Gte<N>` | Inclusive minimum (`>=`) | `Min<0>` |
+| `Maximum<N>` | `Max<N>`, `Lte<N>` | Inclusive maximum (`<=`) | `Max<100>` |
+| `ExclusiveMinimum<N>` | `Gt<N>` | Exclusive minimum (`>`) | `Gt<0>` |
+| `ExclusiveMaximum<N>` | `Lt<N>` | Exclusive maximum (`<`) | `Lt<100>` |
+| `MultipleOf<N>` | `Step<N>` | Must be a multiple of N | `Step<0.01>` |
+
+### Numeric Type Constraints
+
+| Type | Description | Range |
+| --- | --- | --- |
+| `Type<"int32">` | 32-bit signed integer | -2,147,483,648 to 2,147,483,647 |
+| `Type<"uint32">` | 32-bit unsigned integer | 0 to 4,294,967,295 |
+| `Type<"int64">` | Safe integer range | -(2^53 - 1) to 2^53 - 1 |
+| `Type<"uint64">` | Unsigned safe integer | 0 to 2^53 - 1 |
+| `Type<"float">` | Finite float | No `Infinity` or `NaN` |
+| `Type<"double">` | Double precision | No `Infinity` or `NaN` |
+
+**Numeric aliases:**
+
+| Alias | Equivalent |
+| --- | --- |
+| `Int` | `Type<"int32">` |
+| `Uint` | `Type<"uint32">` |
+| `SafeInt` | `Type<"int64">` |
+| `Double` | `Type<"double">` |
+| `Finite` | `Type<"float">` |
+| `Positive` | `ExclusiveMinimum<0>` |
+| `Negative` | `ExclusiveMaximum<0>` |
+| `NonNegative` | `Minimum<0>` |
+| `NonPositive` | `Maximum<0>` |
+
+---
+
+## Array Constraints
+
+| Type | Alias | Description | Example |
+| --- | --- | --- | --- |
+| `MinItems<N>` | | Minimum array length | `MinItems<1>` |
+| `MaxItems<N>` | | Maximum array length | `MaxItems<100>` |
+| `UniqueItems` | `Unique` | All items must be unique | `UniqueItems` |
+
+---
+
+## Transforms
+
+Applied **before** validation. Never fail.
+
+| Type | Description |
+| --- | --- |
+| `Trim` | Trim leading/trailing whitespace |
+| `ToLowerCase` | Convert to lowercase |
+| `ToUpperCase` | Convert to uppercase |
+
+```ts
+email: string & tags.Trim & tags.ToLowerCase & tags.Email
+```
+
+---
+
+## Coercion
+
+### `Coerce`
+
+Coerces string inputs to the declared type before validation. Useful for query parameters where everything arrives as a string.
+
+```ts
+interface FilterDto {
+  page: number & tags.Coerce;     // "42" → 42
+  active: boolean & tags.Coerce;  // "true" → true
+}
+```
+
+---
+
+## Custom Validators
+
+### `Validate<F>`
+
+Validate using a custom predicate function. tsgonest resolves the function's source file and emits an import in the generated validator.
+
+```ts
+import { isValidCard } from './validators/credit-card';
+
+interface PaymentDto {
+  card: string & tags.Validate<typeof isValidCard>;
+}
+
+// With custom error:
+interface StrictPaymentDto {
+  card: string & tags.Validate<{ fn: typeof isValidCard, error: "Invalid card number" }>;
+}
+```
+
+---
+
+## Meta Types
+
+### `Default<V>`
+
+Default value for optional properties. Assigned when value is `undefined`.
+
+```ts
+theme?: string & tags.Default<"light">
+limit?: number & tags.Default<20>
+```
+
+### `Error<M>`
+
+Global error message for all validation failures on a property. Per-constraint errors take precedence.
+
+```ts
+email: string & tags.Email & tags.Error<"Invalid email address">
+```
+
+---
+
+## Compound Types
+
+| Type | Description | Equivalent |
+| --- | --- | --- |
+| `Length<N>` | Exact string length | `MinLength<N> & MaxLength<N>` |
+| `Range<{min, max}>` | Numeric range (inclusive) | `Minimum<min> & Maximum<max>` |
+| `Between<{min, max}>` | String length range | `MinLength<min> & MaxLength<max>` |
+
+```ts
+code: string & tags.Length<2>
+score: number & tags.Range<{ min: 0, max: 100 }>
+name: string & tags.Between<{ min: 1, max: 255 }>
+
+// With custom error:
+score: number & tags.Range<{ min: 0, max: 100, error: "Score out of range" }>
+```

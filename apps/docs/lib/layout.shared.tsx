@@ -18,7 +18,7 @@ export const docsTabs: SidebarTabWithProps[] = [
   {
     title: 'CLI',
     url: '/docs/cli',
-    urls: new Set(['/docs/cli']),
+    urls: new Set(['/docs/cli', '/docs/cli/migrate', '/docs/cli/sdk']),
   },
   {
     title: 'Config',
@@ -58,6 +58,15 @@ export const docsTabs: SidebarTabWithProps[] = [
     ]),
   },
   {
+    title: 'API Reference',
+    url: '/docs/api',
+    urls: new Set([
+      '/docs/api',
+      '/docs/api/runtime',
+      '/docs/api/types',
+    ]),
+  },
+  {
     title: 'Comparisons',
     url: '/docs/comparisons/vs-nestjs-cli',
     urls: new Set([
@@ -65,6 +74,21 @@ export const docsTabs: SidebarTabWithProps[] = [
       '/docs/comparisons/vs-nestia-typia',
       '/docs/comparisons/vs-tsgo',
     ]),
+  },
+  {
+    title: 'Migration',
+    url: '/docs/migration',
+    urls: new Set([
+      '/docs/migration',
+      '/docs/migration/class-validator',
+      '/docs/migration/nestia-typia',
+      '/docs/migration/post-migration',
+    ]),
+  },
+  {
+    title: 'Rules',
+    url: '/docs/rules',
+    urls: new Set(['/docs/rules']),
   },
 ];
 

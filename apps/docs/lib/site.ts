@@ -8,7 +8,7 @@ export const siteConfig = {
   name: 'tsgonest docs',
   title: 'tsgonest documentation',
   description:
-    'Documentation for tsgonest: a tsgo-powered TypeScript compiler wrapper with generated validation, serialization, and OpenAPI 3.1 output for NestJS projects.',
+    'Native-speed TypeScript compilation with generated validation, serialization, and OpenAPI 3.2 for NestJS.',
   url: normalizeUrl(process.env.NEXT_PUBLIC_SITE_URL || defaultUrl),
   locale: 'en_US',
 };

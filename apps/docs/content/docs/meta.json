@@ -8,6 +8,7 @@
     "validation",
     "serialization-runtime",
     "openapi",
+    "api",
     "rules",
     "migration",
     "---",

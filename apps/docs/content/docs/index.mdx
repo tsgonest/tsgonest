@@ -3,13 +3,13 @@ title: Overview
 description: Native-speed TypeScript compilation with generated validation, serialization, and OpenAPI for NestJS.
 ---
 
-**tsgonest** is a production-ready Go CLI that wraps Microsoft's [typescript-go](https://github.com/microsoft/typescript-go) (`tsgo`) and augments it with everything a NestJS backend needs — generated validators, fast JSON serializers, and OpenAPI 3.2 documentation — all from static analysis of your existing TypeScript types.
+**tsgonest** is a drop-in replacement for the NestJS build toolchain. It compiles your TypeScript via [typescript-go](https://github.com/microsoft/typescript-go), generates runtime validators and fast JSON serializers from your types, and produces an OpenAPI 3.2 document — all in a single `tsgonest build` command.
 
 ## Why tsgonest?
 
-NestJS projects typically rely on a fragile stack of runtime libraries — `class-validator`, `class-transformer`, `@nestjs/swagger` — each requiring its own set of decorators, runtime reflection, and manual synchronization. Types defined once in TypeScript get re-declared three or four times across these layers.
+NestJS projects typically rely on a stack of runtime libraries — `class-validator`, `class-transformer`, `@nestjs/swagger` — each with its own decorators and manual synchronization. Types defined once in TypeScript get re-declared across these layers.
 
-tsgonest eliminates that redundancy. You write **plain TypeScript types** and tsgonest generates everything else at compile time:
+tsgonest eliminates that. Write **plain TypeScript types** and everything else is generated at compile time:
 
 ```ts title="src/user/user.dto.ts"
 import { Min, Max, Email, Trim } from '@tsgonest/types';
@@ -19,121 +19,29 @@ export interface CreateUserDto {
   email: string & Email;
   age: number & Min<0> & Max<150>;
 }
-
-export interface UserResponse {
-  id: string;
-  name: string;
-  email: string;
-  age: number;
-  createdAt: string;
-}
 ```
 
 Run `tsgonest build` and you get:
 
-- Compiled JavaScript (via tsgo, 10x faster than `tsc`)
-- `*.tsgonest.js` companion files with `validate`, `assert`, and `serialize` functions
-- Controller JS with injected validation and serialization (zero runtime setup)
-- A complete OpenAPI 3.2 document from your NestJS controllers
+- Compiled JavaScript (~10x faster than `tsc`)
+- Companion files with `validate`, `assert`, and `serialize` functions
+- Controllers with injected validation and serialization (zero runtime setup)
+- A complete OpenAPI 3.2 document
 
 No decorators on every property. No `reflect-metadata`. No runtime overhead.
 
 ## What it replaces
 
-tsgonest replaces several tools in a typical NestJS stack:
-
-| Concern | Traditional NestJS | tsgonest |
+| Concern | Before | After |
 | --- | --- | --- |
-| **Compilation** | `tsc` or `nest build` | `tsgonest build` (powered by tsgo) |
+| **Compilation** | `tsc` or `nest build` | `tsgonest build` |
 | **Watch mode** | `nest start --watch` | `tsgonest dev` |
-| **Validation** | `class-validator` + `class-transformer` | Generated companion validators |
-| **Serialization** | `class-transformer` + `ClassSerializerInterceptor` | Generated fast JSON serializers |
+| **Validation** | `class-validator` + `class-transformer` | Generated from types |
+| **Serialization** | `class-transformer` + interceptors | Generated fast JSON serializers |
 | **OpenAPI docs** | `@nestjs/swagger` + decorators | Static analysis, zero decorators |
-| **Type safety** | Runtime decorators (can diverge from types) | Types **are** the source of truth |
-
-## Compilation pipeline
-
-Every `tsgonest build` runs through this pipeline:
-
-```text
-1. Parse CLI args + tsgonest.config.ts
-2. Create tsgo program from tsconfig.json
-3. Type-check and emit JavaScript
-4. Walk AST with type checker -> extract type metadata
-5. Generate companion files (*.tsgonest.js + *.tsgonest.d.ts)
-6. Inject validation/serialization into controller JS
-7. Generate openapi.json from NestJS controllers
-```
-
-Steps 4-7 are cached — if your source files haven't changed, companions are not regenerated.
-
-## Output artifacts
-
-Given a project with `src/user/user.dto.ts` and `src/user/user.controller.ts`, tsgonest produces:
-
-```text
-dist/
-  user/
-    user.dto.js                             # tsgo output
-    user.dto.CreateUserDto.tsgonest.js      # companion: validate + assert + serialize + schema
-    user.dto.CreateUserDto.tsgonest.d.ts    # companion type declarations
-    user.dto.UserResponse.tsgonest.js       # companion for response type
-    user.dto.UserResponse.tsgonest.d.ts
-    user.controller.js                      # tsgo output with injected validation/serialization
-    user.module.js
-  openapi.json                              # OpenAPI 3.2 document
-```
-
-Each companion file exports three functions:
-
-```ts
-// dist/user/user.dto.CreateUserDto.tsgonest.js
-
-export function validateCreateUserDto(input);  // returns { success, data?, errors? }
-export function assertCreateUserDto(input);    // throws on failure, returns validated data
-export function serializeCreateUserDto(input); // fast JSON string
-```
-
-## Performance
-
-### Benchmarks
-
-Measured on Apple Silicon, Node.js 25 ([source](https://github.com/user/tsgonest/tree/main/benchmarks)):
-
-| Metric | Result |
-| --- | --- |
-| **Validation** vs class-validator | **25-84x faster** |
-| **Serialization** vs JSON.stringify | **~1.4x faster** (simple DTOs) |
-| **Compilation** vs tsc | **~4x faster** (full pipeline including companions + OpenAPI) |
-
-### Real-world scale
-
-tsgonest has been tested on **ecom-bot** — a production NestJS project with:
-
-- 120 controllers
-- 838 routes
-- 2,376 companion files generated
-
-| Metric | Result |
-| --- | --- |
-| Cold build | ~19 seconds |
-| Warm build (cached) | ~1.1 seconds |
-| Go unit tests | 560+ passing |
-| E2E tests | 101 passing |
-
-## Packages
-
-tsgonest ships as three npm packages:
-
-| Package | Description |
-| --- | --- |
-| [`tsgonest`](https://www.npmjs.com/package/tsgonest) | The CLI binary — installs the correct platform binary automatically |
-| [`@tsgonest/runtime`](https://www.npmjs.com/package/@tsgonest/runtime) | `defineConfig` helper and `TsgonestValidationError` |
-| [`@tsgonest/types`](https://www.npmjs.com/package/@tsgonest/types) | Zero-runtime branded phantom types for type-safe constraints |
+| **Type safety** | Runtime decorators (can diverge) | Types **are** the source of truth |
 
 ## Two ways to define constraints
-
-tsgonest supports **two approaches** to defining validation constraints — use whichever fits your team:
 
 ### JSDoc tags (zero dependencies)
 
@@ -162,7 +70,25 @@ export interface CreateUserDto {
 }
 ```
 
-Both approaches generate identical companion code. The branded types approach gives you IDE autocomplete and compile-time type checking of your constraints.
+Both approaches generate identical code. Branded types give you IDE autocomplete and compile-time checking of constraints.
+
+## Performance
+
+Measured on Apple Silicon, Node.js 25:
+
+| Metric | Result |
+| --- | --- |
+| **Validation** vs class-validator | **25-84x faster** |
+| **Serialization** vs JSON.stringify | **~1.4x faster** (simple DTOs) |
+| **Compilation** vs tsc | **~4x faster** (full pipeline including companions + OpenAPI) |
+
+## Packages
+
+| Package | Description |
+| --- | --- |
+| [`tsgonest`](https://www.npmjs.com/package/tsgonest) | The CLI — installs the correct platform binary automatically |
+| [`@tsgonest/runtime`](https://www.npmjs.com/package/@tsgonest/runtime) | `defineConfig` helper and `TsgonestValidationError` |
+| [`@tsgonest/types`](https://www.npmjs.com/package/@tsgonest/types) | Zero-runtime branded phantom types for type-safe constraints |
 
 ## Next steps
 

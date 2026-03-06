@@ -38,9 +38,7 @@ function ValidatedBody() {
 create(@ValidatedBody() dto: CreateUserDto) { ... }
 ```
 
-tsgonest resolves decorator identity through the type checker's symbol resolution. It asks "what symbol does this decorator reference?" and checks if that symbol is one of the known NestJS decorators. A factory function returns a **new** function — the link to `Body` is severed.
-
-**Import aliases ARE supported.** This works because tsgonest resolves the original symbol:
+**Import aliases ARE supported:**
 
 ```ts
 import { Body as NestBody } from '@nestjs/common';
@@ -93,11 +91,9 @@ This is intentional. An OpenAPI document is a **static contract** — it describ
 
 ## Generic Types in OpenAPI
 
-OpenAPI 3.2 has no concept of generics. tsgonest flattens every generic instantiation into a concrete schema.
+OpenAPI 3.2 has no concept of generics. tsgonest flattens every generic instantiation into a concrete schema. `PaginatedResponse<UserDto>` becomes **`PaginatedResponse_UserDto`** with all properties materialized. Flat schemas work with every OpenAPI tool (Swagger UI, Redocly, SDK generators).
 
-`PaginatedResponse<UserDto>` becomes a flat schema named **`PaginatedResponse_UserDto`** with all properties materialized — no `x-` extensions, no type parameter reconstruction. This is deliberate: flat schemas work with every OpenAPI tool (Swagger UI, Redocly, third-party SDK generators).
-
-**Unnamed type arguments are inlined.** If a generic type argument can't be named — for example `Wrapper<{ x: number }>` — the schema is inlined directly and a warning is emitted telling you to create a named type alias. tsgonest will **never** generate opaque names like `T12345`. If it can't name a type cleanly, it inlines it.
+If a generic type argument can't be named (e.g., `Wrapper<{ x: number }>`), the schema is inlined and a warning suggests creating a named type alias.
 
 **Pre-registered type aliases win.** If you write:
 

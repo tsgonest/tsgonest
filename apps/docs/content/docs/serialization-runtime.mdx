@@ -3,106 +3,52 @@ title: Serialization & Runtime
 description: Fast JSON serializers and compile-time NestJS integration.
 ---
 
-tsgonest generates fast, schema-aware JSON serializers alongside validators. Serialization is injected at compile time — the controller rewriter wraps return statements with `transformTypeName()` calls, so no runtime interceptors or pipes are needed.
+tsgonest generates fast, schema-aware JSON serializers alongside validators. Serialization is injected at compile time — no runtime interceptors or pipes needed.
 
-## Generated serializers
+## How it works
 
-When `transforms.serialization` is enabled, each companion file includes a `serialize*` function that converts a typed object to a JSON string using **string concatenation with known property names** — faster than `JSON.stringify` for typical API payloads:
+When `transforms.serialization` is enabled, each companion file includes a `serialize*` function that converts a typed object to a JSON string using **string concatenation with known property names** — faster than `JSON.stringify` for typical API payloads.
 
-```js
-// Generated in dist/user.dto.UserResponse.tsgonest.js
-function __s(s) {
-  for (var i = 0; i < s.length; i++) {
-    var c = s.charCodeAt(i);
-    if (c < 32 || c === 34 || c === 92 || c === 0x2028 || c === 0x2029) return JSON.stringify(s);
-  }
-  return '"' + s + '"';
-}
-
-export function serializeUserResponse(input) {
-  return '{"id":' + __s(input.id)
-    + ',"name":' + __s(input.name)
-    + ',"email":' + __s(input.email)
-    + ',"age":' + input.age
-    + ',"createdAt":' + __s(input.createdAt) + '}';
-}
-```
-
-### Why it's faster
-
-`JSON.stringify` must:
-1. Detect the type of every value at runtime
-2. Enumerate all object keys dynamically
-3. Handle circular references, `toJSON()`, replacer functions
-
-tsgonest serializers skip all of that — they know the exact shape at build time and generate direct string concatenation. This is the same technique used by [fast-json-stringify](https://github.com/fastify/fast-json-stringify).
-
-The `__s()` helper scans each character's charCode — if any control character (below 32), double-quote (34), backslash (92), or LINE/PARAGRAPH SEPARATOR (U+2028/U+2029) is found, it falls back to `JSON.stringify`. Otherwise it wraps the string directly in quotes. Most strings in API responses contain no special characters, so the fast path avoids `JSON.stringify` entirely.
+The generated serializers know the exact shape of your types at build time, so they skip the runtime overhead of key enumeration, type detection, and circular reference handling.
 
 ### Performance
 
 Benchmarked on Apple Silicon, Node.js 25:
 
-| Scenario | tsgonest | JSON.stringify | Speedup |
-| --- | --- | --- | --- |
-| Simple DTO (5 fields, clean strings) | 13.2M ops/s | 9.8M ops/s | **1.4x** |
-| Simple DTO (strings needing escaping) | 7.1M ops/s | 7.4M ops/s | ~1x |
-| Complex DTO (nested + 2-item array) | 1.5M ops/s | 2.4M ops/s | ~0.6x |
-| Complex DTO (nested + 10-item array) | 496K ops/s | 470K ops/s | ~1x |
+| Scenario | Speedup vs JSON.stringify |
+| --- | --- |
+| Simple DTO (5 fields, clean strings) | **~1.4x faster** |
+| Complex DTO (nested + arrays) | **~1x** (comparable) |
+| **Validation** vs class-validator | **25-84x faster** |
 
-tsgonest serialization wins on simple, flat objects (the vast majority of API DTOs). For deeply nested objects with many optional fields, V8's native `JSON.stringify` implementation is highly optimized and can be faster.
+Serialization wins on simple, flat objects — the vast majority of API DTOs. For deeply nested objects, V8's native `JSON.stringify` is highly optimized and performs comparably.
 
 ### Supported types
 
-| Type | Serialization strategy |
+| Type | Strategy |
 | --- | --- |
-| `string` | `__s()` charCode scan (avoids JSON.stringify when no special chars) |
-| `number`, `bigint` | Direct concatenation |
-| `boolean` | `"true"` / `"false"` |
-| `null` | `"null"` |
+| `string` | Fast-path scan, falls back to `JSON.stringify` only when special characters are found |
+| `number`, `bigint`, `boolean`, `null` | Direct concatenation |
 | Objects | Property-by-property concatenation |
-| Arrays | For-loop string accumulation (no intermediate array allocation) |
+| Arrays | Loop-based string accumulation |
 | Tuples | Element-by-element serialization |
-| Enums | Value serialization |
-| Optionals | String accumulation with separator flag (no parts array) |
-| Discriminated unions | O(1) switch on discriminant property, per-branch serialization |
-| Literal unions | Direct `__s()` for all-string; typeof dispatch for mixed |
-| Nullable unions | Null check + inner serialization |
-| Atomic unions | typeof chain (string/number/boolean) |
-| Complex unions | Falls back to `JSON.stringify` |
+| Optionals | Conditional inclusion with separator tracking |
+| Discriminated unions | O(1) switch on discriminant, per-branch serialization |
 | Nested objects | Recursive serialization calls |
-
-### Optional property handling
-
-For objects with optional properties, the serializer uses string accumulation with a separator flag — avoiding array allocation entirely:
-
-```js
-// Generated for { name?: string; email?: string; age?: number }
-export function serializeUpdateUserDto(input) {
-  return (function() {
-    var _r = "{", _c = "";
-    if (input.name !== undefined) { _r += _c + '"name":' + __s(input.name); _c = ","; }
-    if (input.email !== undefined) { _r += _c + '"email":' + __s(input.email); _c = ","; }
-    if (input.age !== undefined) { _r += _c + '"age":' + input.age; _c = ","; }
-    return _r + "}";
-  })();
-}
-```
+| Complex unions | Falls back to `JSON.stringify` |
 
 ---
 
 ## Compile-time NestJS integration
 
-tsgonest injects validation and serialization directly into your controller JavaScript at build time. No runtime pipes, interceptors, or manifest files are needed.
+tsgonest injects validation and serialization directly into your controller JavaScript at build time. No runtime pipes, interceptors, or configuration needed.
 
-### How it works
+### What gets injected
 
-During `tsgonest build`, the controller rewriter:
+1. **Validation**: `@Body()`, `@Query()`, `@Param()`, and `@Headers()` parameters are wrapped with `assert*()` calls. Individual `@Query('name')` and `@Param('name')` scalars get inline coercion (string to number/boolean).
+2. **Serialization**: Return values are wrapped with serializer calls that use the generated fast serializers.
 
-1. **Validation**: Wraps `@Body()`, `@Query()`, `@Param()`, and `@Headers()` parameters with `assertTypeName()` calls from the generated companion files. Individual scalar `@Query('name')` and `@Param('name')` parameters get inline coercion (string to number/boolean).
-2. **Serialization**: Wraps return statements with `transformTypeName()` calls that use the generated serializers. Non-async methods that return Promises are automatically made `async` so the value is `await`ed before serialization.
-
-```ts title="src/user/user.controller.ts (source)"
+```ts title="src/user/user.controller.ts (your source)"
 @Controller('users')
 export class UserController {
   @Post()
@@ -118,25 +64,24 @@ export class UserController {
 ```
 
 ```js title="dist/user/user.controller.js (compiled output)"
-// tsgonest injects imports from companion files
 import { assertCreateUserDto } from './user.dto.CreateUserDto.tsgonest.js';
 import { serializeUserResponse } from './user.dto.UserResponse.tsgonest.js';
 
 class UserController {
   create(dto) {
-    dto = assertCreateUserDto(dto); // injected validation
-    return serializeUserResponse(this.userService.create(dto)); // injected serialization
+    dto = assertCreateUserDto(dto);
+    return serializeUserResponse(this.userService.create(dto));
   }
 
   findAll() {
-    return this.userService.findAll().map(serializeUserResponse); // array serialization
+    return this.userService.findAll().map(serializeUserResponse);
   }
 }
 ```
 
 ### Zero runtime setup
 
-Your `main.ts` stays clean — no pipes, no interceptors:
+Your `main.ts` stays clean:
 
 ```ts title="src/main.ts"
 import { NestFactory } from '@nestjs/core';
@@ -151,13 +96,13 @@ bootstrap();
 
 ### Array responses
 
-Array responses are handled automatically. When the controller method returns an array type (e.g., `UserResponse[]`), the rewriter wraps the return with `.map(serializeTypeName)` instead of a single `serializeTypeName()` call.
+Array responses are handled automatically. When the return type is `T[]`, the serializer wraps the return with `.map(serialize*)` instead of a single call.
 
 ---
 
 ## @tsgonest/runtime
 
-The `@tsgonest/runtime` package provides configuration helpers and error types. Install it as part of the `tsgonest` package:
+The `@tsgonest/runtime` package provides configuration helpers and error types:
 
 ```package-install
 tsgonest
@@ -184,7 +129,7 @@ import {
   EventStream,          // @EventStream() method decorator
   SseEvent,             // SseEvent<E, T> typed event interface (type-only)
   SseEvents,            // SseEvents<M> discriminated union helper (type-only)
-  TsgonestSseInterceptor, // Iterator → Observable bridge (auto-injected)
+  TsgonestSseInterceptor, // Iterator -> Observable bridge (auto-injected)
 } from '@tsgonest/runtime';
 ```
 
@@ -192,25 +137,19 @@ import {
 
 ## TsgonestValidationError
 
-When validation fails, the injected `assertTypeName()` call throws a `TsgonestValidationError`:
+When validation fails, the injected `assert*()` call throws a `TsgonestValidationError`:
 
 ```ts
 import { TsgonestValidationError } from '@tsgonest/runtime';
 
-// Structure:
 interface ValidationErrorDetail {
   path: string;      // e.g., "input.email"
   expected: string;  // e.g., "string (email)"
   received: string;  // e.g., "number"
 }
-
-// Error message format:
-// "Validation failed: 2 error(s)
-//   - input.name: expected string, received number
-//   - input.age: expected number, received string"
 ```
 
-NestJS catches the thrown error and returns a 400 Bad Request response with structured error details:
+NestJS catches the thrown error and returns a 400 Bad Request response:
 
 ```json
 {

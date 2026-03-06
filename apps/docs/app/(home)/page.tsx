@@ -52,7 +52,7 @@ const coreFeatures = [
     label: 'CLI Reference',
     title: 'Full CLI reference',
     description:
-      'Every flag for `tsgonest build` and `tsgonest dev`, the operational pipeline, exit codes, and usage examples.',
+      'Every flag for `tsgonest build` and `tsgonest dev`, exit codes, and usage examples.',
     icon: (
       <svg
         xmlns="http://www.w3.org/2000/svg"
@@ -109,7 +109,7 @@ const deepDiveFeatures = [
     label: 'Serialization',
     title: 'Serialization & runtime',
     description:
-      'Fast generated serializers (~1.4x faster than JSON.stringify), 25-84x faster validation than class-validator, manifest-driven discovery, ValidationPipe, and FastInterceptor.',
+      'Fast generated serializers (~1.4x faster than JSON.stringify), 25-84x faster validation than class-validator, and zero-config NestJS integration.',
     accent: 'text-sky-600 bg-sky-50 dark:bg-sky-950/40 dark:text-sky-400',
   },
   {
@@ -144,7 +144,7 @@ const comparisonFeatures = [
     label: 'vs tsgo',
     title: 'tsgonest vs tsgo',
     description:
-      'What tsgonest adds on top of Microsoft\'s typescript-go compiler: companions, manifest, OpenAPI, and dev mode.',
+      'What tsgonest adds on top of Microsoft\'s typescript-go compiler: validation, serialization, OpenAPI, and dev mode.',
     accent: 'text-blue-600 bg-blue-50 dark:bg-blue-950/40 dark:text-blue-400',
   },
 ];
@@ -302,42 +302,17 @@ export default function HomePage() {
         </div>
       </section>
 
-      {/* -- Compilation pipeline callout ----------------------------------- */}
-      <section className="rounded-square border border-[var(--color-stroke-neutral)] bg-[var(--color-background-neutral-weak)] p-6 md:p-8">
-        <h2 className="mb-2 text-lg font-semibold tracking-tight">
-          Compilation pipeline
-        </h2>
-        <p className="mb-6 text-sm leading-relaxed text-fd-muted-foreground">
-          tsgonest wraps{' '}
-          <a
-            href="https://github.com/microsoft/typescript-go"
-            rel="noreferrer noopener"
-            target="_blank"
-            className="font-medium text-[var(--primary)] hover:underline"
-          >
-            typescript-go
-          </a>{' '}
-          (tsgo) and runs a full static analysis pass before emitting companion files.
+      {/* -- Sponsor placeholder --------------------------------------------- */}
+      {/* Uncomment and replace with your sponsor content when ready:
+      <section className="rounded-square border border-dashed border-[var(--color-stroke-neutral)] bg-[var(--color-background-neutral-weak)] p-6 md:p-8 text-center">
+        <p className="text-sm text-fd-muted-foreground">
+          Your logo here —{' '}
+          <a href="https://github.com/sponsors/tsgonest" className="font-medium text-[var(--primary)] hover:underline">
+            become a sponsor
+          </a>
         </p>
-        <ol className="flex flex-col gap-2 text-sm">
-          {[
-            'Parse CLI args + tsgonest.config.ts',
-            'Create tsgo program from tsconfig',
-            'Type-check and emit JavaScript',
-            'Walk AST with type checker \u2192 extract type metadata',
-            'Generate *.tsgonest.js + *.tsgonest.d.ts companions',
-            'Write __tsgonest_manifest.json',
-            'Generate openapi.json from NestJS controllers',
-          ].map((step, i) => (
-            <li key={i} className="flex items-start gap-3">
-              <span className="mt-px flex size-5 shrink-0 items-center justify-center rounded-full bg-[var(--primary)] text-[10px] font-bold text-white">
-                {i + 1}
-              </span>
-              <span className="text-fd-foreground">{step}</span>
-            </li>
-          ))}
-        </ol>
       </section>
+      */}
     </main>
   );
 }

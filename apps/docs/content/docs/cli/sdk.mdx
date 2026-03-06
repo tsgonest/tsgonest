@@ -1,0 +1,242 @@
+---
+title: tsgonest sdk
+description: Generate a fully-typed TypeScript SDK client from your OpenAPI spec.
+---
+
+`tsgonest sdk` reads your generated OpenAPI document and produces a **zero-dependency, fully-typed TypeScript SDK** that mirrors your NestJS controllers. Each controller becomes a class with typed methods for every route.
+
+## Usage
+
+```bash
+# Generate SDK from OpenAPI spec
+tsgonest sdk --input dist/openapi.json
+
+# Custom output directory
+tsgonest sdk --input dist/openapi.json --output ./client
+
+# Uses config defaults (sdk.input falls back to openapi.output)
+tsgonest sdk
+```
+
+## Flags
+
+| Flag | Description | Default |
+| --- | --- | --- |
+| `--input <path>` | Path to OpenAPI JSON file | From config: `sdk.input` or `openapi.output` |
+| `--output <path>` | Output directory for generated SDK | From config: `sdk.output` or `./sdk` |
+| `--config <path>` | Path to tsgonest config file | auto-detect |
+
+## Config
+
+Configure SDK generation in `tsgonest.config.ts`:
+
+```ts title="tsgonest.config.ts"
+import { defineConfig } from '@tsgonest/runtime';
+
+export default defineConfig({
+  openapi: {
+    output: 'dist/openapi.json',
+    title: 'My API',
+    version: '1.0.0',
+  },
+  sdk: {
+    output: './sdk',          // Output directory (default: "./sdk")
+    input: 'dist/openapi.json', // Defaults to openapi.output if omitted
+  },
+});
+```
+
+---
+
+## Generated Output
+
+```text
+sdk/
+  client.ts          # Core HTTP client, types (SDKResult, ClientConfig, etc.)
+  types.ts           # All shared TypeScript types from OpenAPI schemas
+  sse.ts             # SSE connection helper (tree-shakeable)
+  form-data.ts       # FormData builder helper (tree-shakeable)
+  index.ts           # Barrel export
+  users/
+    index.ts         # UsersController methods
+  orders/
+    index.ts         # OrdersController methods
+```
+
+Each controller gets its own directory for clean imports and tree-shaking.
+
+---
+
+## Client Setup
+
+```ts
+import { createClient } from './sdk';
+
+const api = createClient({
+  baseUrl: 'http://localhost:3000',
+});
+
+// Fully typed — params, query, body, and response
+const { data, error } = await api.users.findOne({ params: { id: '123' } });
+if (error) {
+  console.error(error.message);
+} else {
+  console.log(data.name); // typed as UserDto
+}
+```
+
+### `ClientConfig`
+
+| Property | Type | Description |
+| --- | --- | --- |
+| `baseUrl` | `string` | Base URL for all requests |
+| `headers` | `Record<string, string> \| () => Record<string, string>` | Static or dynamic headers (e.g., auth tokens) |
+| `fetcher` | `(url, init) => Promise<Response>` | Custom fetch implementation (default: `fetch`) |
+| `timeout` | `number` | Request timeout in milliseconds |
+| `throwOnError` | `boolean` | Throw on non-2xx responses instead of returning `{ error }` |
+| `onRequest` | `(url, init) => RequestInit` | Hook to modify requests before sending |
+| `onResponse` | `(response, context) => Response \| void` | Hook called on every response |
+| `onError` | `(error, context) => SDKError \| void` | Hook called on error responses |
+
+---
+
+## Result Type
+
+Every SDK method returns `SDKResult<T>`:
+
+```ts
+type SDKResult<T> =
+  | { data: T; error: null; response: Response }
+  | { data: null; error: SDKError; response: Response };
+```
+
+This pattern provides type-safe error handling without try/catch:
+
+```ts
+const result = await api.orders.create({ body: { item: 'widget', quantity: 3 } });
+
+if (result.error) {
+  // result.error is SDKError { status, message, body? }
+  console.error(`${result.error.status}: ${result.error.message}`);
+} else {
+  // result.data is typed as OrderDto
+  console.log(result.data.id);
+}
+```
+
+Or with `throwOnError: true`:
+
+```ts
+const api = createClient({ baseUrl: '...', throwOnError: true });
+
+try {
+  const { data } = await api.orders.findOne({ params: { id: '1' } });
+  console.log(data.id); // typed
+} catch (err) {
+  // err is SDKError
+}
+```
+
+---
+
+## Features
+
+### Path, Query, and Header Parameters
+
+Parameters are fully typed based on your controller signatures:
+
+```ts
+// GET /users/:id — path params
+await api.users.findOne({ params: { id: '123' } });
+
+// GET /users?page=1&limit=10 — query params
+await api.users.findAll({ query: { page: 1, limit: 10 } });
+
+// Custom headers
+await api.users.findAll({ headers: { 'x-api-key': 'abc' } });
+```
+
+### Request Bodies
+
+```ts
+// POST /users — JSON body
+await api.users.create({
+  body: { name: 'Alice', email: 'alice@example.com' },
+});
+```
+
+### SSE (Server-Sent Events)
+
+SSE endpoints return a typed `SSEConnection`:
+
+```ts
+const { data: response } = await api.orders.events({ params: { id: '123' } });
+const sse = new SSEConnection(response);
+
+for await (const event of sse) {
+  // event.event is typed ('created' | 'shipped' | 'cancelled')
+  // event.data is typed per event name
+  console.log(event.event, event.data);
+}
+```
+
+### FormData / File Uploads
+
+Multipart endpoints use the generated `buildFormData` helper:
+
+```ts
+await api.uploads.create({
+  body: buildFormData({ file: myFile, description: 'Photo' }),
+});
+```
+
+### Abort Signals
+
+```ts
+const controller = new AbortController();
+
+await api.users.findAll({
+  query: { page: 1 },
+  signal: controller.signal,
+});
+
+// Cancel the request
+controller.abort();
+```
+
+### API Versioning
+
+If your API uses URI versioning, the SDK groups controllers by version:
+
+```ts
+// Versioned API
+await api.v1.users.findAll();
+await api.v2.users.findAll();
+```
+
+The `globalPrefix` and `versionPrefix` from your tsgonest config are automatically stripped from paths so the SDK method signatures stay clean.
+
+---
+
+## Workflow
+
+The recommended workflow is to run `tsgonest sdk` after `tsgonest build`:
+
+```json title="package.json"
+{
+  "scripts": {
+    "build": "tsgonest build",
+    "sdk": "tsgonest sdk",
+    "build:all": "tsgonest build && tsgonest sdk"
+  }
+}
+```
+
+Or configure both `openapi.output` and `sdk.output` in your config, then:
+
+```bash
+tsgonest build    # Compiles + generates openapi.json
+tsgonest sdk      # Reads openapi.json → generates sdk/
+```
+
+The SDK is plain TypeScript with no runtime dependencies — copy it into a frontend project, publish it as an internal package, or commit it to a monorepo.

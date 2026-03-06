@@ -1,0 +1,245 @@
+---
+title: "@tsgonest/runtime"
+description: API reference for the @tsgonest/runtime package — config, errors, decorators, and interceptors.
+---
+
+```package-install
+@tsgonest/runtime
+```
+
+The runtime package provides configuration helpers, error types, and decorators used alongside the tsgonest CLI.
+
+## Config
+
+### `defineConfig(config)`
+
+Type-safe config helper for `tsgonest.config.ts`. Provides autocomplete and validation.
+
+```ts
+import { defineConfig } from '@tsgonest/runtime';
+
+export default defineConfig({
+  controllers: { include: ['src/**/*.controller.ts'] },
+  transforms: { validation: true, serialization: true },
+  openapi: { output: 'dist/openapi.json' },
+});
+```
+
+**Parameters:**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `config` | `TsgonestConfig` | Configuration object |
+
+**Returns:** `TsgonestConfig`
+
+### `TsgonestConfig`
+
+Full configuration interface. See the [Configuration](/docs/config) page for field reference.
+
+```ts
+import type { TsgonestConfig } from '@tsgonest/runtime';
+```
+
+<AutoTypeTable path="../../packages/runtime/src/config.ts" name="TsgonestConfig" />
+
+---
+
+## Errors
+
+### `TsgonestValidationError`
+
+Thrown by generated `assert*()` functions when validation fails. Extends `Error`.
+
+```ts
+import { TsgonestValidationError } from '@tsgonest/runtime';
+```
+
+**Properties:**
+
+| Property | Type | Description |
+| --- | --- | --- |
+| `errors` | `ValidationErrorDetail[]` | Structured error details for each invalid field |
+| `status` | `number \| undefined` | Optional HTTP status code |
+| `message` | `string` | Human-readable summary of all errors |
+
+**Example response (caught by NestJS):**
+
+```json
+{
+  "statusCode": 400,
+  "message": "Validation failed",
+  "errors": [
+    {
+      "property": "input.email",
+      "constraints": {
+        "tsgonest": "expected string (email), received string"
+      }
+    }
+  ]
+}
+```
+
+### `ValidationErrorDetail`
+
+```ts
+import type { ValidationErrorDetail } from '@tsgonest/runtime';
+```
+
+<AutoTypeTable path="../../packages/runtime/src/errors.ts" name="ValidationErrorDetail" />
+
+---
+
+## Decorators
+
+### `Returns<T>(options?)`
+
+Declares the response type for a controller method that uses `@Res()`. This is a **compile-time only** decorator — it has no effect at runtime. tsgonest reads the type parameter `<T>` to generate the correct OpenAPI response schema.
+
+```ts
+import { Returns } from '@tsgonest/runtime';
+
+@Returns<UserDto>()
+@Get(':id')
+async getUser(@Param('id') id: string, @Res() res: Response) {
+  const user = await this.userService.findOne(id);
+  res.json(user);
+}
+
+@Returns<Uint8Array>({ contentType: 'application/pdf', description: 'Invoice PDF' })
+@Get(':id/invoice')
+async getInvoice(@Param('id') id: string, @Res() res: Response) {
+  const pdf = await this.invoiceService.generatePdf(id);
+  res.header('Content-Type', 'application/pdf').send(pdf);
+}
+```
+
+**Options (`ReturnsOptions`):**
+
+<AutoTypeTable path="../../packages/runtime/src/returns.ts" name="ReturnsOptions" />
+
+### `EventStream(path?, options?)`
+
+Declares a Server-Sent Events endpoint that returns an async iterator. Replaces NestJS's `@Sse()` with full type safety.
+
+```ts
+import { EventStream, SseEvent, SseEvents } from '@tsgonest/runtime';
+
+type OrderEvents = SseEvents<{
+  created: OrderDto;
+  shipped: OrderDto;
+  cancelled: { id: string; reason: string };
+}>;
+
+@EventStream('events', { heartbeat: 30_000 })
+async *events(): AsyncGenerator<OrderEvents> {
+  // ...
+}
+```
+
+**Parameters:**
+
+| Name | Type | Default | Description |
+| --- | --- | --- | --- |
+| `path` | `string` | `"/"` | Route path |
+| `options` | `EventStreamOptions` | | Optional configuration |
+
+**`EventStreamOptions`:**
+
+<AutoTypeTable path="../../packages/runtime/src/event-stream.ts" name="EventStreamOptions" />
+
+### `FormDataBody(factory)`
+
+Parameter decorator for multipart/form-data endpoints. Use with `FormDataInterceptor`.
+
+```ts
+import { FormDataBody, FormDataInterceptor } from '@tsgonest/runtime';
+import { UseInterceptors } from '@nestjs/common';
+
+@Post()
+@UseInterceptors(FormDataInterceptor)
+upload(@FormDataBody(() => imageMulter()) body: UploadDto): void { ... }
+```
+
+**Parameters:**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `factory` | `() => any \| Promise<any>` | Factory function returning a multer instance |
+
+---
+
+## Interceptors
+
+### `FormDataInterceptor`
+
+NestJS interceptor that reads the multer factory from `@FormDataBody()` metadata and parses multipart/form-data requests.
+
+```ts
+import { FormDataInterceptor } from '@tsgonest/runtime';
+```
+
+### `TsgonestSseInterceptor`
+
+Bridges async iterators to NestJS's Observable-based SSE system. **Auto-injected** by the tsgonest compiler for `@EventStream()` routes — you don't need to register it manually.
+
+```ts
+import { TsgonestSseInterceptor } from '@tsgonest/runtime';
+```
+
+### `TsgonestSerializeInterceptor`
+
+Optional NestJS interceptor for response serialization. In most cases, tsgonest injects serialization at compile time and this interceptor is not needed.
+
+```ts
+import { TsgonestSerializeInterceptor } from '@tsgonest/runtime';
+```
+
+---
+
+## SSE Types
+
+### `SseEvent<E, T>`
+
+A typed Server-Sent Event with a discriminant event name and typed data payload.
+
+```ts
+import type { SseEvent } from '@tsgonest/runtime';
+
+// SseEvent<'notification', NotificationDto>
+```
+
+| Property | Type | Description |
+| --- | --- | --- |
+| `event` | `E` | Event name (string literal, used as discriminant) |
+| `data` | `T` | Typed payload |
+| `id` | `string?` | SSE `id:` field. Auto-incremented if omitted. |
+| `retry` | `number?` | Client reconnection interval in ms |
+
+### `SseEvents<M>`
+
+Utility type that converts an event-map record to a discriminated union of `SseEvent` types.
+
+```ts
+import type { SseEvents } from '@tsgonest/runtime';
+
+type Events = SseEvents<{
+  created: UserDto;
+  updated: UserDto;
+  deleted: { id: string };
+}>;
+// Equivalent to:
+// | SseEvent<'created', UserDto>
+// | SseEvent<'updated', UserDto>
+// | SseEvent<'deleted', { id: string }>
+```
+
+---
+
+## Constants
+
+| Constant | Description |
+| --- | --- |
+| `TSGONEST_FORM_DATA_FACTORY` | Metadata key for `@FormDataBody()` multer factory |
+| `TSGONEST_SSE_METADATA` | Metadata key for `@EventStream()` options |
+| `TSGONEST_SSE_TRANSFORMS` | Metadata key for compile-time SSE validation/serialization transforms |
