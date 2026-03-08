@@ -1501,6 +1501,18 @@ func AutoEnableCoercion(m *metadata.Metadata) {
 					prop.Constraints.Coerce = &b
 				}
 			}
+			// Array properties need coercion for single-value wrapping
+			// (e.g., ?ids=1 arrives as "1", needs to become [1])
+			// and element coercion (e.g., ["1","2"] → [1,2]).
+			if prop.Type.Kind == metadata.KindArray {
+				if prop.Constraints == nil {
+					prop.Constraints = &metadata.Constraints{}
+				}
+				if prop.Constraints.Coerce == nil {
+					b := true
+					prop.Constraints.Coerce = &b
+				}
+			}
 			AutoEnableCoercion(&prop.Type)
 		}
 	}

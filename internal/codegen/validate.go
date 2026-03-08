@@ -724,6 +724,9 @@ func generateObjectCheck(e *Emitter, accessor string, path string, meta *metadat
 			e.Line("errors.push({ path: %q, expected: \"%s\", received: \"undefined\" });", propPath, describeType(&prop.Type))
 			e.EndBlockSuffix(" else {")
 			e.indent++
+			// Emit transforms + coercion BEFORE type check so that string
+			// values from query/path params are coerced before typeof rejects them.
+			emitValidatePreChecks(e, propAccessor, &prop)
 			generateTypeCheck(e, propAccessor, propPath, &prop.Type, registry, depth+1, ctx)
 			// After type check, emit constraint checks.
 			// When the base type is atomic, the typeof check was already done
@@ -744,6 +747,7 @@ func generateObjectCheck(e *Emitter, accessor string, path string, meta *metadat
 			e.Line("errors.push({ path: %q, expected: \"%s (not undefined)\", received: \"undefined\" });", propPath, describeType(&prop.Type))
 			e.EndBlockSuffix(" else {")
 			e.indent++
+			emitValidatePreChecks(e, propAccessor, &prop)
 			generateTypeCheck(e, propAccessor, propPath, &prop.Type, registry, depth+1, ctx)
 			if prop.Constraints != nil {
 				if isAtomicType(&prop.Type) {
@@ -756,6 +760,7 @@ func generateObjectCheck(e *Emitter, accessor string, path string, meta *metadat
 			e.Line("}")
 			e.EndBlock()
 		} else {
+			emitValidatePreChecks(e, propAccessor, &prop)
 			generateTypeCheck(e, propAccessor, propPath, &prop.Type, registry, depth+1, ctx)
 			// After type check, emit constraint checks (only if value is present)
 			if prop.Constraints != nil {

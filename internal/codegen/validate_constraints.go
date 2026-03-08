@@ -30,31 +30,66 @@ func generateTransforms(e *Emitter, accessor string, transforms []string) {
 // generateCoercion emits JS code to coerce string inputs to the declared type.
 // This runs before type checks so "123" becomes 123 before the typeof check.
 func generateCoercion(e *Emitter, accessor string, typeMeta *metadata.Metadata) {
-	if typeMeta.Kind != metadata.KindAtomic {
+	switch typeMeta.Kind {
+	case metadata.KindAtomic:
+		switch typeMeta.Atomic {
+		case "number":
+			// string → number: reject empty/whitespace-only strings and hex/octal/binary
+			// literals that unary + would silently coerce (e.g., +"" → 0, +"0xff" → 255).
+			// Only coerce strings that represent plain decimal numbers.
+			e.Block("if (typeof %s === \"string\" && %s.length > 0)", accessor, accessor)
+			e.Line("const _n = +%s;", accessor)
+			e.Block("if (!Number.isNaN(_n) && %s.trim() === %s && !/^0[xXoObB]/.test(%s))", accessor, accessor, accessor)
+			e.Line("%s = _n;", accessor)
+			e.EndBlock()
+			e.EndBlock()
+		case "boolean":
+			// "true"/"false"/"1"/"0" → boolean
+			e.Block("if (%s === \"true\" || %s === \"1\")", accessor, accessor)
+			e.Line("%s = true;", accessor)
+			e.EndBlockSuffix(fmt.Sprintf(" else if (%s === \"false\" || %s === \"0\") {", accessor, accessor))
+			e.indent++
+			e.Line("%s = false;", accessor)
+			e.EndBlock()
+		}
+		// Date coercion is handled at the type check level (KindNative "Date"),
+		// not at the constraint level, so it's omitted here.
+
+	case metadata.KindArray:
+		// Query params: ?ids=1 arrives as a single string, ?ids=1&ids=2 as string[].
+		// Wrap non-array values into a single-element array before the Array.isArray check.
+		e.Block("if (!Array.isArray(%s))", accessor)
+		e.Line("%s = [%s];", accessor, accessor)
+		e.EndBlock()
+		// Coerce each element if the element type is coercible (number/boolean).
+		if typeMeta.ElementType != nil && typeMeta.ElementType.Kind == metadata.KindAtomic {
+			atomic := typeMeta.ElementType.Atomic
+			if atomic == "number" || atomic == "boolean" {
+				idx := "_ci"
+				e.Block("for (let %s = 0; %s < %s.length; %s++)", idx, idx, accessor, idx)
+				elemAccessor := fmt.Sprintf("%s[%s]", accessor, idx)
+				generateCoercion(e, elemAccessor, typeMeta.ElementType)
+				e.EndBlock()
+			}
+		}
+	}
+}
+
+// emitValidatePreChecks emits transforms and coercion that must run BEFORE type checks.
+// Called at the property level before generateTypeCheck so that string values
+// are coerced to number/boolean before the typeof check rejects them.
+// This mirrors emitAssertPreChecks in validate_assert.go.
+func emitValidatePreChecks(e *Emitter, accessor string, prop *metadata.Property) {
+	c := prop.Constraints
+	if c == nil {
 		return
 	}
-	switch typeMeta.Atomic {
-	case "number":
-		// string → number: reject empty/whitespace-only strings and hex/octal/binary
-		// literals that unary + would silently coerce (e.g., +"" → 0, +"0xff" → 255).
-		// Only coerce strings that represent plain decimal numbers.
-		e.Block("if (typeof %s === \"string\" && %s.length > 0)", accessor, accessor)
-		e.Line("const _n = +%s;", accessor)
-		e.Block("if (!Number.isNaN(_n) && %s.trim() === %s && !/^0[xXoObB]/.test(%s))", accessor, accessor, accessor)
-		e.Line("%s = _n;", accessor)
-		e.EndBlock()
-		e.EndBlock()
-	case "boolean":
-		// "true"/"false"/"1"/"0" → boolean
-		e.Block("if (%s === \"true\" || %s === \"1\")", accessor, accessor)
-		e.Line("%s = true;", accessor)
-		e.EndBlockSuffix(fmt.Sprintf(" else if (%s === \"false\" || %s === \"0\") {", accessor, accessor))
-		e.indent++
-		e.Line("%s = false;", accessor)
-		e.EndBlock()
+	if len(c.Transforms) > 0 {
+		generateTransforms(e, accessor, c.Transforms)
 	}
-	// Date coercion is handled at the type check level (KindNative "Date"),
-	// not at the constraint level, so it's omitted here.
+	if c.Coerce != nil && *c.Coerce {
+		generateCoercion(e, accessor, &prop.Type)
+	}
 }
 
 // generateConstraintChecks emits JS validation checks for JSDoc constraints.
@@ -74,15 +109,10 @@ func generateConstraintChecksInner(e *Emitter, accessor string, path string, pro
 		return
 	}
 
-	// Emit transforms BEFORE validation checks
-	if len(c.Transforms) > 0 {
-		generateTransforms(e, accessor, c.Transforms)
-	}
-
-	// Emit coercion BEFORE type checks
-	if c.Coerce != nil && *c.Coerce {
-		generateCoercion(e, accessor, &prop.Type)
-	}
+	// NOTE: Transforms and coercion are emitted by emitValidatePreChecks (called
+	// BEFORE the type check in generateObjectCheck). They must NOT be emitted here,
+	// or they would run AFTER the type check — causing string→number/boolean coercion
+	// to fire too late for query/param values that arrive as strings.
 
 	// Helper: use per-constraint error if present, then global ErrorMessage, then default.
 	// constraintKey is the Constraints field name (e.g., "format", "minLength", "minimum").
