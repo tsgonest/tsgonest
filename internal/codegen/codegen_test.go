@@ -1912,6 +1912,288 @@ func TestAssertCoercion_StringToBoolean(t *testing.T) {
 	assertContains(t, code, `=== "0"`)
 }
 
+// --- Coercion ordering tests (validate must coerce BEFORE type checks) ---
+
+func TestValidateCoercion_CoercionBeforeTypeCheck_Number(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+	coerce := true
+	meta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Properties: []metadata.Property{
+			{
+				Name: "page", Required: true,
+				Type:        metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "number"},
+				Constraints: &metadata.Constraints{Coerce: &coerce},
+			},
+		},
+	}
+
+	code := GenerateCompanionSelective("Dto", meta, reg, true, false)
+
+	// Extract the validate function body (between "export function validateDto" and "export function assertDto")
+	validateStart := strings.Index(code, "export function validateDto")
+	assertStart := strings.Index(code, "export function assertDto")
+	if validateStart < 0 || assertStart < 0 {
+		t.Fatal("could not find validateDto or assertDto functions in generated code")
+	}
+	validateBody := code[validateStart:assertStart]
+
+	// In the validate function, coercion (+input.page) must appear BEFORE the type check
+	coercionIdx := strings.Index(validateBody, "+input.page")
+	typeCheckIdx := strings.Index(validateBody, `typeof input.page !== "number"`)
+	if coercionIdx < 0 {
+		t.Fatal("coercion code not found in validate function")
+	}
+	if typeCheckIdx < 0 {
+		t.Fatal("type check code not found in validate function")
+	}
+	if coercionIdx > typeCheckIdx {
+		t.Errorf("validate function: coercion (pos %d) must appear BEFORE type check (pos %d);\nquery params arrive as strings and must be coerced before typeof rejects them", coercionIdx, typeCheckIdx)
+	}
+}
+
+func TestValidateCoercion_CoercionBeforeTypeCheck_Boolean(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+	coerce := true
+	meta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Properties: []metadata.Property{
+			{
+				Name: "ascending", Required: true,
+				Type:        metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "boolean"},
+				Constraints: &metadata.Constraints{Coerce: &coerce},
+			},
+		},
+	}
+
+	code := GenerateCompanionSelective("Dto", meta, reg, true, false)
+
+	validateStart := strings.Index(code, "export function validateDto")
+	assertStart := strings.Index(code, "export function assertDto")
+	if validateStart < 0 || assertStart < 0 {
+		t.Fatal("could not find validateDto or assertDto functions in generated code")
+	}
+	validateBody := code[validateStart:assertStart]
+
+	// Boolean coercion (=== "true") must appear BEFORE the type check
+	coercionIdx := strings.Index(validateBody, `=== "true"`)
+	typeCheckIdx := strings.Index(validateBody, `typeof input.ascending !== "boolean"`)
+	if coercionIdx < 0 {
+		t.Fatal("boolean coercion code not found in validate function")
+	}
+	if typeCheckIdx < 0 {
+		t.Fatal("type check code not found in validate function")
+	}
+	if coercionIdx > typeCheckIdx {
+		t.Errorf("validate function: boolean coercion (pos %d) must appear BEFORE type check (pos %d);\nquery params arrive as strings and must be coerced before typeof rejects them", coercionIdx, typeCheckIdx)
+	}
+}
+
+func TestValidateCoercion_RuntimeBehavior_StringToNumber(t *testing.T) {
+	// This test verifies that the generated validate function, when coercion is
+	// enabled, would not produce errors for string values that can be coerced.
+	// We check this by ensuring the coercion block wraps the type check.
+	reg := metadata.NewTypeRegistry()
+	coerce := true
+	meta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Properties: []metadata.Property{
+			{
+				Name: "page", Required: true,
+				Type:        metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "number"},
+				Constraints: &metadata.Constraints{Coerce: &coerce},
+			},
+			{
+				Name: "limit", Required: true,
+				Type:        metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "number"},
+				Constraints: &metadata.Constraints{Coerce: &coerce},
+			},
+			{
+				Name: "ascending", Required: false,
+				Type:        metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "boolean", Optional: true},
+				Constraints: &metadata.Constraints{Coerce: &coerce},
+			},
+		},
+	}
+
+	code := GenerateCompanionSelective("PaginationQuery", meta, reg, true, false)
+
+	validateStart := strings.Index(code, "export function validatePaginationQuery")
+	assertStart := strings.Index(code, "export function assertPaginationQuery")
+	if validateStart < 0 || assertStart < 0 {
+		t.Fatal("could not find validatePaginationQuery or assertPaginationQuery functions")
+	}
+	validateBody := code[validateStart:assertStart]
+
+	// Verify coercion appears before type check for each property
+	for _, prop := range []struct {
+		name      string
+		coercion  string
+		typeCheck string
+	}{
+		{"page", "+input.page", `typeof input.page !== "number"`},
+		{"limit", "+input.limit", `typeof input.limit !== "number"`},
+		{"ascending", `=== "true"`, `typeof input.ascending !== "boolean"`},
+	} {
+		coercionIdx := strings.Index(validateBody, prop.coercion)
+		typeCheckIdx := strings.Index(validateBody, prop.typeCheck)
+		if coercionIdx < 0 {
+			t.Errorf("property %s: coercion code %q not found in validate function", prop.name, prop.coercion)
+			continue
+		}
+		if typeCheckIdx < 0 {
+			t.Errorf("property %s: type check code %q not found in validate function", prop.name, prop.typeCheck)
+			continue
+		}
+		if coercionIdx > typeCheckIdx {
+			t.Errorf("property %s: coercion (pos %d) must appear BEFORE type check (pos %d)", prop.name, coercionIdx, typeCheckIdx)
+		}
+	}
+}
+
+// --- Array coercion tests (single-value wrapping + element coercion) ---
+
+func TestValidateCoercion_ArrayOfNumbers_WrapsAndCoercesElements(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+	coerce := true
+	meta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Properties: []metadata.Property{
+			{
+				Name: "ids", Required: true,
+				Type: metadata.Metadata{
+					Kind: metadata.KindArray,
+					ElementType: &metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "number"},
+				},
+				Constraints: &metadata.Constraints{Coerce: &coerce},
+			},
+		},
+	}
+
+	code := GenerateCompanionSelective("Dto", meta, reg, true, false)
+
+	// Extract validate function body
+	validateStart := strings.Index(code, "export function validateDto")
+	assertStart := strings.Index(code, "export function assertDto")
+	if validateStart < 0 || assertStart < 0 {
+		t.Fatal("could not find validateDto or assertDto functions")
+	}
+	validateBody := code[validateStart:assertStart]
+
+	// Should wrap single value into an array (coercion code before the Array.isArray type check)
+	assertContainsIn(t, validateBody, "input.ids = [input.ids]", "validate function should wrap single value into array")
+	// Should coerce array elements from string to number
+	assertContainsIn(t, validateBody, "Number.isNaN", "validate function should coerce array elements with number coercion")
+}
+
+func TestAssertCoercion_ArrayOfNumbers_WrapsAndCoercesElements(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+	coerce := true
+	meta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Properties: []metadata.Property{
+			{
+				Name: "ids", Required: true,
+				Type: metadata.Metadata{
+					Kind: metadata.KindArray,
+					ElementType: &metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "number"},
+				},
+				Constraints: &metadata.Constraints{Coerce: &coerce},
+			},
+		},
+	}
+
+	code := GenerateCompanionSelective("Dto", meta, reg, true, false)
+
+	// Extract assert function body
+	assertStart := strings.Index(code, "export function assertDto")
+	if assertStart < 0 {
+		t.Fatal("could not find assertDto function")
+	}
+	assertBody := code[assertStart:]
+
+	// Should wrap single value into array and coerce elements
+	assertContainsIn(t, assertBody, "input.ids = [input.ids]", "assert function should wrap single value into array")
+	assertContainsIn(t, assertBody, "Number.isNaN", "assert function should coerce array elements with number coercion")
+}
+
+func TestValidateCoercion_ArrayOfBooleans_CoercesElements(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+	coerce := true
+	meta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Properties: []metadata.Property{
+			{
+				Name: "flags", Required: true,
+				Type: metadata.Metadata{
+					Kind: metadata.KindArray,
+					ElementType: &metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "boolean"},
+				},
+				Constraints: &metadata.Constraints{Coerce: &coerce},
+			},
+		},
+	}
+
+	code := GenerateCompanionSelective("Dto", meta, reg, true, false)
+
+	validateStart := strings.Index(code, "export function validateDto")
+	assertStart := strings.Index(code, "export function assertDto")
+	if validateStart < 0 || assertStart < 0 {
+		t.Fatal("could not find validateDto or assertDto functions")
+	}
+	validateBody := code[validateStart:assertStart]
+
+	// Should coerce boolean strings in array elements
+	assertContainsIn(t, validateBody, `=== "true"`, "validate function should coerce boolean strings in array elements")
+}
+
+func TestValidateCoercion_ArrayOfStrings_NoCoercion(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+	coerce := true
+	meta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Properties: []metadata.Property{
+			{
+				Name: "tags", Required: true,
+				Type: metadata.Metadata{
+					Kind: metadata.KindArray,
+					ElementType: &metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"},
+				},
+				Constraints: &metadata.Constraints{Coerce: &coerce},
+			},
+		},
+	}
+
+	code := GenerateCompanionSelective("Dto", meta, reg, true, false)
+
+	validateStart := strings.Index(code, "export function validateDto")
+	assertStart := strings.Index(code, "export function assertDto")
+	if validateStart < 0 || assertStart < 0 {
+		t.Fatal("could not find validateDto or assertDto functions")
+	}
+	validateBody := code[validateStart:assertStart]
+
+	// String arrays should still wrap single values but not coerce elements
+	assertContainsIn(t, validateBody, "input.tags = [input.tags]", "validate should wrap single string into array")
+	assertNotContainsIn(t, validateBody, "Number.isNaN", "validate should not emit number coercion for string arrays")
+}
+
+// assertContainsIn checks that needle is found within the given code section.
+func assertContainsIn(t *testing.T, code string, needle string, msg string) {
+	t.Helper()
+	if !strings.Contains(code, needle) {
+		t.Errorf("%s: expected %q in generated code:\n%s", msg, needle, code)
+	}
+}
+
+// assertNotContainsIn checks that needle is NOT found within the given code section.
+func assertNotContainsIn(t *testing.T, code string, needle string, msg string) {
+	t.Helper()
+	if strings.Contains(code, needle) {
+		t.Errorf("%s: did NOT expect %q in generated code:\n%s", msg, needle, code)
+	}
+}
+
 // --- Validate<typeof fn> codegen tests ---
 
 func TestValidateCustomFn_EmitsFunctionCall(t *testing.T) {
