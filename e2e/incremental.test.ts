@@ -139,9 +139,9 @@ describe("tsgonest incremental post-processing cache", () => {
 
     expect(stderr).not.toContain("companion file");
     expect(stderr).not.toContain("found 1 controller");
-    expect(stderr).toMatch(/companions:\s+\d+m?s/);
-    expect(stderr).toMatch(/controllers:\s+\d+m?s/);
-    expect(stderr).toMatch(/openapi:\s+\d+m?s/);
+    expect(stderr).toMatch(/companions\s+\d+(?:ms|s)/);
+    expect(stderr).toMatch(/controllers\s+\d+(?:ms|s)/);
+    expect(stderr).toMatch(/openapi\s+\d+(?:ms|s)/);
   });
 
   it("config change should force full rebuild", () => {
