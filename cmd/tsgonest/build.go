@@ -147,6 +147,7 @@ func runBuildWithIncr(args []string, oldIncrProgram *shimincremental.Program, ou
 
 	buildStart := time.Now()
 	timing := &TimingReport{}
+	pretty := compiler.IsPrettyOutput()
 
 	// Resolve working directory
 	cwd, err := os.Getwd()
@@ -165,7 +166,7 @@ func runBuildWithIncr(args []string, oldIncrProgram *shimincremental.Program, ou
 	resolvedConfigPath := cfgResult.Path
 	configDir := cfgResult.Dir
 	if resolvedConfigPath != "" {
-		fmt.Fprintf(os.Stderr, "loaded config from %s\n", filepath.Base(resolvedConfigPath))
+		printStatus(os.Stderr, pretty, "◆", "loaded config from %s", filepath.Base(resolvedConfigPath))
 	}
 
 	// Step 1: Parse tsconfig using tsgo's native JSONC parser (handles comments, trailing commas, extends).
@@ -173,7 +174,7 @@ func runBuildWithIncr(args []string, oldIncrProgram *shimincremental.Program, ou
 	tsFS := compiler.CreateDefaultFS()
 	host := compiler.CreateDefaultHost(cwd, tsFS)
 
-	fmt.Fprintf(os.Stderr, "compiling with tsconfig: %s\n", tsconfigPath)
+	printStatus(os.Stderr, pretty, "◆", "compiling with tsconfig: %s", tsconfigPath)
 
 	parsedConfig, diags, err := compiler.ParseTSConfig(tsFS, cwd, tsconfigPath, host, cliOverrides)
 	if err != nil {
@@ -193,7 +194,7 @@ func runBuildWithIncr(args []string, oldIncrProgram *shimincremental.Program, ou
 	if opts.RootDir == "" && opts.OutDir != "" {
 		inferredRootDir := pathalias.InferRootDir(parsedConfig.FileNames())
 		if inferredRootDir != "" {
-			fmt.Fprintf(os.Stderr, "inferred rootDir: %s\n", inferredRootDir)
+			printStatus(os.Stderr, pretty, "◆", "inferred rootDir: %s", inferredRootDir)
 			opts.RootDir = inferredRootDir
 		}
 	}
@@ -242,7 +243,6 @@ func runBuildWithIncr(args []string, oldIncrProgram *shimincremental.Program, ou
 	// Step 3: Gather diagnostics (forces type checking).
 	// If tsconfig has "incremental: true" or "composite: true", use the incremental
 	// pipeline — only checks/emits changed files, persists state to .tsbuildinfo.
-	pretty := compiler.IsPrettyOutput()
 	reportDiag := compiler.CreateDiagnosticReporter(os.Stderr, cwd, pretty)
 
 	isIncremental := opts.IsIncremental()
@@ -472,7 +472,7 @@ func runBuildWithIncr(args []string, oldIncrProgram *shimincremental.Program, ou
 	hasErrors := compiler.CountErrors(allDiagnostics) > 0
 	if emitResult.EmitSkipped && hasErrors {
 		// noEmitOnError triggered — no files written
-		fmt.Fprintln(os.Stderr, "no files emitted (noEmitOnError)")
+		printStatus(os.Stderr, pretty, "✗", "no files emitted (noEmitOnError)")
 		timing.Total = time.Since(buildStart)
 		timing.Print()
 		return 2
@@ -480,9 +480,9 @@ func runBuildWithIncr(args []string, oldIncrProgram *shimincremental.Program, ou
 
 	emittedFiles := emitResult.EmittedFiles
 	if len(emittedFiles) > 0 {
-		fmt.Fprintf(os.Stderr, "emitted %d file(s)\n", len(emittedFiles))
+		printStatus(os.Stderr, pretty, "✓", "emitted %d file(s)", len(emittedFiles))
 	} else if !emitResult.EmitSkipped {
-		fmt.Fprintln(os.Stderr, "no files emitted")
+		printStatus(os.Stderr, pretty, "·", "no files emitted")
 	}
 
 	// ── Early exit on diagnostic errors ──────────────────────────────────
@@ -564,27 +564,23 @@ func runBuildWithIncr(args []string, oldIncrProgram *shimincremental.Program, ou
 
 	// Print deferred status messages (only when we're past the cache check)
 	if len(allCompanions) > 0 {
-		fmt.Fprintf(os.Stderr, "generated %d companion file(s)\n", len(allCompanions))
+		printStatus(os.Stderr, pretty, "✓", "generated %d companion file(s)", len(allCompanions))
 	}
 	if len(controllers) > 0 {
 		totalRoutes := 0
 		for _, ctrl := range controllers {
 			totalRoutes += len(ctrl.Routes)
 		}
-		fmt.Fprintf(os.Stderr, "found %d controller(s) with %d route(s)\n", len(controllers), totalRoutes)
+		printStatus(os.Stderr, pretty, "✓", "found %d controller(s) with %d route(s)", len(controllers), totalRoutes)
 	}
 
-	// Print controller analyzer warnings (stored during pre-emit analysis),
-	// even when zero controllers were extracted.
+	// Collect all warning messages for deferred printing after status lines.
+	var allWarnings []string
 	for _, w := range controllerWarnings {
-		fmt.Fprintf(os.Stderr, "warning: %s\n", w.Message)
+		allWarnings = append(allWarnings, w.Message)
 	}
-
-	// Print type walker warnings (e.g., generic types with anonymous type arguments).
 	if sharedWalker != nil {
-		for _, msg := range sharedWalker.Warnings() {
-			fmt.Fprintf(os.Stderr, "warning: %s\n", msg)
-		}
+		allWarnings = append(allWarnings, sharedWalker.Warnings()...)
 	}
 
 	// Generate OpenAPI document (using pre-analyzed controllers)
@@ -622,7 +618,7 @@ func runBuildWithIncr(args []string, oldIncrProgram *shimincremental.Program, ou
 				sdkHashPath := filepath.Join(sdkOutput, ".sdk-hash")
 				inputHash := hashFileContent(sdkInput)
 				if existingHash, err := os.ReadFile(sdkHashPath); err == nil && string(existingHash) == inputHash {
-					fmt.Fprintln(os.Stderr, "SDK up to date, skipping generation")
+					printStatus(os.Stderr, pretty, "·", "SDK up to date, skipping generation")
 					return
 				}
 				// Build SDK options from config
@@ -640,7 +636,7 @@ func runBuildWithIncr(args []string, oldIncrProgram *shimincremental.Program, ou
 					return
 				}
 				os.WriteFile(sdkHashPath, []byte(inputHash), 0o644)
-				fmt.Fprintf(os.Stderr, "generated SDK: %s\n", cfg.SDK.Output)
+				printStatus(os.Stderr, pretty, "✓", "generated SDK: %s", cfg.SDK.Output)
 			}()
 		}
 	}
@@ -652,7 +648,7 @@ func runBuildWithIncr(args []string, oldIncrProgram *shimincremental.Program, ou
 		if assetErr != nil {
 			fmt.Fprintf(os.Stderr, "warning: copying assets: %v\n", assetErr)
 		} else if count > 0 {
-			fmt.Fprintf(os.Stderr, "copied %d asset(s)\n", count)
+			printStatus(os.Stderr, pretty, "✓", "copied %d asset(s)", count)
 		}
 	}
 
@@ -679,6 +675,40 @@ func runBuildWithIncr(args []string, oldIncrProgram *shimincremental.Program, ou
 		fmt.Fprintf(os.Stderr, "warning: saving post-processing cache: %v\n", saveErr)
 	}
 
+	// Print warnings after all status messages, before timing.
+	if len(allWarnings) > 0 {
+		yellow, white, blue, dim, bold, reset := "", "", "", "", "", ""
+		if pretty {
+			yellow = "\u001b[93m"
+			white = "\u001b[97m"
+			blue = "\u001b[94m"
+			dim = "\u001b[2m"
+			bold = "\u001b[1m"
+			reset = "\u001b[0m"
+		}
+
+		fmt.Fprintln(os.Stderr)
+		fmt.Fprintf(os.Stderr, "%s%s▲ %d warning(s)%s\n", bold, yellow, len(allWarnings), reset)
+		fmt.Fprintln(os.Stderr)
+		for _, msg := range allWarnings {
+			short := strings.ReplaceAll(msg, cwd+"/", "")
+			var loc, desc string
+			if l, d, ok := strings.Cut(short, " — "); ok {
+				loc, desc = l, d
+			} else if idx := strings.LastIndex(short, ") "); idx != -1 {
+				loc, desc = short[:idx+1], short[idx+2:]
+			} else {
+				loc = short
+			}
+			coloredLoc := formatLocation(loc, white, bold, blue, reset)
+			if desc != "" {
+				fmt.Fprintf(os.Stderr, "  %s●%s %s\n    %s%s%s\n\n", yellow, reset, coloredLoc, dim, desc, reset)
+			} else {
+				fmt.Fprintf(os.Stderr, "  %s●%s %s\n\n", yellow, reset, coloredLoc)
+			}
+		}
+	}
+
 	timing.Total = time.Since(buildStart)
 	timing.Print()
 
@@ -695,7 +725,7 @@ func cleanDir(outDir string) error {
 		return nil
 	}
 
-	fmt.Fprintf(os.Stderr, "cleaning output directory: %s\n", outDir)
+	printStatus(os.Stderr, compiler.IsPrettyOutput(), "◆", "cleaning output directory: %s", outDir)
 	return os.RemoveAll(outDir)
 }
 
@@ -710,7 +740,7 @@ func smartCleanDir(outDir string, tsbuildInfoPath string) error {
 		return nil
 	}
 
-	fmt.Fprintf(os.Stderr, "cleaning output directory: %s (preserving .tsbuildinfo)\n", outDir)
+	printStatus(os.Stderr, compiler.IsPrettyOutput(), "◆", "cleaning output directory: %s (preserving .tsbuildinfo)", outDir)
 
 	entries, err := os.ReadDir(outDir)
 	if err != nil {
@@ -821,7 +851,7 @@ func generateOpenAPIFromControllers(controllers []analyzer.ControllerInfo, regis
 		return fmt.Errorf("writing %s: %w", outputPath, err)
 	}
 
-	fmt.Fprintf(os.Stderr, "generated OpenAPI document: %s\n", cfg.OpenAPI.Output)
+	printStatus(os.Stderr, compiler.IsPrettyOutput(), "✓", "generated OpenAPI document: %s", cfg.OpenAPI.Output)
 	return nil
 }
 
