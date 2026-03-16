@@ -58,7 +58,7 @@ func generateCoercion(e *Emitter, accessor string, typeMeta *metadata.Metadata) 
 	case metadata.KindArray:
 		// Query params: ?ids=1 arrives as a single string, ?ids=1&ids=2 as string[].
 		// Wrap non-array values into a single-element array before the Array.isArray check.
-		e.Block("if (!Array.isArray(%s))", accessor)
+		e.Block("if (%s !== undefined && %s !== null && !Array.isArray(%s))", accessor, accessor, accessor)
 		e.Line("%s = [%s];", accessor, accessor)
 		e.EndBlock()
 		// Coerce each element if the element type is coercible (number/boolean).
