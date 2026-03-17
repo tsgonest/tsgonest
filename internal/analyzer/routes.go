@@ -1707,6 +1707,21 @@ func resolveInnerTypeName(typeNode *ast.Node) string {
 		return ""
 	}
 
+	// For generic type references (e.g., PaginatedResponse<LeadResponse>),
+	// append type argument names to produce a composite name. Without this,
+	// all instantiations of the same generic share a single schema name and
+	// whichever is processed first "wins" — producing non-deterministic output.
+	if ref.TypeArguments != nil && len(ref.TypeArguments.Nodes) > 0 {
+		composite := name
+		for _, argNode := range ref.TypeArguments.Nodes {
+			argName := resolveInnerTypeName(argNode)
+			if argName != "" {
+				composite += "_" + argName
+			}
+		}
+		return composite
+	}
+
 	return name
 }
 

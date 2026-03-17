@@ -3959,6 +3959,85 @@ func TestControllerAnalyzer_GenericInterfaceReturn_MultipleControllers(t *testin
 	}
 }
 
+// TestControllerAnalyzer_GenericTypeAliasReturn_MultipleControllers tests the
+// same scenario as GenericInterfaceReturn but with type aliases instead of
+// interfaces. Type aliases resolve to anonymous object types in the checker,
+// which means deriveTypeArgName may fail to recover the name. When that happens,
+// the type walker inlines the object and extractReturnType falls back to the
+// AST-derived name. Without the fix in resolveInnerTypeName to include type
+// arguments, all instantiations collapse to the bare alias name.
+func TestControllerAnalyzer_GenericTypeAliasReturn_MultipleControllers(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+
+		type PagedResult<T> = {
+			items: T[];
+			totalCount: number;
+		};
+
+		type ItemADto = { id: string; value: number; };
+		type ItemBDto = { id: string; label: string; };
+
+		@Controller("resource-a")
+		export class ResourceAController {
+			@Get()
+			getAll(): Promise<PagedResult<ItemADto>> {
+				return {} as any;
+			}
+		}
+
+		@Controller("resource-b")
+		export class ResourceBController {
+			@Get()
+			getAll(): Promise<PagedResult<ItemBDto>> {
+				return {} as any;
+			}
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 2 {
+		t.Fatalf("expected 2 controllers, got %d", len(controllers))
+	}
+
+	if len(controllers[0].Routes) != 1 {
+		t.Fatalf("ResourceAController: expected 1 route, got %d", len(controllers[0].Routes))
+	}
+	if len(controllers[1].Routes) != 1 {
+		t.Fatalf("ResourceBController: expected 1 route, got %d", len(controllers[1].Routes))
+	}
+
+	aReturn := controllers[0].Routes[0].ReturnType
+	bReturn := controllers[1].Routes[0].ReturnType
+
+	// Both should resolve to named types — either KindRef (if the type walker
+	// created composite names) or KindObject with distinct Name fields (if the
+	// AST fallback in extractReturnType was used).
+	aName := aReturn.Name
+	if aReturn.Kind == metadata.KindRef {
+		aName = aReturn.Ref
+	}
+	bName := bReturn.Name
+	if bReturn.Kind == metadata.KindRef {
+		bName = bReturn.Ref
+	}
+
+	if aName == bName {
+		t.Errorf("GENERIC TYPE ALIAS COLLAPSE: both controllers resolve to %q — should be distinct", aName)
+	}
+	if aName == "PagedResult" {
+		t.Errorf("ResourceAController: name is generic declaration name %q, not a concrete instantiation", aName)
+	}
+	if bName == "PagedResult" {
+		t.Errorf("ResourceBController: name is generic declaration name %q, not a concrete instantiation", bName)
+	}
+}
+
 // --- Bug 2: KindAny return type inference warning ---
 
 // TestControllerAnalyzer_InferReturnType_WarnsOnKindAny verifies that when
