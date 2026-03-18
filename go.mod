@@ -27,7 +27,6 @@ require (
 	github.com/zeebo/xxh3 v1.1.0 // indirect
 	golang.org/x/mod v0.33.0 // indirect
 	golang.org/x/sync v0.19.0 // indirect
-	golang.org/x/sys v0.41.0 // indirect
 )
 
 require (
@@ -45,5 +44,6 @@ require (
 	github.com/microsoft/typescript-go/shim/vfs v0.0.0-00010101000000-000000000000
 	github.com/microsoft/typescript-go/shim/vfs/cachedvfs v0.0.0-00010101000000-000000000000
 	github.com/microsoft/typescript-go/shim/vfs/osvfs v0.0.0-00010101000000-000000000000
+	golang.org/x/sys v0.41.0
 	golang.org/x/text v0.34.0
 )

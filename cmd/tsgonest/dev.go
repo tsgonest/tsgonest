@@ -258,16 +258,34 @@ func runDev(args []string) int {
 		}
 	}()
 
-	// Handle SIGINT/SIGTERM/SIGHUP
-	sigCh := make(chan os.Signal, 1)
+	// Handle SIGINT/SIGTERM/SIGHUP.
+	// First signal triggers graceful shutdown (SIGTERM + 5s timeout).
+	// Second signal during the grace period force-exits immediately.
+	sigCh := make(chan os.Signal, 2)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 
 	go func() {
 		<-sigCh
 		fmt.Fprintln(os.Stderr, "\nshutting down...")
 		w.Stop()
-		if proc != nil {
-			proc.Stop()
+
+		stopDone := make(chan struct{})
+		go func() {
+			if proc != nil {
+				proc.Stop()
+			}
+			close(stopDone)
+		}()
+
+		select {
+		case <-stopDone:
+			// Graceful shutdown completed
+		case <-sigCh:
+			// Second signal — force exit immediately.
+			// On Windows, os.Exit closes the Job Object handle which kills all children.
+			// On Unix, SIGTERM was already sent to the process group by the first Stop().
+			fmt.Fprintln(os.Stderr, "\nforce killing...")
+			os.Exit(1)
 		}
 	}()
 
