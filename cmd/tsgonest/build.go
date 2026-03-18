@@ -478,7 +478,19 @@ func runBuildWithIncrAndProgram(args []string, oldIncrProgram *shimincremental.P
 					fmt.Fprintf(os.Stderr, "warning: could not remove stale .tsbuildinfo: %v\n", err)
 				}
 				printStatus(os.Stderr, pretty, "◆", "stale .tsbuildinfo: %d output file(s) missing, forcing full emit", len(missing))
-				incrProgram = compiler.CreateIncrementalProgram(program, nil, host, parsedConfig)
+				// Create a completely fresh program and host. The first emit
+				// mutates the program's internal emit state, so reusing it
+				// would still produce 0 emitted files. A fresh host also
+				// avoids any cached .tsbuildinfo reads.
+				freshFS := compiler.CreateDefaultFS()
+				freshHost := compiler.CreateDefaultHost(cwd, freshFS)
+				freshProgram, _, freshErr := compiler.CreateProgramFromConfig(false, parsedConfig, freshHost)
+				if freshErr == nil && freshProgram != nil {
+					incrProgram = compiler.CreateIncrementalProgram(freshProgram, nil, freshHost, parsedConfig)
+				} else {
+					// Fallback: reuse existing program (best effort)
+					incrProgram = compiler.CreateIncrementalProgram(program, nil, host, parsedConfig)
+				}
 				if outIncrProgram != nil {
 					*outIncrProgram = incrProgram
 				}
