@@ -88,7 +88,7 @@ export class BunAdapter extends AbstractHttpAdapter {
       hostname,
       tls: this._tlsOptions,
 
-      async fetch(req: Request, server: any): Promise<Response> | Response {
+      async fetch(req: Request, _server: any): Promise<Response> {
         const bunReq = new BunRequest(req);
         const bunRes = new BunResponse();
 
@@ -419,11 +419,13 @@ export class BunAdapter extends AbstractHttpAdapter {
             params.forEach((value, key) => { body[key] = value; });
             req.body = body;
           } else if (raw.body) {
-            // Try JSON as default for POST/PUT/PATCH
+            // Try JSON as default for POST/PUT/PATCH.
+            // Read as text first — Request.body can only be consumed once.
+            const text = await raw.text();
             try {
-              req.body = await raw.json();
+              req.body = JSON.parse(text);
             } catch {
-              req.body = await raw.text();
+              req.body = text;
             }
           }
         } catch {

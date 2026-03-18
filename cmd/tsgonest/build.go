@@ -221,7 +221,7 @@ func runBuildWithIncrAndProgram(args []string, oldIncrProgram *shimincremental.P
 
 	// Clean output directory if requested (using parsed OutDir, no re-parsing needed)
 	if clean && opts.OutDir != "" {
-		tsbuildInfoPath := strings.TrimSuffix(resolvedTsconfigPath, ".json") + ".tsbuildinfo"
+		tsbuildInfoPath := tsbuildInfoPathFromTsconfig(resolvedTsconfigPath)
 		// Full clean: remove output directory and .tsbuildinfo to force a complete rebuild.
 		// Without deleting .tsbuildinfo, the incremental compiler thinks files are up-to-date
 		// and skips emit — which means controller rewriting (in the WriteFile callback) never runs.
@@ -473,8 +473,10 @@ func runBuildWithIncrAndProgram(args []string, oldIncrProgram *shimincremental.P
 		// program from scratch so the fresh emit also writes a valid .tsbuildinfo.
 		if len(emitResult.EmittedFiles) == 0 && !emitResult.EmitSkipped {
 			if missing := checkExpectedOutputsMissing(program, opts.RootDir, opts.OutDir); len(missing) > 0 {
-				tsbuildInfoPath := strings.TrimSuffix(resolvedTsconfigPath, ".json") + ".tsbuildinfo"
-				os.Remove(tsbuildInfoPath)
+				tsbuildInfoPath := tsbuildInfoPathFromTsconfig(resolvedTsconfigPath)
+				if err := os.Remove(tsbuildInfoPath); err != nil && !os.IsNotExist(err) {
+					fmt.Fprintf(os.Stderr, "warning: could not remove stale .tsbuildinfo: %v\n", err)
+				}
 				printStatus(os.Stderr, pretty, "◆", "stale .tsbuildinfo: %d output file(s) missing, forcing full emit", len(missing))
 				incrProgram = compiler.CreateIncrementalProgram(program, nil, host, parsedConfig)
 				if outIncrProgram != nil {
@@ -753,6 +755,12 @@ func runBuildWithIncrAndProgram(args []string, oldIncrProgram *shimincremental.P
 	timing.Print()
 
 	return 0
+}
+
+// tsbuildInfoPathFromTsconfig derives the .tsbuildinfo path from a resolved tsconfig path.
+// e.g., "/project/tsconfig.json" → "/project/tsconfig.tsbuildinfo"
+func tsbuildInfoPathFromTsconfig(resolvedTsconfigPath string) string {
+	return strings.TrimSuffix(resolvedTsconfigPath, ".json") + ".tsbuildinfo"
 }
 
 // cleanDir removes a directory after safety checks.

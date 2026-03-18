@@ -28,9 +28,13 @@ export function executeMiddlewareChain(
       // Call middleware with Express-style (req, res, next) signature
       try {
         const result = mw.handler(req, res, next);
-        // If middleware returned a promise, propagate it
+        // If middleware returned a promise, propagate it (with error handling)
         if (result && typeof result.then === 'function') {
-          return result;
+          return result.catch((err: any) => {
+            if (!res.headersSent) {
+              res.status(500).json({ statusCode: 500, message: 'Internal Server Error' });
+            }
+          });
         }
         // If middleware called next() synchronously, we already advanced
         // via the recursive call inside next. If it didn't call next(),

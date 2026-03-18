@@ -43,10 +43,16 @@ describe('BunResponse', () => {
       expect(res._headers['content-type']).toBe('text/html');
     });
 
-    it('joins array values with comma-space', () => {
+    it('keeps Set-Cookie as separate array entries (RFC 6265)', () => {
       const res = new BunResponse();
       res.setHeader('Set-Cookie', ['a=1', 'b=2']);
-      expect(res.getHeader('set-cookie')).toBe('a=1, b=2');
+      expect(res.getHeader('set-cookie')).toEqual(['a=1', 'b=2']);
+    });
+
+    it('joins non-Set-Cookie array values with comma-space', () => {
+      const res = new BunResponse();
+      res.setHeader('Accept', ['text/html', 'application/json']);
+      expect(res.getHeader('accept')).toBe('text/html, application/json');
     });
 
     it('returns undefined for missing header', () => {

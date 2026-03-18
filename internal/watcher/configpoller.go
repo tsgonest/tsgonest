@@ -2,6 +2,7 @@ package watcher
 
 import (
 	"os"
+	"sync"
 	"time"
 )
 
@@ -47,8 +48,10 @@ func WatchFiles(paths []string, pollInterval time.Duration, onChange func(path s
 		}
 	}()
 
+	// Idempotent stop — safe to call multiple times (matches Watcher.Stop pattern)
+	var once sync.Once
 	return func() {
-		close(stopCh)
+		once.Do(func() { close(stopCh) })
 	}
 }
 

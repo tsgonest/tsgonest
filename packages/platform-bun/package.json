@@ -17,13 +17,21 @@
       }
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsdown",
     "test": "vitest --run",
     "typecheck": "tsc --noEmit"
   },
-  "keywords": ["nestjs", "bun", "adapter", "http", "tsgonest"],
+  "keywords": [
+    "nestjs",
+    "bun",
+    "adapter",
+    "http",
+    "tsgonest"
+  ],
   "peerDependencies": {
     "@nestjs/common": "^10.0.0 || ^11.0.0",
     "@nestjs/core": "^10.0.0 || ^11.0.0",
@@ -33,6 +41,7 @@
     "@nestjs/common": "^11.0.0",
     "@nestjs/core": "^11.0.0",
     "@types/node": "^25.5.0",
+    "bun-types": "^1.3.11",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.0",
     "tsdown": "^0.21.4",

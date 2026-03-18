@@ -69,10 +69,19 @@ func (r *Runner) Start() error {
 		false,
 		uint32(r.cmd.Process.Pid),
 	)
-	if err == nil {
-		windows.AssignProcessToJobObject(job, procHandle)
-		windows.CloseHandle(procHandle)
+	if err != nil {
+		// Can't open process — kill the suspended process to avoid orphan
+		r.cmd.Process.Kill()
+		windows.CloseHandle(job)
+		return fmt.Errorf("opening process for job assignment: %w", err)
 	}
+	if err := windows.AssignProcessToJobObject(job, procHandle); err != nil {
+		windows.CloseHandle(procHandle)
+		r.cmd.Process.Kill()
+		windows.CloseHandle(job)
+		return fmt.Errorf("assigning process to job object: %w", err)
+	}
+	windows.CloseHandle(procHandle)
 
 	r.jobHandle = uintptr(job)
 
@@ -135,6 +144,7 @@ func (r *Runner) closeJob() {
 }
 
 // resumeProcessThreads enumerates and resumes all threads of a suspended process.
+// Returns an error if no threads were found or resumed for the target PID.
 func resumeProcessThreads(pid int) error {
 	snapshot, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPTHREAD, 0)
 	if err != nil {
@@ -145,6 +155,7 @@ func resumeProcessThreads(pid int) error {
 	var te windows.ThreadEntry32
 	te.Size = uint32(unsafe.Sizeof(te))
 
+	resumed := 0
 	err = windows.Thread32First(snapshot, &te)
 	for err == nil {
 		if te.OwnerProcessID == uint32(pid) {
@@ -152,9 +163,14 @@ func resumeProcessThreads(pid int) error {
 			if thErr == nil {
 				windows.ResumeThread(th)
 				windows.CloseHandle(th)
+				resumed++
 			}
 		}
 		err = windows.Thread32Next(snapshot, &te)
+	}
+
+	if resumed == 0 {
+		return fmt.Errorf("no threads found for pid %d", pid)
 	}
 	return nil
 }

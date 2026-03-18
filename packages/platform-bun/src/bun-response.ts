@@ -13,7 +13,7 @@
 export class BunResponse {
   statusCode: number = 200;
   /** @internal */
-  _headers: Record<string, string> = {};
+  _headers: Record<string, string | string[]> = {};
   /** @internal */
   _body: any = null;
   /** @internal */
@@ -33,14 +33,20 @@ export class BunResponse {
     return this.statusCode;
   }
 
-  /** Set a response header. */
+  /** Set a response header. Set-Cookie is stored as an array per RFC 6265. */
   setHeader(name: string, value: string | string[]): this {
-    this._headers[name.toLowerCase()] = Array.isArray(value) ? value.join(', ') : value;
+    const key = name.toLowerCase();
+    if (key === 'set-cookie') {
+      // Set-Cookie headers must NOT be comma-joined (RFC 6265)
+      this._headers[key] = Array.isArray(value) ? value : [value];
+    } else {
+      this._headers[key] = Array.isArray(value) ? value.join(', ') : value;
+    }
     return this;
   }
 
   /** Get a response header value. */
-  getHeader(name: string): string | undefined {
+  getHeader(name: string): string | string[] | undefined {
     return this._headers[name.toLowerCase()];
   }
 
@@ -48,7 +54,19 @@ export class BunResponse {
   appendHeader(name: string, value: string): this {
     const key = name.toLowerCase();
     const existing = this._headers[key];
-    this._headers[key] = existing ? existing + ', ' + value : value;
+    if (key === 'set-cookie') {
+      // Set-Cookie must be kept as separate header entries
+      if (Array.isArray(existing)) {
+        existing.push(value);
+      } else if (existing) {
+        this._headers[key] = [existing as string, value];
+      } else {
+        this._headers[key] = [value];
+      }
+    } else {
+      const prev = Array.isArray(existing) ? existing.join(', ') : existing;
+      this._headers[key] = prev ? prev + ', ' + value : value;
+    }
     return this;
   }
 
@@ -146,7 +164,7 @@ export class BunResponse {
   }
 
   /** Express-compatible header setter/getter. */
-  header(name: string, value?: string): this | string | undefined {
+  header(name: string, value?: string): this | string | string[] | undefined {
     if (value === undefined) {
       return this.getHeader(name);
     }
@@ -156,7 +174,7 @@ export class BunResponse {
   /** @internal Build the final Web API Response. */
   private _buildResponse(): Response {
     const b = this._body;
-    let responseBody: BodyInit | null = null;
+    let responseBody: Bun.BodyInit | null = null;
     if (b !== null && b !== undefined) {
       if (typeof b === 'string' || b instanceof Uint8Array || b instanceof ArrayBuffer) {
         responseBody = b;
@@ -169,9 +187,21 @@ export class BunResponse {
       }
     }
 
+    // Build Headers object to correctly handle multi-value headers (Set-Cookie)
+    const headers = new Headers();
+    for (const [key, val] of Object.entries(this._headers)) {
+      if (Array.isArray(val)) {
+        for (const v of val) {
+          headers.append(key, v);
+        }
+      } else {
+        headers.set(key, val);
+      }
+    }
+
     return new Response(responseBody, {
       status: this.statusCode,
-      headers: this._headers,
+      headers,
     });
   }
 }

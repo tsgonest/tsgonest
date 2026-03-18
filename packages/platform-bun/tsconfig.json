@@ -4,6 +4,7 @@
     "module": "ESNext",
     "moduleResolution": "bundler",
     "lib": ["ES2022"],
+    "types": ["bun-types"],
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true,

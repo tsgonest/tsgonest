@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -339,6 +340,11 @@ func runDevLoop(flags *devFlags, sigCh chan os.Signal) devLoopResult {
 	}
 	configFiles = append(configFiles, tsconfigAbs)
 
+	// Track why the watcher stopped: signal vs config change.
+	// Using atomic bool avoids the race where the signal handler goroutine
+	// and the post-Watch select both try to read from configChanged.
+	var restartRequested atomic.Bool
+
 	stopConfigPoller := watcher.WatchFiles(configFiles, 500*time.Millisecond, func(path string) {
 		select {
 		case configChanged <- path:
@@ -347,6 +353,10 @@ func runDevLoop(flags *devFlags, sigCh chan os.Signal) devLoopResult {
 		}
 	})
 	defer stopConfigPoller()
+
+	// done is closed when runDevLoop returns, so helper goroutines can exit cleanly.
+	done := make(chan struct{})
+	defer close(done)
 
 	// Signal handler for this loop iteration
 	go func() {
@@ -371,9 +381,12 @@ func runDevLoop(flags *devFlags, sigCh chan os.Signal) devLoopResult {
 			}
 		case path := <-configChanged:
 			// Config changed — stop the watcher to return from Watch()
+			restartRequested.Store(true)
 			base := filepath.Base(path)
 			printStatus(os.Stderr, pretty, "↻", "%s changed, full restart required", base)
 			w.Stop()
+		case <-done:
+			return
 		}
 	}()
 
@@ -382,6 +395,11 @@ func runDevLoop(flags *devFlags, sigCh chan os.Signal) devLoopResult {
 		go func() {
 			scanner := bufio.NewScanner(os.Stdin)
 			for scanner.Scan() {
+				select {
+				case <-done:
+					return
+				default:
+				}
 				line := strings.TrimSpace(scanner.Text())
 				if line == "rs" {
 					fmt.Fprintln(os.Stderr, "\nmanual restart triggered...")
@@ -404,13 +422,10 @@ func runDevLoop(flags *devFlags, sigCh chan os.Signal) devLoopResult {
 	printStatus(os.Stderr, pretty, "◇", "watching for changes...")
 	w.Watch()
 
-	// Check why Watch() returned: signal or config change
-	select {
-	case <-configChanged:
+	if restartRequested.Load() {
 		return devLoopRestart
-	default:
-		return devLoopExit
 	}
+	return devLoopExit
 }
 
 // resolveRuntime determines the runtime to use.
