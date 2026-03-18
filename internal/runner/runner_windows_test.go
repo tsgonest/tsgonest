@@ -44,6 +44,15 @@ func waitForPidFileWindows(t *testing.T, path string, timeout time.Duration) int
 	return 0
 }
 
+// skipUnlessBugTestsWin skips the test unless RUNNER_BUG_TESTS=1 is set.
+// Bug-demonstration tests intentionally fail to prove issues exist.
+func skipUnlessBugTestsWin(t *testing.T) {
+	t.Helper()
+	if os.Getenv("RUNNER_BUG_TESTS") != "1" {
+		t.Skip("skipping bug demonstration test (set RUNNER_BUG_TESTS=1 to run)")
+	}
+}
+
 // --- Basic functionality (Windows equivalents of runner_test.go) ---
 
 func TestRunner_StartStop(t *testing.T) {
@@ -144,6 +153,7 @@ func TestRunner_RunningAfterExit(t *testing.T) {
 // Stop() only terminates the direct child via TerminateProcess.
 // Grandchild processes (e.g., Node.js spawning workers) are NOT killed.
 func TestRunner_WindowsStopDoesNotKillProcessTree(t *testing.T) {
+	skipUnlessBugTestsWin(t)
 	if os.Getenv("RUNNER_TEST_HELPER") == "win-grandchild" {
 		select {} // block forever until killed
 	}
@@ -200,6 +210,7 @@ func TestRunner_WindowsStopDoesNotKillProcessTree(t *testing.T) {
 // TestRunner_WindowsParentDeathOrphansChild demonstrates that child processes
 // survive when the parent is killed on Windows, same as the Unix variant.
 func TestRunner_WindowsParentDeathOrphansChild(t *testing.T) {
+	skipUnlessBugTestsWin(t)
 	if os.Getenv("RUNNER_TEST_HELPER") == "win-parent" {
 		pidFile := os.Getenv("RUNNER_TEST_PIDFILE")
 		// Use ping as a long-lived child (universally available on Windows)
@@ -271,6 +282,7 @@ func TestRunner_WindowsStopIsImmediate(t *testing.T) {
 // hard kill (TerminateProcess) with no graceful shutdown opportunity.
 // The process has zero chance to run cleanup code.
 func TestRunner_WindowsNoGracefulShutdown(t *testing.T) {
+	skipUnlessBugTestsWin(t)
 	if os.Getenv("RUNNER_TEST_HELPER") == "win-graceful" {
 		markerPath := os.Getenv("RUNNER_TEST_MARKER")
 		os.WriteFile(markerPath, []byte("running"), 0644)
@@ -324,6 +336,7 @@ func TestRunner_WindowsNoGracefulShutdown(t *testing.T) {
 // TestRunner_RestartAfterStopCreatesOrphanableProcess demonstrates that calling
 // Restart() after Stop() happily launches a new process. Same issue as Unix.
 func TestRunner_RestartAfterStopCreatesOrphanableProcess(t *testing.T) {
+	skipUnlessBugTestsWin(t)
 	r := New("ping", []string{"-n", "300", "127.0.0.1"}, "")
 	if err := r.Start(); err != nil {
 		t.Fatal(err)
@@ -344,6 +357,7 @@ func TestRunner_RestartAfterStopCreatesOrphanableProcess(t *testing.T) {
 
 // TestRunner_StopDoesNotResetCmd demonstrates that Stop() leaves stale state.
 func TestRunner_StopDoesNotResetCmd(t *testing.T) {
+	skipUnlessBugTestsWin(t)
 	r := New("ping", []string{"-n", "300", "127.0.0.1"}, "")
 	if err := r.Start(); err != nil {
 		t.Fatal(err)
