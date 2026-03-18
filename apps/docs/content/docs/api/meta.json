@@ -1,4 +1,4 @@
 {
   "title": "API Reference",
-  "pages": ["runtime", "types"]
+  "pages": ["runtime", "types", "platform-bun"]
 }

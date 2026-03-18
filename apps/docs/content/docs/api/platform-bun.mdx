@@ -1,0 +1,146 @@
+---
+title: "@tsgonest/platform-bun"
+description: "Experimental Bun HTTP adapter for NestJS — 1.6-1.8x faster than Express, optimized for tsgonest serialization."
+---
+
+<Callout type="warn">
+  **Experimental** — `@tsgonest/platform-bun` is under active development.
+  The API may change between minor releases. Please report issues on [GitHub](https://github.com/tsgonest/tsgonest/issues).
+</Callout>
+
+```package-install
+@tsgonest/platform-bun
+```
+
+A NestJS HTTP adapter backed by [Bun.serve()](https://bun.sh/docs/api/http). Drop-in replacement for `@nestjs/platform-express` or `@nestjs/platform-fastify`.
+
+## Quick start
+
+```ts
+import { NestFactory } from '@nestjs/core';
+import { BunAdapter } from '@tsgonest/platform-bun';
+import { AppModule } from './app.module';
+
+async function bootstrap() {
+  const app = await NestFactory.create(AppModule, new BunAdapter());
+  await app.listen(3000);
+}
+bootstrap();
+```
+
+Run with Bun:
+
+```bash
+bun dist/main.js
+```
+
+Or use tsgonest's built-in Bun runtime support:
+
+```bash
+tsgonest dev --runtime bun
+```
+
+## Bun runtime in dev mode
+
+tsgonest's `dev` command supports Bun as a runtime. No adapter needed for this — it simply runs your compiled JS with `bun` instead of `node`.
+
+### Via CLI flag
+
+```bash
+tsgonest dev --runtime bun
+```
+
+### Via config
+
+```ts
+// tsgonest.config.ts
+import { defineConfig } from '@tsgonest/runtime';
+
+export default defineConfig({
+  runtime: 'bun',
+});
+```
+
+CLI flag takes precedence over config. When using Bun, `--enable-source-maps` is automatically omitted (Bun enables it by default).
+
+## Performance
+
+Benchmarked on macOS ARM64, NestJS 11, with tsgonest compile-time serialization in the loop:
+
+### vs Express (most NestJS users)
+
+| Scenario | Express | Bun Adapter | Speedup |
+|---|---:|---:|---:|
+| GET /users (list 20) | 21,130 req/s | 33,665 req/s | **1.59x** |
+| POST /users (validate + serialize) | 22,936 req/s | 41,511 req/s | **1.81x** |
+| GET /users/:id (single) | 25,566 req/s | 44,622 req/s | **1.75x** |
+
+### vs Fastify
+
+| Scenario | Fastify | Bun Adapter | Speedup |
+|---|---:|---:|---:|
+| GET /users (list 20) | 28,277 req/s | 33,665 req/s | **1.19x** |
+| POST /users (validate + serialize) | 28,357 req/s | 41,511 req/s | **1.46x** |
+| GET /users/:id (single) | 37,202 req/s | 44,622 req/s | **1.20x** |
+
+### Latency under load (500 connections)
+
+| Metric | Express | Fastify | Bun |
+|---|---:|---:|---:|
+| p50 (GET list) | 22ms | 17ms | **14ms** |
+| p99 (GET list) | 38ms | 32ms | **28ms** |
+| p50 (POST validate) | 20ms | 16ms | **11ms** |
+| p99 (POST validate) | 37ms | 32ms | **25ms** |
+
+<Callout>
+  The Bun adapter cannot reach Elysia-level performance (3-5x faster) because NestJS's own overhead
+  (ExecutionContext, RxJS interceptor pipeline, decorator metadata) accounts for ~60-70% of per-request time.
+  Both Fastify and Bun adapters pay this identical tax. The adapter controls the remaining 30-40%.
+</Callout>
+
+## Optimizations
+
+The adapter applies several Elysia-inspired optimizations:
+
+- **No `new URL()` per request** — URL pathname extracted via string slicing
+- **Lazy headers/query** — only materialized when accessed by the handler
+- **Zero-Promise response path** — `Response` built synchronously after handler completes (no deferred Promise allocation)
+- **Two-tier routing** — static routes via O(1) Map lookup, param routes via pre-compiled regex
+- **Middleware bypass** — when no middleware is registered, the chain is skipped entirely
+- **Plain object headers** — passed directly to `new Response()` init (Bun optimizes this path)
+
+## API
+
+### `BunAdapter`
+
+Extends NestJS's `AbstractHttpAdapter`. Compatible with NestJS 10 and 11.
+
+```ts
+import { BunAdapter } from '@tsgonest/platform-bun';
+
+const app = await NestFactory.create(AppModule, new BunAdapter());
+```
+
+### Supported NestJS features
+
+- Route registration (`@Get`, `@Post`, `@Put`, `@Delete`, `@Patch`, `@Options`, `@Head`, `@All`)
+- Route parameters (`:id`)
+- Middleware (`app.use()`)
+- CORS (`app.enableCors()`)
+- Body parsing (JSON, text, form-urlencoded — Bun's native parser)
+- Custom error handlers
+- Custom 404 handlers
+- TLS/HTTPS
+- Guards, interceptors, pipes, exception filters (via NestJS core)
+
+### Not yet supported
+
+- Static file serving (`app.useStaticAssets()`) — use Bun.file() or a reverse proxy
+- View engines (`app.setViewEngine()`) — use a dedicated template engine
+- WebSocket gateway — requires separate adapter
+
+## Requirements
+
+- **Bun >= 1.0** as the runtime
+- **NestJS >= 10.0**
+- **@tsgonest/runtime** for tsgonest serialization (optional — works without tsgonest too)

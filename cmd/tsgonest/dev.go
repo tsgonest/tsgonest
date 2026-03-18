@@ -15,6 +15,7 @@ import (
 	shimcompiler "github.com/microsoft/typescript-go/shim/compiler"
 	shimincremental "github.com/microsoft/typescript-go/shim/execute/incremental"
 	"github.com/tsgonest/tsgonest/internal/compiler"
+	"github.com/tsgonest/tsgonest/internal/config"
 	"github.com/tsgonest/tsgonest/internal/runner"
 	"github.com/tsgonest/tsgonest/internal/watcher"
 )
@@ -76,6 +77,7 @@ func (b *devBuilder) fullBuild() int {
 type devFlags struct {
 	configPath          string
 	tsconfigPath        string
+	runtime             string
 	execCmd             string
 	entryPoint          string
 	debugFlag           string
@@ -107,7 +109,8 @@ func runDev(args []string) int {
 	fs.StringVar(&flags.configPath, "config", "", "Path to tsgonest config file")
 	fs.StringVar(&flags.tsconfigPath, "project", "tsconfig.json", "Path to tsconfig.json")
 	fs.StringVar(&flags.tsconfigPath, "p", "tsconfig.json", "Path to tsconfig.json (shorthand)")
-	fs.StringVar(&flags.execCmd, "exec", "", "Custom command to run instead of Node.js")
+	fs.StringVar(&flags.runtime, "runtime", "", "Runtime to use: node (default) or bun")
+	fs.StringVar(&flags.execCmd, "exec", "", "Custom command to run instead of the runtime")
 	fs.StringVar(&flags.entryPoint, "entry", "", "Entry point file (default: auto-detect from dist)")
 	fs.StringVar(&flags.debugFlag, "debug", "", "Enable Node.js debugging (use: --debug=9229, --debug=0.0.0.0:9229, or just --debug=true)")
 	fs.StringVar(&flags.envFile, "env-file", "", "Path to .env file to load")
@@ -115,13 +118,14 @@ func runDev(args []string) int {
 	fs.BoolVar(&flags.noSourceMaps, "no-source-maps", false, "Disable --enable-source-maps")
 
 	fs.Usage = func() {
-		fmt.Println("Usage: tsgonest dev [flags] [-- <node args>]")
+		fmt.Println("Usage: tsgonest dev [flags] [-- <runtime args>]")
 		fmt.Println()
 		fmt.Println("Flags:")
 		fs.PrintDefaults()
 		fmt.Println()
 		fmt.Println("Examples:")
 		fmt.Println("  tsgonest dev")
+		fmt.Println("  tsgonest dev --runtime bun")
 		fmt.Println("  tsgonest dev --debug")
 		fmt.Println("  tsgonest dev --debug 0.0.0.0:9229")
 		fmt.Println("  tsgonest dev --env-file .env.local")
@@ -226,13 +230,16 @@ func runDevLoop(flags *devFlags, sigCh chan os.Signal) devLoopResult {
 		}
 	}
 
-	// Build node args
+	// Resolve runtime: CLI flag > config > default "node"
+	runtimeName := resolveRuntime(flags.runtime, cfg)
+
+	// Build runtime args
 	var proc *runner.Runner
 	if flags.execCmd != "" {
 		proc = runner.New("sh", []string{"-c", flags.execCmd}, cwd)
 	} else if entryPoint != "" {
-		nodeArgs := buildNodeArgs(entryPoint, flags.debugFlag, flags.envFile, flags.noSourceMaps, flags.passthroughArgs)
-		proc = runner.New("node", nodeArgs, cwd)
+		runtimeArgs := buildRuntimeArgs(runtimeName, entryPoint, flags.debugFlag, flags.envFile, flags.noSourceMaps, flags.passthroughArgs)
+		proc = runner.New(runtimeName, runtimeArgs, cwd)
 	}
 
 	if proc != nil {
@@ -243,7 +250,8 @@ func runDevLoop(flags *devFlags, sigCh chan os.Signal) devLoopResult {
 		if flags.execCmd != "" {
 			printStatus(os.Stderr, pretty, "▶", "starting: %s", flags.execCmd)
 		} else {
-			printStatus(os.Stderr, pretty, "▶", "starting: node %s", strings.Join(buildNodeArgs(entryPoint, flags.debugFlag, flags.envFile, flags.noSourceMaps, flags.passthroughArgs), " "))
+			runtimeArgs := buildRuntimeArgs(runtimeName, entryPoint, flags.debugFlag, flags.envFile, flags.noSourceMaps, flags.passthroughArgs)
+			printStatus(os.Stderr, pretty, "▶", "starting: %s %s", runtimeName, strings.Join(runtimeArgs, " "))
 		}
 		if err := proc.Start(); err != nil {
 			fmt.Fprintf(os.Stderr, "error starting process: %v\n", err)
@@ -405,17 +413,32 @@ func runDevLoop(flags *devFlags, sigCh chan os.Signal) devLoopResult {
 	}
 }
 
-// buildNodeArgs constructs the arguments for the node process.
-// Automatically includes --enable-source-maps, --inspect, --env-file as needed.
-func buildNodeArgs(entryPoint string, debugFlag string, envFile string, noSourceMaps bool, passthroughArgs []string) []string {
+// resolveRuntime determines the runtime to use.
+// Priority: CLI flag > config > default "node".
+func resolveRuntime(cliFlag string, cfg *config.Config) string {
+	if cliFlag != "" {
+		return cliFlag
+	}
+	if cfg != nil && cfg.Runtime != "" {
+		return cfg.Runtime
+	}
+	return "node"
+}
+
+// buildRuntimeArgs constructs the arguments for the runtime process (node or bun).
+// Automatically includes runtime-appropriate flags for source maps, debugging, and env files.
+func buildRuntimeArgs(runtime, entryPoint string, debugFlag string, envFile string, noSourceMaps bool, passthroughArgs []string) []string {
 	var args []string
 
-	// --enable-source-maps (auto-enabled unless disabled)
-	if !noSourceMaps {
+	isBun := runtime == "bun"
+
+	// --enable-source-maps: Node.js only (Bun enables source maps by default and
+	// errors on unknown V8 flags)
+	if !isBun && !noSourceMaps {
 		args = append(args, "--enable-source-maps")
 	}
 
-	// --inspect / --inspect=host:port
+	// --inspect / --inspect=host:port (compatible with both Node and Bun)
 	if debugFlag != "" {
 		switch debugFlag {
 		case "true", "1", "yes":
@@ -425,7 +448,7 @@ func buildNodeArgs(entryPoint string, debugFlag string, envFile string, noSource
 		}
 	}
 
-	// --env-file
+	// --env-file (compatible with both Node and Bun)
 	if envFile != "" {
 		args = append(args, "--env-file="+envFile)
 	}
