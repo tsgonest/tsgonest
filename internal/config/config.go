@@ -22,6 +22,7 @@ type Config struct {
 	// Dev/build settings (matching nest-cli.json conventions)
 	EntryFile     string `json:"entryFile,omitempty"`     // Entry point name without extension (default: "main")
 	SourceRoot    string `json:"sourceRoot,omitempty"`    // Source root directory (default: "src")
+	Runtime       string `json:"runtime,omitempty"`       // Runtime to use for dev command: "node" (default) or "bun"
 	DeleteOutDir  bool   `json:"deleteOutDir,omitempty"`  // Delete output directory before build (like --clean)
 	ManualRestart bool   `json:"manualRestart,omitempty"` // Enable "rs" manual restart in dev mode
 }
@@ -183,14 +184,15 @@ func LoadJSON(path string) (*Config, error) {
 	return &config, nil
 }
 
-// LoadTS evaluates a TypeScript config file via Node.js and parses the result.
+// LoadTS evaluates a TypeScript config file via Node.js (or Bun) and parses the result.
 //
 // The config file is expected to have a default export (e.g., export default defineConfig({...})).
-// The function tries multiple Node.js strategies in order:
-//  1. node --import tsx (tsx loader — works with any Node.js version)
-//  2. node --experimental-strip-types (Node.js 22.6+ built-in TS support)
+// The function tries multiple strategies in order:
+//  1. bun -e (if Bun is available — runs TS natively, no loaders needed)
+//  2. node --import tsx (tsx loader — works with any Node.js version)
+//  3. node --experimental-strip-types (Node.js 22.6+ built-in TS support)
 //
-// Falls back to a clear error message if neither works.
+// Falls back to a clear error message if none work.
 func LoadTS(path string) (*Config, error) {
 	absPath, err := filepath.Abs(path)
 	if err != nil {
@@ -218,14 +220,18 @@ func LoadTS(path string) (*Config, error) {
 
 	configDir := filepath.Dir(absPath)
 
-	// Strategy 1: node --import tsx
-	jsonData, err := execNode(configDir, []string{"--import", "tsx", "--input-type=module", "-e", evalScript})
+	// Strategy 1: bun -e (Bun runs TS natively, no loaders needed)
+	jsonData, err := execRuntime("bun", configDir, []string{"-e", evalScript})
 	if err != nil {
-		// Strategy 2: node --experimental-strip-types (Node.js 22.6+)
-		jsonData, err = execNode(configDir, []string{"--experimental-strip-types", "--no-warnings", "--input-type=module", "-e", evalScript})
+		// Strategy 2: node --import tsx
+		jsonData, err = execRuntime("node", configDir, []string{"--import", "tsx", "--input-type=module", "-e", evalScript})
 	}
 	if err != nil {
-		return nil, fmt.Errorf("failed to evaluate TypeScript config %q: %w\nhint: install tsx (npm i -D tsx) or use Node.js 22.6+ for native TypeScript support", path, err)
+		// Strategy 3: node --experimental-strip-types (Node.js 22.6+)
+		jsonData, err = execRuntime("node", configDir, []string{"--experimental-strip-types", "--no-warnings", "--input-type=module", "-e", evalScript})
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to evaluate TypeScript config %q: %w\nhint: install tsx (npm i -D tsx), use Node.js 22.6+, or install Bun for native TypeScript support", path, err)
 	}
 
 	config := DefaultConfig()
@@ -240,15 +246,15 @@ func LoadTS(path string) (*Config, error) {
 	return &config, nil
 }
 
-// execNode runs node with the given arguments and returns stdout bytes.
+// execRuntime runs a runtime binary (node, bun) with the given arguments and returns stdout bytes.
 // Returns an error if the command fails or exits non-zero.
-func execNode(dir string, args []string) ([]byte, error) {
-	nodePath, err := exec.LookPath("node")
+func execRuntime(runtime string, dir string, args []string) ([]byte, error) {
+	binPath, err := exec.LookPath(runtime)
 	if err != nil {
-		return nil, fmt.Errorf("node not found in PATH: %w", err)
+		return nil, fmt.Errorf("%s not found in PATH: %w", runtime, err)
 	}
 
-	cmd := exec.Command(nodePath, args...)
+	cmd := exec.Command(binPath, args...)
 	cmd.Dir = dir
 
 	var stdout, stderr bytes.Buffer
@@ -290,6 +296,14 @@ func (c *Config) Validate() error {
 		if ext != ".json" {
 			return fmt.Errorf("openapi.output must have a .json extension, got %q", ext)
 		}
+	}
+
+	// Validate runtime
+	switch c.Runtime {
+	case "", "node", "bun":
+		// valid — empty defaults to "node"
+	default:
+		return fmt.Errorf("runtime must be one of \"node\", \"bun\", got %q", c.Runtime)
 	}
 
 	// Validate responseSerializer

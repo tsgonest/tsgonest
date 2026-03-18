@@ -121,6 +121,13 @@ func runBuild(args []string) int {
 // If outIncrProgram is non-nil, the created incremental program is stored there for
 // reuse on the next rebuild cycle.
 func runBuildWithIncr(args []string, oldIncrProgram *shimincremental.Program, outIncrProgram **shimincremental.Program) int {
+	return runBuildWithIncrAndProgram(args, oldIncrProgram, outIncrProgram, nil)
+}
+
+// runBuildWithIncrAndProgram is the core build pipeline. When prebuiltProgram is
+// non-nil (from UpdateProgram fast path), it skips CreateProgramFromConfig —
+// avoiding re-reading and re-parsing all source files.
+func runBuildWithIncrAndProgram(args []string, oldIncrProgram *shimincremental.Program, outIncrProgram **shimincremental.Program, prebuiltProgram *shimcompiler.Program) int {
 	flags := parseBuildArgs(args)
 
 	configPath := flags.ConfigPath
@@ -169,6 +176,12 @@ func runBuildWithIncr(args []string, oldIncrProgram *shimincremental.Program, ou
 		printStatus(os.Stderr, pretty, "◆", "loaded config from %s", filepath.Base(resolvedConfigPath))
 	}
 
+	// Honor deleteOutDir from config (same as nest-cli.json convention).
+	// The --clean CLI flag always wins, but deleteOutDir in config enables it too.
+	if !clean && cfg != nil && cfg.DeleteOutDir {
+		clean = true
+	}
+
 	// Step 1: Parse tsconfig using tsgo's native JSONC parser (handles comments, trailing commas, extends).
 	tsconfigStart := time.Now()
 	tsFS := compiler.CreateDefaultFS()
@@ -208,7 +221,7 @@ func runBuildWithIncr(args []string, oldIncrProgram *shimincremental.Program, ou
 
 	// Clean output directory if requested (using parsed OutDir, no re-parsing needed)
 	if clean && opts.OutDir != "" {
-		tsbuildInfoPath := strings.TrimSuffix(resolvedTsconfigPath, ".json") + ".tsbuildinfo"
+		tsbuildInfoPath := tsbuildInfoPathFromTsconfig(resolvedTsconfigPath)
 		// Full clean: remove output directory and .tsbuildinfo to force a complete rebuild.
 		// Without deleting .tsbuildinfo, the incremental compiler thinks files are up-to-date
 		// and skips emit — which means controller rewriting (in the WriteFile callback) never runs.
@@ -223,15 +236,23 @@ func runBuildWithIncr(args []string, oldIncrProgram *shimincremental.Program, ou
 	timing.TSConfig = time.Since(tsconfigStart)
 
 	// Step 2: Create program with the (possibly modified) config.
+	// When prebuiltProgram is provided (from UpdateProgram fast path),
+	// skip the expensive CreateProgramFromConfig that re-reads all files.
 	programStart := time.Now()
-	program, programDiags, err := compiler.CreateProgramFromConfig(false, parsedConfig, host)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		return 1
-	}
-	if len(programDiags) > 0 {
-		fmt.Fprint(os.Stderr, compiler.FormatDiagnostics(programDiags))
-		return 1
+	var program *shimcompiler.Program
+	if prebuiltProgram != nil {
+		program = prebuiltProgram
+	} else {
+		var programDiags []compiler.Diagnostic
+		program, programDiags, err = compiler.CreateProgramFromConfig(false, parsedConfig, host)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			return 1
+		}
+		if len(programDiags) > 0 {
+			fmt.Fprint(os.Stderr, compiler.FormatDiagnostics(programDiags))
+			return 1
+		}
 	}
 	timing.Program = time.Since(programStart)
 
@@ -445,6 +466,27 @@ func runBuildWithIncr(args []string, oldIncrProgram *shimincremental.Program, ou
 		emitStart := time.Now()
 		emitResult = compiler.EmitIncrementalProgram(incrProgram, writeFile)
 		timing.Emit = time.Since(emitStart)
+
+		// Guard against stale .tsbuildinfo: if incremental emit reports zero files
+		// but expected output files are missing on disk (e.g. dist/ was deleted while
+		// .tsbuildinfo survived), delete .tsbuildinfo and re-create the incremental
+		// program from scratch so the fresh emit also writes a valid .tsbuildinfo.
+		if len(emitResult.EmittedFiles) == 0 && !emitResult.EmitSkipped {
+			if missing := checkExpectedOutputsMissing(program, opts.RootDir, opts.OutDir); len(missing) > 0 {
+				tsbuildInfoPath := tsbuildInfoPathFromTsconfig(resolvedTsconfigPath)
+				if err := os.Remove(tsbuildInfoPath); err != nil && !os.IsNotExist(err) {
+					fmt.Fprintf(os.Stderr, "warning: could not remove stale .tsbuildinfo: %v\n", err)
+				}
+				printStatus(os.Stderr, pretty, "◆", "stale .tsbuildinfo: %d output file(s) missing, forcing full emit", len(missing))
+				incrProgram = compiler.CreateIncrementalProgram(program, nil, host, parsedConfig)
+				if outIncrProgram != nil {
+					*outIncrProgram = incrProgram
+				}
+				emitStart = time.Now()
+				emitResult = compiler.EmitIncrementalProgram(incrProgram, writeFile)
+				timing.Emit += time.Since(emitStart)
+			}
+		}
 	} else {
 		emitStart := time.Now()
 		emitResult = compiler.EmitProgram(program, writeFile)
@@ -715,6 +757,12 @@ func runBuildWithIncr(args []string, oldIncrProgram *shimincremental.Program, ou
 	return 0
 }
 
+// tsbuildInfoPathFromTsconfig derives the .tsbuildinfo path from a resolved tsconfig path.
+// e.g., "/project/tsconfig.json" → "/project/tsconfig.tsbuildinfo"
+func tsbuildInfoPathFromTsconfig(resolvedTsconfigPath string) string {
+	return strings.TrimSuffix(resolvedTsconfigPath, ".json") + ".tsbuildinfo"
+}
+
 // cleanDir removes a directory after safety checks.
 func cleanDir(outDir string) error {
 	if outDir == "/" || outDir == "." || outDir == ".." {
@@ -923,6 +971,26 @@ func discoverJSFiles(outDir string) []string {
 		return nil
 	})
 	return files
+}
+
+// checkExpectedOutputsMissing checks whether the expected .js output files for
+// the program's source files exist on disk. Returns the list of missing paths.
+// Used to detect stale .tsbuildinfo when dist/ was deleted but .tsbuildinfo survived.
+func checkExpectedOutputsMissing(program *shimcompiler.Program, rootDir, outDir string) []string {
+	if outDir == "" {
+		return nil
+	}
+	sourceToOutput := buildSourceToOutputMapFromConfig(program, rootDir, outDir)
+	var missing []string
+	for _, outputTS := range sourceToOutput {
+		// buildSourceToOutputMapFromConfig stores paths with .ts extension;
+		// the actual emitted file has .js extension.
+		jsPath := strings.TrimSuffix(outputTS, ".ts") + ".js"
+		if _, err := os.Stat(jsPath); os.IsNotExist(err) {
+			missing = append(missing, jsPath)
+		}
+	}
+	return missing
 }
 
 // determineOutputDir figures out the output directory from emitted files or companion paths.

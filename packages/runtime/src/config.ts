@@ -142,6 +142,8 @@ export interface TsgonestConfig {
   entryFile?: string;
   /** Source root directory (default: "src"). */
   sourceRoot?: string;
+  /** Runtime to use for the dev command: "node" (default) or "bun". */
+  runtime?: 'node' | 'bun';
   /** Delete output directory before build (like --clean). */
   deleteOutDir?: boolean;
   /** Enable "rs" manual restart in dev mode. */

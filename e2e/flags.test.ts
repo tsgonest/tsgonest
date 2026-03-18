@@ -1,5 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { existsSync, rmSync, mkdtempSync, cpSync } from "fs";
+import {
+  existsSync,
+  rmSync,
+  mkdtempSync,
+  cpSync,
+  writeFileSync,
+} from "fs";
 import { tmpdir } from "os";
 import { resolve } from "path";
 import { runTsgonest, FIXTURES_DIR } from "./helpers";
@@ -81,5 +87,95 @@ describe("tsgo flag passthrough", () => {
     ]);
     expect(exitCode).toBe(0);
     expect(stderr).not.toContain("Unknown compiler option");
+  });
+});
+
+describe("deleteOutDir config option", () => {
+  const fixtureDir = resolve(FIXTURES_DIR, "delete-outdir");
+  const distDir = resolve(fixtureDir, "dist");
+  const tsbuildinfo = resolve(fixtureDir, "tsconfig.tsbuildinfo");
+
+  function clean() {
+    if (existsSync(distDir)) rmSync(distDir, { recursive: true });
+    if (existsSync(tsbuildinfo)) rmSync(tsbuildinfo);
+  }
+
+  it("should clean output directory on every build when deleteOutDir is true", () => {
+    clean();
+
+    // First build
+    const first = runTsgonest([
+      "--project",
+      "testdata/delete-outdir/tsconfig.json",
+      "--config",
+      "testdata/delete-outdir/tsgonest.config.json",
+    ]);
+    expect(first.exitCode).toBe(0);
+    expect(existsSync(resolve(distDir, "index.js"))).toBe(true);
+
+    // Plant a stale file
+    writeFileSync(resolve(distDir, "old-leftover.js"), "stale");
+    expect(existsSync(resolve(distDir, "old-leftover.js"))).toBe(true);
+
+    // Second build — deleteOutDir should remove the stale file
+    const second = runTsgonest([
+      "--project",
+      "testdata/delete-outdir/tsconfig.json",
+      "--config",
+      "testdata/delete-outdir/tsgonest.config.json",
+    ]);
+    expect(second.exitCode).toBe(0);
+    expect(second.stderr).toContain("cleaning output directory");
+    expect(existsSync(resolve(distDir, "index.js"))).toBe(true);
+    expect(existsSync(resolve(distDir, "old-leftover.js"))).toBe(false);
+  });
+
+  it("should not clean when deleteOutDir is false", () => {
+    clean();
+
+    // Build without config (no deleteOutDir)
+    const first = runTsgonest([
+      "--project",
+      "testdata/delete-outdir/tsconfig.json",
+    ]);
+    expect(first.exitCode).toBe(0);
+
+    // Plant a stale file
+    writeFileSync(resolve(distDir, "leftover.js"), "stale");
+
+    // Build again without config — stale file should survive
+    const second = runTsgonest([
+      "--project",
+      "testdata/delete-outdir/tsconfig.json",
+    ]);
+    expect(second.exitCode).toBe(0);
+    expect(second.stderr).not.toContain("cleaning output directory");
+    expect(existsSync(resolve(distDir, "leftover.js"))).toBe(true);
+
+    // Cleanup
+    clean();
+  });
+
+  it("--clean CLI flag should override even without config", () => {
+    clean();
+
+    // Build once
+    runTsgonest(["--project", "testdata/delete-outdir/tsconfig.json"]);
+
+    // Plant stale file
+    writeFileSync(resolve(distDir, "stale.js"), "stale");
+
+    // Build with --clean
+    const result = runTsgonest([
+      "--project",
+      "testdata/delete-outdir/tsconfig.json",
+      "--clean",
+    ]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toContain("cleaning output directory");
+    expect(existsSync(resolve(distDir, "index.js"))).toBe(true);
+    expect(existsSync(resolve(distDir, "stale.js"))).toBe(false);
+
+    clean();
   });
 });

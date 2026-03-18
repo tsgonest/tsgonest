@@ -10,6 +10,7 @@ import "github.com/microsoft/typescript-go/internal/compiler"
 import "github.com/microsoft/typescript-go/internal/core"
 import "github.com/microsoft/typescript-go/internal/diagnostics"
 import "github.com/microsoft/typescript-go/internal/tsoptions"
+import "github.com/microsoft/typescript-go/internal/tspath"
 import "github.com/microsoft/typescript-go/internal/vfs"
 import _ "unsafe"
 
@@ -40,6 +41,8 @@ func NewCompilerHost(currentDirectory string, fs vfs.FS, defaultLibraryPath stri
 //go:linkname NewProgram github.com/microsoft/typescript-go/internal/compiler.NewProgram
 func NewProgram(opts compiler.ProgramOptions) *compiler.Program
 type Program = compiler.Program
+//go:linkname Program_UpdateProgram github.com/microsoft/typescript-go/internal/compiler.(*Program).UpdateProgram
+func Program_UpdateProgram(recv *compiler.Program, changedFilePath tspath.Path, newHost compiler.CompilerHost) (*compiler.Program, bool)
 //go:linkname Program_GetTypeChecker github.com/microsoft/typescript-go/internal/compiler.(*Program).GetTypeChecker
 func Program_GetTypeChecker(recv *compiler.Program, ctx context.Context) (*checker.Checker, func())
 //go:linkname Program_ForEachCheckerParallel github.com/microsoft/typescript-go/internal/compiler.(*Program).ForEachCheckerParallel

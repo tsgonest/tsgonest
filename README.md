@@ -208,6 +208,7 @@ These are rewritten to companion imports at compile time.
 ````bash
 tsgonest build                           # production build
 tsgonest dev                             # watch + auto-restart
+tsgonest dev --runtime bun               # watch + auto-restart with Bun runtime
 tsgonest migrate                         # migrate from class-validator / nestia / @nestjs/swagger
 tsgonest sdk                             # generate typed client SDK from OpenAPI
 
@@ -280,6 +281,7 @@ export default defineConfig({
   // Dev/build settings
   entryFile: 'main', // entry point name without extension (default: "main")
   sourceRoot: 'src', // source root directory (default: "src")
+  runtime: 'node', // "node" (default) or "bun" — runtime for `tsgonest dev`
   deleteOutDir: false, // delete output dir before build (default: false)
   manualRestart: false, // enable "rs" restart in dev mode (default: false)
 });
@@ -287,11 +289,12 @@ export default defineConfig({
 
 ## Packages
 
-| Package                                                                | Description                                                                         |
-| ---------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
-| [`tsgonest`](https://www.npmjs.com/package/tsgonest)                   | CLI — auto-installs the right binary for your platform                              |
-| [`@tsgonest/runtime`](https://www.npmjs.com/package/@tsgonest/runtime) | `defineConfig`, `TsgonestValidationError`, `Returns`, `FormDataBody`, `EventStream` |
-| [`@tsgonest/types`](https://www.npmjs.com/package/@tsgonest/types)     | Branded phantom types — `tags.Email`, `tags.Min`, `tags.Trim`, and more             |
+| Package                                                                              | Description                                                                         |
+| ------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------- |
+| [`tsgonest`](https://www.npmjs.com/package/tsgonest)                                 | CLI — auto-installs the right binary for your platform                              |
+| [`@tsgonest/runtime`](https://www.npmjs.com/package/@tsgonest/runtime)               | `defineConfig`, `TsgonestValidationError`, `Returns`, `FormDataBody`, `EventStream` |
+| [`@tsgonest/types`](https://www.npmjs.com/package/@tsgonest/types)                   | Branded phantom types — `tags.Email`, `tags.Min`, `tags.Trim`, and more             |
+| [`@tsgonest/platform-bun`](https://www.npmjs.com/package/@tsgonest/platform-bun) *(experimental)* | Bun HTTP adapter for NestJS — 1.6-1.8x faster than Express                |
 
 ## Platform support
 

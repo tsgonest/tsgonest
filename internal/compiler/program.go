@@ -241,6 +241,30 @@ func GetSyntacticDiagnosticsIncremental(incrProgram *shimincremental.Program) []
 	return incrProgram.GetSyntacticDiagnostics(ctx, nil)
 }
 
+// UpdateProgram attempts a fast single-file update on an existing program.
+// If the changed file's imports/structure didn't change, the old program's
+// ASTs and resolver state are fully reused — only the changed file is re-read
+// and re-parsed. Returns (updatedProgram, true) on success.
+//
+// If the change is structural (new imports, changed references, etc.) or the
+// file is a package redirect, falls back to a full NewProgram and returns
+// (newProgram, false).
+//
+// changedFilePath must be an absolute path. It is canonicalized internally
+// using the program's case sensitivity setting.
+func UpdateProgram(oldProgram *shimcompiler.Program, changedFilePath string, cwd string, fs vfs.FS) (*shimcompiler.Program, bool) {
+	host := CreateDefaultHost(cwd, fs)
+
+	// Convert to tspath.Path — the canonicalized format used by program internals.
+	canonPath := tspath.ToPath(changedFilePath, cwd, oldProgram.UseCaseSensitiveFileNames())
+
+	newProgram, reused := shimcompiler.Program_UpdateProgram(oldProgram, canonPath, host)
+	if newProgram != nil {
+		newProgram.BindSourceFiles()
+	}
+	return newProgram, reused
+}
+
 // GetSourceFiles returns the source files from a program, excluding declaration files.
 func GetSourceFiles(program *shimcompiler.Program) []*ast.SourceFile {
 	var files []*ast.SourceFile

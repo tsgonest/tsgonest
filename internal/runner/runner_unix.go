@@ -13,10 +13,12 @@ func (r *Runner) Start() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	r.cmd = r.newCmd()
+	if r.stopped {
+		return ErrRunnerStopped
+	}
 
-	// Set process group so we can kill all children
-	r.cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	r.cmd = r.newCmd()
+	r.cmd.SysProcAttr = sysProcAttr()
 
 	r.done = make(chan struct{})
 
@@ -33,19 +35,23 @@ func (r *Runner) Start() error {
 	return nil
 }
 
-// Stop stops the child process gracefully, with a force-kill timeout.
-func (r *Runner) Stop() error {
+// stop stops the child process gracefully, with a force-kill timeout.
+func (r *Runner) stop() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	r.stopped = true
 
 	if r.cmd == nil || r.cmd.Process == nil {
 		return nil
 	}
 
 	// Kill the process group
-	pgid, err := syscall.Getpgid(r.cmd.Process.Pid)
-	if err == nil {
-		syscall.Kill(-pgid, syscall.SIGTERM)
+	pgid, pgidErr := syscall.Getpgid(r.cmd.Process.Pid)
+	if pgidErr == nil {
+		if err := syscall.Kill(-pgid, syscall.SIGTERM); err != nil && err != syscall.ESRCH {
+			return fmt.Errorf("sending SIGTERM to process group: %w", err)
+		}
 	} else {
 		r.cmd.Process.Signal(syscall.SIGTERM)
 	}
@@ -53,15 +59,20 @@ func (r *Runner) Stop() error {
 	// Wait for it to stop (with timeout)
 	select {
 	case <-r.done:
+		r.cmd = nil
 		return nil
 	case <-time.After(5 * time.Second):
 		// Force kill
-		if err == nil {
-			syscall.Kill(-pgid, syscall.SIGKILL)
+		if pgidErr == nil {
+			if err := syscall.Kill(-pgid, syscall.SIGKILL); err != nil && err != syscall.ESRCH {
+				r.cmd = nil
+				return fmt.Errorf("force-killing process group: %w", err)
+			}
 		} else {
 			r.cmd.Process.Kill()
 		}
 		<-r.done
+		r.cmd = nil
 		return nil
 	}
 }

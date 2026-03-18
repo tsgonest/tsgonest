@@ -13,6 +13,7 @@ import "github.com/microsoft/typescript-go/internal/evaluator"
 import "github.com/microsoft/typescript-go/internal/jsnum"
 import "github.com/microsoft/typescript-go/internal/nodebuilder"
 import "github.com/microsoft/typescript-go/internal/printer"
+import "github.com/microsoft/typescript-go/internal/scanner"
 import "sync"
 import "unsafe"
 
@@ -204,11 +205,11 @@ type extra_Checker struct {
   declaredTypeLinks core.LinkStore[*ast.Symbol, checker.DeclaredTypeLinks]
   spreadLinks core.LinkStore[*ast.Symbol, checker.SpreadLinks]
   varianceLinks core.LinkStore[*ast.Symbol, checker.VarianceLinks]
-  indexSymbolLinks core.LinkStore[*ast.Symbol, checker.IndexSymbolLinks]
   ReverseMappedSymbolLinks core.LinkStore[*ast.Symbol, checker.ReverseMappedSymbolLinks]
   markedAssignmentSymbolLinks core.LinkStore[*ast.Symbol, checker.MarkedAssignmentSymbolLinks]
   symbolContainerLinks core.LinkStore[*ast.Symbol, checker.ContainingSymbolLinks]
   sourceFileLinks core.LinkStore[*ast.SourceFile, checker.SourceFileLinks]
+  regExpScanner *scanner.Scanner
   patternForType map[*checker.Type]*ast.Node
   contextFreeTypes map[*ast.Node]*checker.Type
   anyType *checker.Type
@@ -501,7 +502,6 @@ const IndexFlagsNoReducibleCheck = checker.IndexFlagsNoReducibleCheck
 const IndexFlagsNone = checker.IndexFlagsNone
 const IndexFlagsStringsOnly = checker.IndexFlagsStringsOnly
 type IndexInfo = checker.IndexInfo
-type IndexSymbolLinks = checker.IndexSymbolLinks
 type IndexType = checker.IndexType
 type IndexedAccessType = checker.IndexedAccessType
 type InferenceContext = checker.InferenceContext
