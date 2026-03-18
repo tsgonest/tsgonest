@@ -35,45 +35,54 @@ func (b *devBuilder) Build() int {
 	return runBuildWithIncr(b.buildArgs, b.incrProgram, &b.incrProgram)
 }
 
+// devFlags holds parsed CLI flags for the dev command.
+// These are parsed once and remain constant across config restarts.
+type devFlags struct {
+	configPath          string
+	tsconfigPath        string
+	execCmd             string
+	entryPoint          string
+	debugFlag           string
+	envFile             string
+	preserveWatchOutput bool
+	noSourceMaps        bool
+	passthroughArgs     []string
+	cwd                 string
+}
+
+// devLoopResult indicates why the dev loop exited.
+type devLoopResult int
+
+const (
+	devLoopExit    devLoopResult = iota // Normal exit (signal received)
+	devLoopRestart                      // Config file changed — restart everything
+)
+
 // runDev implements the "tsgonest dev" command: build, start, and watch+reload.
-// Mirrors nest start functionality with additional features:
-//   - --debug: pass --inspect to node
-//   - --env-file: pass --env-file to node
-//   - rs manual restart (stdin listener)
-//   - --enable-source-maps auto-enabled
-//   - -- passthrough args to child process
 func runDev(args []string) int {
 	// Split args at "--" to separate our flags from passthrough args
 	devArgs, passthroughArgs := splitArgs(args)
 
-	devFlags := flag.NewFlagSet("dev", flag.ExitOnError)
+	fs := flag.NewFlagSet("dev", flag.ExitOnError)
 
-	var (
-		configPath          string
-		tsconfigPath        string
-		execCmd             string
-		entryPoint          string
-		debugFlag           string
-		envFile             string
-		preserveWatchOutput bool
-		noSourceMaps        bool
-	)
+	var flags devFlags
+	flags.passthroughArgs = passthroughArgs
 
-	devFlags.StringVar(&configPath, "config", "", "Path to tsgonest config file")
-	devFlags.StringVar(&tsconfigPath, "project", "tsconfig.json", "Path to tsconfig.json")
-	devFlags.StringVar(&tsconfigPath, "p", "tsconfig.json", "Path to tsconfig.json (shorthand)")
-	devFlags.StringVar(&execCmd, "exec", "", "Custom command to run instead of Node.js")
-	devFlags.StringVar(&entryPoint, "entry", "", "Entry point file (default: auto-detect from dist)")
-	devFlags.StringVar(&debugFlag, "debug", "", "Enable Node.js debugging (use: --debug=9229, --debug=0.0.0.0:9229, or just --debug=true)")
-	devFlags.StringVar(&envFile, "env-file", "", "Path to .env file to load")
-	devFlags.BoolVar(&preserveWatchOutput, "preserveWatchOutput", false, "Don't clear console between rebuilds")
-	devFlags.BoolVar(&noSourceMaps, "no-source-maps", false, "Disable --enable-source-maps")
+	fs.StringVar(&flags.configPath, "config", "", "Path to tsgonest config file")
+	fs.StringVar(&flags.tsconfigPath, "project", "tsconfig.json", "Path to tsconfig.json")
+	fs.StringVar(&flags.tsconfigPath, "p", "tsconfig.json", "Path to tsconfig.json (shorthand)")
+	fs.StringVar(&flags.execCmd, "exec", "", "Custom command to run instead of Node.js")
+	fs.StringVar(&flags.entryPoint, "entry", "", "Entry point file (default: auto-detect from dist)")
+	fs.StringVar(&flags.debugFlag, "debug", "", "Enable Node.js debugging (use: --debug=9229, --debug=0.0.0.0:9229, or just --debug=true)")
+	fs.StringVar(&flags.envFile, "env-file", "", "Path to .env file to load")
+	fs.BoolVar(&flags.preserveWatchOutput, "preserveWatchOutput", false, "Don't clear console between rebuilds")
+	fs.BoolVar(&flags.noSourceMaps, "no-source-maps", false, "Disable --enable-source-maps")
 
-	devFlags.Usage = func() {
+	fs.Usage = func() {
 		fmt.Println("Usage: tsgonest dev [flags] [-- <node args>]")
 		fmt.Println()
 		fmt.Println("Flags:")
-		devFlags.PrintDefaults()
+		fs.PrintDefaults()
 		fmt.Println()
 		fmt.Println("Examples:")
 		fmt.Println("  tsgonest dev")
@@ -83,35 +92,55 @@ func runDev(args []string) int {
 		fmt.Println("  tsgonest dev -- --max-old-space-size=4096")
 	}
 
-	devFlags.Parse(devArgs)
+	fs.Parse(devArgs)
 
 	cwd, err := os.Getwd()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: could not get working directory: %v\n", err)
 		return 1
 	}
+	flags.cwd = cwd
 
-	// Load config for entryFile, sourceRoot, manualRestart settings
-	cfgResult, cfgErr := loadOrDiscoverConfig(configPath, cwd)
+	// Handle SIGINT/SIGTERM/SIGHUP across all loop iterations.
+	sigCh := make(chan os.Signal, 2)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+
+	// Run the dev loop. It restarts from scratch when config files change.
+	for {
+		result := runDevLoop(&flags, sigCh)
+		if result != devLoopRestart {
+			return 0
+		}
+		pretty := compiler.IsPrettyOutput()
+		printStatus(os.Stderr, pretty, "◆", "config changed, restarting...")
+	}
+}
+
+// runDevLoop runs one iteration of the dev loop: load config, build, start
+// child, watch source files, and poll config files. Returns devLoopRestart
+// if a config file changed, or devLoopExit if a signal was received.
+func runDevLoop(flags *devFlags, sigCh chan os.Signal) devLoopResult {
+	cwd := flags.cwd
+	pretty := compiler.IsPrettyOutput()
+
+	// Load config
+	cfgResult, cfgErr := loadOrDiscoverConfig(flags.configPath, cwd)
 	if cfgErr != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", cfgErr)
-		return 1
+		return devLoopExit
 	}
 	cfg := cfgResult.Config
 
 	// Resolve entryFile: CLI flag > config > auto-detect
+	entryPoint := flags.entryPoint
 	if entryPoint == "" && cfg != nil && cfg.EntryFile != "" {
 		entryPoint = cfg.EntryFile
 	}
 
-	// Enable manualRestart from config
 	manualRestart := cfg != nil && cfg.ManualRestart
-
-	// Check deleteOutDir from config (acts like --clean for initial build)
 	deleteOutDir := cfg != nil && cfg.DeleteOutDir
 
-	// Forward auto-discovered config path so runBuild doesn't re-evaluate .ts configs
-	resolvedConfigPath := configPath
+	resolvedConfigPath := flags.configPath
 	if resolvedConfigPath == "" && cfgResult.Path != "" {
 		resolvedConfigPath = cfgResult.Path
 	}
@@ -121,23 +150,18 @@ func runDev(args []string) int {
 	if resolvedConfigPath != "" {
 		watchBuildArgs = append(watchBuildArgs, "--config", resolvedConfigPath)
 	}
-	watchBuildArgs = append(watchBuildArgs, "--project", tsconfigPath)
+	watchBuildArgs = append(watchBuildArgs, "--project", flags.tsconfigPath)
 
-	// Create devBuilder for in-memory incremental reuse across rebuilds.
-	// The builder holds the incremental program state so subsequent builds
-	// diff in-memory instead of re-reading .tsbuildinfo from disk.
+	// Fresh devBuilder — no incremental reuse across config restarts
 	builder := &devBuilder{buildArgs: watchBuildArgs}
 
-	// Initial build (with --clean if deleteOutDir is set)
-	pretty := compiler.IsPrettyOutput()
+	// Initial build
 	printStatus(os.Stderr, pretty, "◆", "performing initial build...")
 	initialBuildArgs := append([]string{}, watchBuildArgs...)
 	if deleteOutDir {
 		initialBuildArgs = append(initialBuildArgs, "--clean")
 	}
 
-	// First build uses initialBuildArgs (may include --clean), but stores
-	// the incremental program in the builder for subsequent reuse.
 	builder.mu.Lock()
 	buildResult := runBuildWithIncr(initialBuildArgs, nil, &builder.incrProgram)
 	builder.mu.Unlock()
@@ -151,11 +175,9 @@ func runDev(args []string) int {
 	if entryPoint == "" {
 		entryPoint = detectEntryPoint(cwd)
 	} else if !filepath.IsAbs(entryPoint) && !strings.HasPrefix(entryPoint, "dist/") {
-		// Resolve bare name like "main" → "dist/main.js"
 		if !strings.HasSuffix(entryPoint, ".js") {
 			entryPoint = entryPoint + ".js"
 		}
-		// Try dist/<sourceRoot>/<entryFile> first, then dist/<entryFile>
 		sourceRoot := "src"
 		if cfg != nil && cfg.SourceRoot != "" {
 			sourceRoot = cfg.SourceRoot
@@ -170,32 +192,43 @@ func runDev(args []string) int {
 
 	// Build node args
 	var proc *runner.Runner
-	if execCmd != "" {
-		// Custom exec command
-		proc = runner.New("sh", []string{"-c", execCmd}, cwd)
+	if flags.execCmd != "" {
+		proc = runner.New("sh", []string{"-c", flags.execCmd}, cwd)
 	} else if entryPoint != "" {
-		nodeArgs := buildNodeArgs(entryPoint, debugFlag, envFile, noSourceMaps, passthroughArgs)
+		nodeArgs := buildNodeArgs(entryPoint, flags.debugFlag, flags.envFile, flags.noSourceMaps, flags.passthroughArgs)
 		proc = runner.New("node", nodeArgs, cwd)
 	}
 
-	// In dev mode, the parent process owns stdin (for "rs" manual restart).
-	// Prevent the child from consuming stdin input.
 	if proc != nil {
 		proc.DisableStdin = true
 	}
 
 	if proc != nil && buildResult == 0 {
-		if execCmd != "" {
-			printStatus(os.Stderr, pretty, "▶", "starting: %s", execCmd)
+		if flags.execCmd != "" {
+			printStatus(os.Stderr, pretty, "▶", "starting: %s", flags.execCmd)
 		} else {
-			printStatus(os.Stderr, pretty, "▶", "starting: node %s", strings.Join(buildNodeArgs(entryPoint, debugFlag, envFile, noSourceMaps, passthroughArgs), " "))
+			printStatus(os.Stderr, pretty, "▶", "starting: node %s", strings.Join(buildNodeArgs(entryPoint, flags.debugFlag, flags.envFile, flags.noSourceMaps, flags.passthroughArgs), " "))
 		}
 		if err := proc.Start(); err != nil {
 			fmt.Fprintf(os.Stderr, "error starting process: %v\n", err)
 		}
 	}
 
-	// Watch for changes
+	// Ensure child cleanup on return (covers both exit and restart paths)
+	defer func() {
+		if proc != nil {
+			proc.Stop()
+		}
+	}()
+
+	// Catch panics to prevent orphan processes
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Fprintf(os.Stderr, "tsgonest dev: panic: %v\n", r)
+		}
+	}()
+
+	// Watch source files
 	srcDir := filepath.Join(cwd, "src")
 	if cfg != nil && cfg.SourceRoot != "" {
 		srcDir = filepath.Join(cwd, cfg.SourceRoot)
@@ -205,8 +238,7 @@ func runDev(args []string) int {
 	}
 
 	rebuild := func(events []watcher.Event) {
-		if !preserveWatchOutput {
-			// Clear terminal (like tsc --watch)
+		if !flags.preserveWatchOutput {
 			fmt.Fprint(os.Stderr, "\033[2J\033[H")
 		}
 
@@ -241,55 +273,60 @@ func runDev(args []string) int {
 		rebuild,
 	)
 
-	// Ensure child process is cleaned up on panic or unexpected exit.
-	// This defer runs LIFO after signal handling, so panics don't leak
-	// orphan processes.
-	if proc != nil {
-		defer func() {
-			proc.Stop()
-		}()
+	// Watch config files for changes. When tsconfig.json or tsgonest.config
+	// changes, we need to restart the entire dev loop (re-parse config,
+	// fresh incremental program, potentially different source root/entry point).
+	configChanged := make(chan string, 1)
+	var configFiles []string
+	if resolvedConfigPath != "" {
+		configFiles = append(configFiles, resolvedConfigPath)
 	}
+	// Resolve tsconfig to absolute path for reliable polling
+	tsconfigAbs := flags.tsconfigPath
+	if !filepath.IsAbs(tsconfigAbs) {
+		tsconfigAbs = filepath.Join(cwd, tsconfigAbs)
+	}
+	configFiles = append(configFiles, tsconfigAbs)
 
-	// Catch panics to ensure clean shutdown — without this, a panic in
-	// rebuild/watcher goroutines could leave node processes running.
-	defer func() {
-		if r := recover(); r != nil {
-			fmt.Fprintf(os.Stderr, "tsgonest dev: panic: %v\n", r)
-		}
-	}()
-
-	// Handle SIGINT/SIGTERM/SIGHUP.
-	// First signal triggers graceful shutdown (SIGTERM + 5s timeout).
-	// Second signal during the grace period force-exits immediately.
-	sigCh := make(chan os.Signal, 2)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
-
-	go func() {
-		<-sigCh
-		fmt.Fprintln(os.Stderr, "\nshutting down...")
-		w.Stop()
-
-		stopDone := make(chan struct{})
-		go func() {
-			if proc != nil {
-				proc.Stop()
-			}
-			close(stopDone)
-		}()
-
+	stopConfigPoller := watcher.WatchFiles(configFiles, 500*time.Millisecond, func(path string) {
 		select {
-		case <-stopDone:
-			// Graceful shutdown completed
+		case configChanged <- path:
+		default:
+			// Already a pending config change — don't block
+		}
+	})
+	defer stopConfigPoller()
+
+	// Signal handler for this loop iteration
+	go func() {
+		select {
 		case <-sigCh:
-			// Second signal — force exit immediately.
-			// On Windows, os.Exit closes the Job Object handle which kills all children.
-			// On Unix, SIGTERM was already sent to the process group by the first Stop().
-			fmt.Fprintln(os.Stderr, "\nforce killing...")
-			os.Exit(1)
+			fmt.Fprintln(os.Stderr, "\nshutting down...")
+			w.Stop()
+
+			stopDone := make(chan struct{})
+			go func() {
+				if proc != nil {
+					proc.Stop()
+				}
+				close(stopDone)
+			}()
+
+			select {
+			case <-stopDone:
+			case <-sigCh:
+				fmt.Fprintln(os.Stderr, "\nforce killing...")
+				os.Exit(1)
+			}
+		case path := <-configChanged:
+			// Config changed — stop the watcher to return from Watch()
+			base := filepath.Base(path)
+			printStatus(os.Stderr, pretty, "↻", "%s changed, full restart required", base)
+			w.Stop()
 		}
 	}()
 
-	// Manual restart: listen for "rs" on stdin
+	// Manual restart listener
 	if manualRestart {
 		go func() {
 			scanner := bufio.NewScanner(os.Stdin)
@@ -316,7 +353,13 @@ func runDev(args []string) int {
 	printStatus(os.Stderr, pretty, "◇", "watching for changes...")
 	w.Watch()
 
-	return 0
+	// Check why Watch() returned: signal or config change
+	select {
+	case <-configChanged:
+		return devLoopRestart
+	default:
+		return devLoopExit
+	}
 }
 
 // buildNodeArgs constructs the arguments for the node process.
