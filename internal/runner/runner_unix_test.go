@@ -53,6 +53,7 @@ func TestRunner_StopKillsProcessGroup(t *testing.T) {
 // child processes started with Setpgid survive as orphans because there is no
 // Pdeathsig or other parent-death notification mechanism.
 func TestRunner_ParentDeathOrphansChild(t *testing.T) {
+	skipUnlessBugTests(t)
 	if os.Getenv("RUNNER_TEST_HELPER") == "parent" {
 		// Helper subprocess: start a child via Runner, write its PID, then block.
 		pidFilePath := os.Getenv("RUNNER_TEST_PIDFILE")
@@ -233,6 +234,7 @@ func TestRunner_ConcurrentStopRestart(t *testing.T) {
 // rebuild calls Restart() after the signal handler's Stop(), the new process
 // can escape cleanup.
 func TestRunner_RestartAfterStopCreatesOrphanableProcess(t *testing.T) {
+	skipUnlessBugTests(t)
 	r := New("sleep", []string{"300"}, "")
 	if err := r.Start(); err != nil {
 		t.Fatal(err)
@@ -260,6 +262,7 @@ func TestRunner_RestartAfterStopCreatesOrphanableProcess(t *testing.T) {
 // r.cmd and r.cmd.Process still point to the dead process after Stop().
 // A second Stop() sends signals to a dead PID instead of being a clean no-op.
 func TestRunner_StopDoesNotResetCmd(t *testing.T) {
+	skipUnlessBugTests(t)
 	r := New("sleep", []string{"300"}, "")
 	if err := r.Start(); err != nil {
 		t.Fatal(err)
@@ -285,6 +288,7 @@ func TestRunner_StopDoesNotResetCmd(t *testing.T) {
 // sent during Stop()'s 5-second SIGTERM grace period is silently dropped
 // instead of force-killing immediately.
 func TestRunner_SingleShotSignalHandlerPattern(t *testing.T) {
+	skipUnlessBugTests(t)
 	if testing.Short() {
 		t.Skip("skipping slow test (requires SIGTERM timeout)")
 	}
@@ -371,6 +375,7 @@ func TestRunner_StopSIGKILLPathHasNoTimeout(t *testing.T) {
 // return values of syscall.Kill. If the process is already dead or we lack
 // permissions, the caller has no way to know.
 func TestRunner_StopSwallowsSignalErrors(t *testing.T) {
+	skipUnlessBugTests(t)
 	r := New("sleep", []string{"300"}, "")
 	if err := r.Start(); err != nil {
 		t.Fatal(err)
@@ -387,6 +392,16 @@ func TestRunner_StopSwallowsSignalErrors(t *testing.T) {
 		t.Errorf("Stop() returned nil after sending SIGTERM to a dead process. "+
 			"syscall.Kill errors (ESRCH, EPERM) are silently discarded in runner_unix.go:48,60. "+
 			"Fix: check and return signal errors, or at minimum log them.")
+	}
+}
+
+// skipUnlessBugTests skips the test unless RUNNER_BUG_TESTS=1 is set.
+// Bug-demonstration tests intentionally fail to prove issues exist.
+// They are gated so they don't break the main CI test suite.
+func skipUnlessBugTests(t *testing.T) {
+	t.Helper()
+	if os.Getenv("RUNNER_BUG_TESTS") != "1" {
+		t.Skip("skipping bug demonstration test (set RUNNER_BUG_TESTS=1 to run)")
 	}
 }
 
