@@ -121,6 +121,13 @@ func runBuild(args []string) int {
 // If outIncrProgram is non-nil, the created incremental program is stored there for
 // reuse on the next rebuild cycle.
 func runBuildWithIncr(args []string, oldIncrProgram *shimincremental.Program, outIncrProgram **shimincremental.Program) int {
+	return runBuildWithIncrAndProgram(args, oldIncrProgram, outIncrProgram, nil)
+}
+
+// runBuildWithIncrAndProgram is the core build pipeline. When prebuiltProgram is
+// non-nil (from UpdateProgram fast path), it skips CreateProgramFromConfig —
+// avoiding re-reading and re-parsing all source files.
+func runBuildWithIncrAndProgram(args []string, oldIncrProgram *shimincremental.Program, outIncrProgram **shimincremental.Program, prebuiltProgram *shimcompiler.Program) int {
 	flags := parseBuildArgs(args)
 
 	configPath := flags.ConfigPath
@@ -229,15 +236,23 @@ func runBuildWithIncr(args []string, oldIncrProgram *shimincremental.Program, ou
 	timing.TSConfig = time.Since(tsconfigStart)
 
 	// Step 2: Create program with the (possibly modified) config.
+	// When prebuiltProgram is provided (from UpdateProgram fast path),
+	// skip the expensive CreateProgramFromConfig that re-reads all files.
 	programStart := time.Now()
-	program, programDiags, err := compiler.CreateProgramFromConfig(false, parsedConfig, host)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		return 1
-	}
-	if len(programDiags) > 0 {
-		fmt.Fprint(os.Stderr, compiler.FormatDiagnostics(programDiags))
-		return 1
+	var program *shimcompiler.Program
+	if prebuiltProgram != nil {
+		program = prebuiltProgram
+	} else {
+		var programDiags []compiler.Diagnostic
+		program, programDiags, err = compiler.CreateProgramFromConfig(false, parsedConfig, host)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			return 1
+		}
+		if len(programDiags) > 0 {
+			fmt.Fprint(os.Stderr, compiler.FormatDiagnostics(programDiags))
+			return 1
+		}
 	}
 	timing.Program = time.Since(programStart)
 

@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	shimcompiler "github.com/microsoft/typescript-go/shim/compiler"
 	shimincremental "github.com/microsoft/typescript-go/shim/execute/incremental"
 	"github.com/tsgonest/tsgonest/internal/compiler"
 	"github.com/tsgonest/tsgonest/internal/runner"
@@ -19,20 +20,55 @@ import (
 )
 
 // devBuilder holds build state across dev-mode rebuild cycles.
-// It retains the incremental program in memory so subsequent rebuilds
-// can diff against it directly instead of re-reading .tsbuildinfo from disk.
+// It retains both the base compiler program (for UpdateProgram fast path)
+// and the incremental program (for diagnostic/emit caching) in memory.
 type devBuilder struct {
 	mu          sync.Mutex
 	incrProgram *shimincremental.Program
+	baseProgram *shimcompiler.Program // retained for UpdateProgram fast path
 	buildArgs   []string
+	cwd         string
 }
 
-// Build runs a build cycle with in-memory incremental reuse.
-// It acquires a mutex to prevent concurrent builds (e.g., from watcher + "rs" firing simultaneously).
+// Build runs a full build cycle with in-memory incremental reuse.
+// Used for multi-file changes or when the fast path isn't applicable.
 func (b *devBuilder) Build() int {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return runBuildWithIncr(b.buildArgs, b.incrProgram, &b.incrProgram)
+	return b.fullBuild()
+}
+
+// BuildSingleFile attempts a fast single-file rebuild using UpdateProgram.
+// If the changed file's imports/structure didn't change, this avoids re-reading
+// and re-parsing all source files — only the changed file is re-read.
+// Falls back to a full build if UpdateProgram can't handle the change.
+func (b *devBuilder) BuildSingleFile(changedFile string) int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if b.baseProgram == nil {
+		return b.fullBuild()
+	}
+
+	fs := compiler.CreateDefaultFS()
+	updatedProgram, reused := compiler.UpdateProgram(b.baseProgram, changedFile, b.cwd, fs)
+	if !reused || updatedProgram == nil {
+		// Structural change (new imports, etc.) — fall back to full rebuild
+		return b.fullBuild()
+	}
+
+	// Fast path: run the full pipeline with the updated program
+	b.baseProgram = updatedProgram
+	return runBuildWithIncrAndProgram(b.buildArgs, b.incrProgram, &b.incrProgram, updatedProgram)
+}
+
+func (b *devBuilder) fullBuild() int {
+	code := runBuildWithIncr(b.buildArgs, b.incrProgram, &b.incrProgram)
+	// Extract the base program from the incremental program for next UpdateProgram call
+	if b.incrProgram != nil {
+		b.baseProgram = b.incrProgram.Program()
+	}
+	return code
 }
 
 // devFlags holds parsed CLI flags for the dev command.
@@ -153,7 +189,7 @@ func runDevLoop(flags *devFlags, sigCh chan os.Signal) devLoopResult {
 	watchBuildArgs = append(watchBuildArgs, "--project", flags.tsconfigPath)
 
 	// Fresh devBuilder — no incremental reuse across config restarts
-	builder := &devBuilder{buildArgs: watchBuildArgs}
+	builder := &devBuilder{buildArgs: watchBuildArgs, cwd: cwd}
 
 	// Initial build
 	printStatus(os.Stderr, pretty, "◆", "performing initial build...")
@@ -244,7 +280,14 @@ func runDevLoop(flags *devFlags, sigCh chan os.Signal) devLoopResult {
 
 		fmt.Fprintf(os.Stderr, "\ndetected %d change(s), rebuilding...\n", len(events))
 
-		result := builder.Build()
+		// Fast path: single file changed with no deletes/creates — use UpdateProgram
+		// which skips re-reading/re-parsing all other source files.
+		var result int
+		if len(events) == 1 && events[0].Op == "write" {
+			result = builder.BuildSingleFile(events[0].Path)
+		} else {
+			result = builder.Build()
+		}
 
 		if result != 0 {
 			fmt.Fprintln(os.Stderr, "build failed, waiting for changes...")
