@@ -30,6 +30,7 @@ require (
 )
 
 require (
+	github.com/fsnotify/fsnotify v1.9.0
 	github.com/go-json-experiment/json v0.0.0-20260214004413-d219187c3433
 	github.com/microsoft/typescript-go/shim/ast v0.0.0-00010101000000-000000000000
 	github.com/microsoft/typescript-go/shim/bundled v0.0.0-00010101000000-000000000000
