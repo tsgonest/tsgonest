@@ -138,7 +138,7 @@ func TestRunner_RunningAfterExit(t *testing.T) {
 // entire process tree via Job Objects, not just the direct child.
 func TestRunner_WindowsStopKillsProcessTree(t *testing.T) {
 	if os.Getenv("RUNNER_TEST_HELPER") == "win-grandchild" {
-		select {}
+		time.Sleep(10 * time.Minute) // block until killed
 	}
 	if os.Getenv("RUNNER_TEST_HELPER") == "win-spawn-parent" {
 		pidFile := os.Getenv("RUNNER_TEST_PIDFILE")
@@ -196,7 +196,7 @@ func TestRunner_WindowsParentDeathCleansUpChild(t *testing.T) {
 			os.Exit(1)
 		}
 		os.WriteFile(pidFile, []byte(strconv.Itoa(r.cmd.Process.Pid)), 0644)
-		select {}
+		time.Sleep(10 * time.Minute) // block until killed
 	}
 
 	pidFile, err := os.CreateTemp("", "runner-win-orphan-*")
@@ -239,7 +239,7 @@ func TestRunner_WindowsGracefulShutdown(t *testing.T) {
 		os.WriteFile(markerPath, []byte("running"), 0644)
 		// This defer runs if the process exits gracefully (CTRL_BREAK handled)
 		defer os.WriteFile(markerPath, []byte("cleaned-up"), 0644)
-		select {}
+		time.Sleep(10 * time.Minute) // block until killed
 	}
 
 	markerFile, err := os.CreateTemp("", "runner-win-graceful-*")

@@ -11,10 +11,14 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+const createSuspended = 0x00000004
+
 // Start starts the child process inside a Windows Job Object.
-// The Job Object is configured with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE so
-// all child processes are terminated when the job handle is closed (including
-// on parent death).
+// The process is created suspended, assigned to the Job Object, then resumed.
+// This eliminates the race where the child could spawn grandchildren before
+// being assigned to the job. The Job Object is configured with
+// JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE so all processes in the job are
+// terminated when the handle is closed (including on parent death).
 func (r *Runner) Start() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -25,14 +29,14 @@ func (r *Runner) Start() error {
 
 	r.cmd = r.newCmd()
 
-	// CREATE_NEW_PROCESS_GROUP allows sending CTRL_BREAK_EVENT for graceful shutdown.
+	// CREATE_NEW_PROCESS_GROUP: allows sending CTRL_BREAK_EVENT for graceful shutdown.
+	// CREATE_SUSPENDED: process starts frozen so we can assign the Job Object before
+	// any child processes are spawned.
 	r.cmd.SysProcAttr = &syscall.SysProcAttr{
-		CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP,
+		CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP | createSuspended,
 	}
 
 	// Create a Job Object with KILL_ON_JOB_CLOSE.
-	// When the last handle to this job is closed (including on parent crash),
-	// all processes assigned to the job are terminated.
 	job, err := windows.CreateJobObject(nil, nil)
 	if err != nil {
 		return fmt.Errorf("creating job object: %w", err)
@@ -58,23 +62,28 @@ func (r *Runner) Start() error {
 		return fmt.Errorf("starting process: %w", err)
 	}
 
-	// Assign the child process to the Job Object.
-	// We need a process HANDLE (not PID) for AssignProcessToJobObject.
+	// Assign the suspended process to the Job Object BEFORE resuming it.
+	// This ensures all grandchildren are also in the job.
 	procHandle, err := windows.OpenProcess(
 		windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE,
 		false,
 		uint32(r.cmd.Process.Pid),
 	)
 	if err == nil {
-		if assignErr := windows.AssignProcessToJobObject(job, procHandle); assignErr != nil {
-			// Assignment failed — job won't manage this process tree,
-			// but the process itself is running. Log and continue.
-			fmt.Fprintf(r.cmd.Stderr, "warning: could not assign process to job object: %v\n", assignErr)
-		}
+		windows.AssignProcessToJobObject(job, procHandle)
 		windows.CloseHandle(procHandle)
 	}
 
 	r.jobHandle = uintptr(job)
+
+	// Resume the process now that it's in the Job Object.
+	if err := resumeProcessThreads(r.cmd.Process.Pid); err != nil {
+		// If resume fails, kill the process to avoid a suspended orphan.
+		r.cmd.Process.Kill()
+		windows.CloseHandle(job)
+		r.jobHandle = 0
+		return fmt.Errorf("resuming process: %w", err)
+	}
 
 	// Wait for process in background
 	go func() {
@@ -86,9 +95,6 @@ func (r *Runner) Start() error {
 }
 
 // stop stops the child process gracefully, with a force-kill timeout.
-// It first sends CTRL_BREAK_EVENT for graceful shutdown, then falls back
-// to TerminateProcess. The Job Object handle is closed in both paths,
-// which also terminates any grandchild processes.
 func (r *Runner) stop() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -101,7 +107,6 @@ func (r *Runner) stop() error {
 	}
 
 	// Try graceful shutdown via CTRL_BREAK_EVENT.
-	// This works because the child was created with CREATE_NEW_PROCESS_GROUP.
 	// Node.js handles this signal and can run cleanup code.
 	windows.GenerateConsoleCtrlEvent(windows.CTRL_BREAK_EVENT, uint32(r.cmd.Process.Pid))
 
@@ -120,10 +125,36 @@ func (r *Runner) stop() error {
 	}
 }
 
-// closeJob closes the Windows Job Object handle if it's open.
+// closeJob closes the Windows Job Object handle.
+// With JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, this terminates all processes in the job.
 func (r *Runner) closeJob() {
 	if r.jobHandle != 0 {
 		windows.CloseHandle(windows.Handle(r.jobHandle))
 		r.jobHandle = 0
 	}
+}
+
+// resumeProcessThreads enumerates and resumes all threads of a suspended process.
+func resumeProcessThreads(pid int) error {
+	snapshot, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPTHREAD, 0)
+	if err != nil {
+		return fmt.Errorf("creating thread snapshot: %w", err)
+	}
+	defer windows.CloseHandle(snapshot)
+
+	var te windows.ThreadEntry32
+	te.Size = uint32(unsafe.Sizeof(te))
+
+	err = windows.Thread32First(snapshot, &te)
+	for err == nil {
+		if te.OwnerProcessID == uint32(pid) {
+			th, thErr := windows.OpenThread(windows.THREAD_SUSPEND_RESUME, false, te.ThreadID)
+			if thErr == nil {
+				windows.ResumeThread(th)
+				windows.CloseHandle(th)
+			}
+		}
+		err = windows.Thread32Next(snapshot, &te)
+	}
+	return nil
 }
