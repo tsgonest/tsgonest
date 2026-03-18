@@ -169,6 +169,12 @@ func runBuildWithIncr(args []string, oldIncrProgram *shimincremental.Program, ou
 		printStatus(os.Stderr, pretty, "◆", "loaded config from %s", filepath.Base(resolvedConfigPath))
 	}
 
+	// Honor deleteOutDir from config (same as nest-cli.json convention).
+	// The --clean CLI flag always wins, but deleteOutDir in config enables it too.
+	if !clean && cfg != nil && cfg.DeleteOutDir {
+		clean = true
+	}
+
 	// Step 1: Parse tsconfig using tsgo's native JSONC parser (handles comments, trailing commas, extends).
 	tsconfigStart := time.Now()
 	tsFS := compiler.CreateDefaultFS()
@@ -445,6 +451,25 @@ func runBuildWithIncr(args []string, oldIncrProgram *shimincremental.Program, ou
 		emitStart := time.Now()
 		emitResult = compiler.EmitIncrementalProgram(incrProgram, writeFile)
 		timing.Emit = time.Since(emitStart)
+
+		// Guard against stale .tsbuildinfo: if incremental emit reports zero files
+		// but expected output files are missing on disk (e.g. dist/ was deleted while
+		// .tsbuildinfo survived), delete .tsbuildinfo and re-create the incremental
+		// program from scratch so the fresh emit also writes a valid .tsbuildinfo.
+		if len(emitResult.EmittedFiles) == 0 && !emitResult.EmitSkipped {
+			if missing := checkExpectedOutputsMissing(program, opts.RootDir, opts.OutDir); len(missing) > 0 {
+				tsbuildInfoPath := strings.TrimSuffix(resolvedTsconfigPath, ".json") + ".tsbuildinfo"
+				os.Remove(tsbuildInfoPath)
+				printStatus(os.Stderr, pretty, "◆", "stale .tsbuildinfo: %d output file(s) missing, forcing full emit", len(missing))
+				incrProgram = compiler.CreateIncrementalProgram(program, nil, host, parsedConfig)
+				if outIncrProgram != nil {
+					*outIncrProgram = incrProgram
+				}
+				emitStart = time.Now()
+				emitResult = compiler.EmitIncrementalProgram(incrProgram, writeFile)
+				timing.Emit += time.Since(emitStart)
+			}
+		}
 	} else {
 		emitStart := time.Now()
 		emitResult = compiler.EmitProgram(program, writeFile)
@@ -923,6 +948,26 @@ func discoverJSFiles(outDir string) []string {
 		return nil
 	})
 	return files
+}
+
+// checkExpectedOutputsMissing checks whether the expected .js output files for
+// the program's source files exist on disk. Returns the list of missing paths.
+// Used to detect stale .tsbuildinfo when dist/ was deleted but .tsbuildinfo survived.
+func checkExpectedOutputsMissing(program *shimcompiler.Program, rootDir, outDir string) []string {
+	if outDir == "" {
+		return nil
+	}
+	sourceToOutput := buildSourceToOutputMapFromConfig(program, rootDir, outDir)
+	var missing []string
+	for _, outputTS := range sourceToOutput {
+		// buildSourceToOutputMapFromConfig stores paths with .ts extension;
+		// the actual emitted file has .js extension.
+		jsPath := strings.TrimSuffix(outputTS, ".ts") + ".js"
+		if _, err := os.Stat(jsPath); os.IsNotExist(err) {
+			missing = append(missing, jsPath)
+		}
+	}
+	return missing
 }
 
 // determineOutputDir figures out the output directory from emitted files or companion paths.
