@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"sync"
@@ -18,9 +19,11 @@ type Runner struct {
 	// manual restart ("rs") commands without the child consuming input.
 	DisableStdin bool
 
-	mu   sync.Mutex
-	cmd  *exec.Cmd
-	done chan struct{}
+	mu        sync.Mutex
+	cmd       *exec.Cmd
+	done      chan struct{}
+	stopped   bool    // set by Stop(); prevents Start() after explicit shutdown
+	jobHandle uintptr // Windows Job Object handle; unused on other platforms
 }
 
 // New creates a new process runner.
@@ -50,8 +53,26 @@ func (r *Runner) Restart() error {
 	if err := r.Stop(); err != nil {
 		return err
 	}
+	// Clear the stopped flag so Start() proceeds.
+	// Stop() sets stopped=true to prevent accidental restarts after shutdown,
+	// but Restart() explicitly intends to keep running.
+	r.mu.Lock()
+	if r.stopped {
+		r.stopped = false
+	}
+	r.mu.Unlock()
 	return r.Start()
 }
+
+// Stop stops the child process. After Stop(), Start() will return an error
+// unless Restart() is used (which clears the stopped flag).
+func (r *Runner) Stop() error {
+	return r.stop()
+}
+
+// ErrRunnerStopped is returned by Start() when the runner has been explicitly
+// stopped and a non-Restart Start() is attempted.
+var ErrRunnerStopped = fmt.Errorf("runner has been stopped")
 
 // Wait blocks until the child process exits.
 func (r *Runner) Wait() {

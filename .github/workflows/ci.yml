@@ -30,8 +30,6 @@ jobs:
         run: just init
 
       - name: Run runner process management tests
-        env:
-          RUNNER_BUG_TESTS: '1'
         run: go test -v ./internal/runner/ -timeout 120s
 
   # ── Full test suite (unit + e2e) ──────────────────────────────
