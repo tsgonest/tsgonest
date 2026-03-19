@@ -398,62 +398,22 @@ export class BunAdapter extends AbstractHttpAdapter {
     // Bun has built-in body parsing — register a middleware that eagerly parses
     this._middlewares.unshift({
       path: null,
-      handler: async (req: BunRequest, _res: BunResponse, next: () => void) => {
+      handler: (req: BunRequest, _res: BunResponse, next: () => void) => {
         if (req.body !== undefined) {
           next();
           return;
         }
 
-        const contentType = req.get('content-type') || '';
-        const raw = req.raw;
-
-        try {
-          if (contentType.includes('application/json')) {
-            req.body = await raw.json();
-          } else if (contentType.includes('text/')) {
-            req.body = await raw.text();
-          } else if (contentType.includes('multipart/form-data')) {
-            // Bun natively parses multipart/form-data via Request.formData().
-            // File fields become web-native File instances — tsgonest's generated
-            // validation code uses `instanceof File` which works without conversion.
-            const formData = await raw.formData();
-            const body: Record<string, any> = {};
-            for (const [key, value] of formData.entries()) {
-              if (value instanceof File) {
-                const existing = body[key];
-                if (existing instanceof File) {
-                  body[key] = [existing, value];
-                } else if (Array.isArray(existing)) {
-                  existing.push(value);
-                } else {
-                  body[key] = value;
-                }
-              } else {
-                body[key] = value; // string field
-              }
-            }
-            req.body = body;
-          } else if (contentType.includes('application/x-www-form-urlencoded')) {
-            const text = await raw.text();
-            const params = new URLSearchParams(text);
-            const body: Record<string, string> = {};
-            params.forEach((value, key) => { body[key] = value; });
-            req.body = body;
-          } else if (raw.body) {
-            // Try JSON as default for POST/PUT/PATCH.
-            // Read as text first — Request.body can only be consumed once.
-            const text = await raw.text();
-            try {
-              req.body = JSON.parse(text);
-            } catch {
-              req.body = text;
-            }
-          }
-        } catch {
-          req.body = undefined;
+        // Skip body parsing for methods that typically have no body
+        const m = req.method;
+        if (m === 'GET' || m === 'HEAD' || m === 'OPTIONS') {
+          next();
+          return;
         }
 
-        next();
+        // Async body parsing — only reached for POST/PUT/PATCH/DELETE
+        parseRequestBody(req).then(next, next);
+        return;
       },
     });
   }
@@ -553,17 +513,17 @@ export class BunAdapter extends AbstractHttpAdapter {
    * 1. Static routes (no params): O(1) Map lookup by "METHOD /path"
    * 2. Param routes: regex match (only tried if static lookup misses)
    */
-  private _compileRoutes(): (method: string, pathname: string) => { handler: Function; params: Record<string, string> | null } | null {
-    // Tier 1: static routes — O(1) lookup via Map
-    const staticRoutes = new Map<string, Function>();
+  private _compileRoutes(): (method: string, pathname: string) => RouteMatch | null {
+    // Tier 1: static routes — two-level Map (method → path → result)
+    // Avoids string concatenation on every request.
+    const staticByMethod = new Map<string, Map<string, RouteMatch>>();
 
-    // Tier 2: param routes — regex match
-    const paramRoutes: Array<{
-      method: string;
+    // Tier 2: param routes — regex match, grouped by method
+    const paramByMethod = new Map<string, Array<{
       regex: RegExp;
       paramNames: string[];
       handler: Function;
-    }> = [];
+    }>>();
 
     for (const [path, methods] of this._routeMap) {
       const hasParams = path.includes(':') || path.includes('*');
@@ -579,41 +539,102 @@ export class BunAdapter extends AbstractHttpAdapter {
 
         const regex = new RegExp('^' + regexStr + '$');
         for (const [method, handler] of methods) {
-          paramRoutes.push({ method, regex, paramNames, handler });
+          let arr = paramByMethod.get(method);
+          if (!arr) { arr = []; paramByMethod.set(method, arr); }
+          arr.push({ regex, paramNames, handler });
         }
       } else {
-        // Static path — store as "GET /users" key for O(1) lookup
+        // Static path — pre-allocate match result objects at compile time
         for (const [method, handler] of methods) {
-          staticRoutes.set(method + ' ' + path, handler);
+          let methodMap = staticByMethod.get(method);
+          if (!methodMap) { methodMap = new Map(); staticByMethod.set(method, methodMap); }
+          methodMap.set(path, { handler, params: null });
         }
       }
     }
 
-    const hasParamRoutes = paramRoutes.length > 0;
+    const hasParamRoutes = paramByMethod.size > 0;
 
     return (method: string, pathname: string) => {
-      // Tier 1: exact static match (most common in typical apps)
-      const staticHandler = staticRoutes.get(method + ' ' + pathname);
-      if (staticHandler) {
-        return { handler: staticHandler, params: null };
+      // Tier 1: exact static match — zero allocation (returns pre-built object)
+      const methodMap = staticByMethod.get(method);
+      if (methodMap) {
+        const match = methodMap.get(pathname);
+        if (match) return match;
       }
 
-      // Tier 2: param route regex match
+      // Tier 2: param route regex match (pre-filtered by method)
       if (hasParamRoutes) {
-        for (const route of paramRoutes) {
-          if (route.method !== method) continue;
-          const match = pathname.match(route.regex);
-          if (match) {
-            const params: Record<string, string> = {};
-            for (let i = 0; i < route.paramNames.length; i++) {
-              params[route.paramNames[i]] = match[i + 1];
+        const routes = paramByMethod.get(method);
+        if (routes) {
+          for (const route of routes) {
+            const match = pathname.match(route.regex);
+            if (match) {
+              const params: Record<string, string> = {};
+              for (let i = 0; i < route.paramNames.length; i++) {
+                params[route.paramNames[i]] = match[i + 1];
+              }
+              return { handler: route.handler, params };
             }
-            return { handler: route.handler, params };
           }
         }
       }
 
       return null;
     };
+  }
+}
+
+/** Pre-compiled route match result. */
+interface RouteMatch {
+  handler: Function;
+  params: Record<string, string> | null;
+}
+
+/** Parse request body based on content-type. Extracted from the body parser
+ *  middleware so the early-exit path (GET/HEAD/OPTIONS) stays synchronous. */
+async function parseRequestBody(req: BunRequest): Promise<void> {
+  const contentType = req.get('content-type') || '';
+  const raw = req.raw;
+
+  try {
+    if (contentType.includes('application/json')) {
+      req.body = await raw.json();
+    } else if (contentType.includes('text/')) {
+      req.body = await raw.text();
+    } else if (contentType.includes('multipart/form-data')) {
+      const formData = await raw.formData();
+      const body: Record<string, any> = {};
+      for (const [key, value] of formData.entries()) {
+        if (value instanceof File) {
+          const existing = body[key];
+          if (existing instanceof File) {
+            body[key] = [existing, value];
+          } else if (Array.isArray(existing)) {
+            existing.push(value);
+          } else {
+            body[key] = value;
+          }
+        } else {
+          body[key] = value;
+        }
+      }
+      req.body = body;
+    } else if (contentType.includes('application/x-www-form-urlencoded')) {
+      const text = await raw.text();
+      const params = new URLSearchParams(text);
+      const body: Record<string, string> = {};
+      params.forEach((value, key) => { body[key] = value; });
+      req.body = body;
+    } else if (raw.body) {
+      const text = await raw.text();
+      try {
+        req.body = JSON.parse(text);
+      } catch {
+        req.body = text;
+      }
+    }
+  } catch {
+    req.body = undefined;
   }
 }
