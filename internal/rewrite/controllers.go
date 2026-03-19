@@ -79,6 +79,7 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 	neededSSETypes := make(map[string]bool)
 	needsHelpersImport := false
 	needsSseInterceptor := false
+	controllersWithEventStream := make(map[string]bool)
 
 	for _, ctrl := range controllers {
 		for _, route := range ctrl.Routes {
@@ -152,6 +153,15 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 				}
 			}
 
+			// The TsgonestSseInterceptor is always needed for @EventStream routes:
+			// it bridges async generators → Observables for NestJS's SSE handler.
+			// Track the controller unconditionally; SSE transforms (validation/
+			// serialization) remain conditional on companion file availability.
+			if route.IsEventStream {
+				needsSseInterceptor = true
+				controllersWithEventStream[ctrl.Name] = true
+			}
+
 			if route.IsEventStream && len(route.SSEEventVariants) > 0 {
 				var entries []sseTransformEntry
 				for _, v := range route.SSEEventVariants {
@@ -179,7 +189,6 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 						methodName: route.MethodName,
 						entries:    entries,
 					})
-					needsSseInterceptor = true
 				}
 				continue
 			}
@@ -217,7 +226,7 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 		}
 	}
 
-	if len(validations) == 0 && len(transforms) == 0 && len(primitiveTransforms) == 0 && len(scalarCoercions) == 0 && len(sseTransforms) == 0 {
+	if len(validations) == 0 && len(transforms) == 0 && len(primitiveTransforms) == 0 && len(scalarCoercions) == 0 && len(sseTransforms) == 0 && !needsSseInterceptor {
 		return text
 	}
 
@@ -438,13 +447,9 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 		} else {
 			importLines = append(importLines, `import { TsgonestSseInterceptor } from "@tsgonest/runtime";`)
 		}
-		// Only inject the SSE interceptor into controllers that have SSE event streams.
-		controllersWithSseTransforms := make(map[string]bool)
-		for _, st := range sseTransforms {
-			controllersWithSseTransforms[st.className] = true
-		}
+		// Inject the SSE interceptor into all controllers that have @EventStream routes.
 		for _, ctrl := range controllers {
-			if !controllersWithSseTransforms[ctrl.Name] {
+			if !controllersWithEventStream[ctrl.Name] {
 				continue
 			}
 			dc := findClassLevelDecorate(locs, ctrl.Name)
@@ -455,7 +460,10 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 			if stmtEnd2 > len(text) {
 				stmtEnd2 = len(text)
 			}
-			if strings.Contains(text[dc.ArrayOpenBracket:stmtEnd2], "UseInterceptors)(TsgonestSseInterceptor)") {
+			// Check for existing interceptor — handles both auto-injected
+			// (TsgonestSseInterceptor) and manual module-prefixed forms
+			// (runtime_1.TsgonestSseInterceptor, runtime.TsgonestSseInterceptor).
+			if strings.Contains(text[dc.ArrayOpenBracket:stmtEnd2], "TsgonestSseInterceptor") {
 				continue
 			}
 			edits = append(edits, prioritizedEdit{

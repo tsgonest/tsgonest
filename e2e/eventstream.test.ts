@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { execSync } from "child_process";
 import type { ChildProcess } from "child_process";
 import {
   buildIntegrationFixture,
@@ -8,20 +9,26 @@ import {
 
 let compiled = false;
 
-function sseTests(platform: "express" | "fastify") {
+function ensureCompiled() {
+  if (!compiled) {
+    const result = buildIntegrationFixture();
+    expect(result.exitCode).toBe(0);
+    compiled = true;
+  }
+}
+
+function sseTests(platform: "express" | "fastify" | "bun") {
   const entryFile =
-    platform === "express" ? "main-express.js" : "main-fastify.js";
+    platform === "express" ? "main-express.js" :
+    platform === "fastify" ? "main-fastify.js" : "main-bun.js";
+  const runtime = platform === "bun" ? "bun" : "node";
   let url: string;
   let serverProcess: ChildProcess;
   let stop: () => Promise<void>;
 
   beforeAll(async () => {
-    if (!compiled) {
-      const result = buildIntegrationFixture();
-      expect(result.exitCode).toBe(0);
-      compiled = true;
-    }
-    const server = await startServer(entryFile);
+    ensureCompiled();
+    const server = await startServer(entryFile, { runtime });
     url = server.url;
     serverProcess = server.process;
     stop = server.stop;
@@ -31,7 +38,7 @@ function sseTests(platform: "express" | "fastify") {
     await stop?.();
   });
 
-  it("should stream discriminated multi-type events", async () => {
+  it("should stream discriminated multi-type events with companion serialization", async () => {
     const events = await collectSseEvents(`${url}/sse/events`, {
       timeoutMs: 5000,
     });
@@ -41,16 +48,18 @@ function sseTests(platform: "express" | "fastify") {
 
     const userEvent = events.find((e) => e.event === "user");
     expect(userEvent).toBeDefined();
+    // Data goes through companion stringifyUserEvent → pre-serialized JSON string
     const userData = JSON.parse(userEvent!.data);
     expect(userData).toEqual({ id: 1, name: "Alice", action: "login" });
 
     const notifEvent = events.find((e) => e.event === "notification");
     expect(notifEvent).toBeDefined();
+    // Data goes through companion stringifyNotificationEvent
     const notifData = JSON.parse(notifEvent!.data);
     expect(notifData).toEqual({ message: "System ready", level: "info" });
   });
 
-  it("should stream single-type events", async () => {
+  it("should serialize single-type events via companion stringify", async () => {
     const events = await collectSseEvents(`${url}/sse/notifications`, {
       timeoutMs: 5000,
     });
@@ -59,6 +68,7 @@ function sseTests(platform: "express" | "fastify") {
     expect(events[0].event).toBe("alert");
     expect(events[1].event).toBe("alert");
 
+    // Companion stringifyNotificationEvent produces pre-serialized JSON
     const data0 = JSON.parse(events[0].data);
     expect(data0).toEqual({ message: "Hello", level: "info" });
 
@@ -66,17 +76,17 @@ function sseTests(platform: "express" | "fastify") {
     expect(data1).toEqual({ message: "Warn!", level: "warn" });
   });
 
-  it("should stream bad data without transforms (no validation injected)", async () => {
+  it("should reject invalid SSE data with error frame (validation)", async () => {
     const events = await collectSseEvents(`${url}/sse/bad-data`, {
       timeoutMs: 5000,
     });
 
-    // Without SSE transforms injected by tsgonest, the invalid data passes through.
-    // The event is emitted normally (no error frame).
+    // With companion-backed SSE transforms, assertUserEvent catches
+    // name="" (violates @minLength 1) and the interceptor emits an error frame.
     expect(events.length).toBe(1);
-    expect(events[0].event).toBe("item");
-    const data = JSON.parse(events[0].data);
-    expect(data).toEqual({ id: 1, name: "", action: "test" });
+    expect(events[0].event).toBe("error");
+    // Error frame data contains the TsgonestValidationError message
+    expect(events[0].data).toContain("Validation failed");
   });
 
   it("should emit heartbeat frames before real event", async () => {
@@ -125,4 +135,19 @@ describe("EventStream integration (Express)", () => {
 
 describe("EventStream integration (Fastify)", () => {
   sseTests("fastify");
+});
+
+function hasBun(): boolean {
+  try {
+    execSync("bun --version", { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const describeBun = hasBun() ? describe : describe.skip;
+
+describeBun("EventStream integration (Bun)", () => {
+  sseTests("bun");
 });

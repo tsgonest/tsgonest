@@ -917,6 +917,246 @@ class MixedController {
 	}
 }
 
+// --- SSE interceptor without companion files tests ---
+
+func TestRewriteController_SSEInterceptorWithoutCompanions(t *testing.T) {
+	// @EventStream routes whose data types have NO companion files should still
+	// get TsgonestSseInterceptor injected. The interceptor bridges async generators
+	// → Observables which NestJS's SSE handler requires.
+	input := `var common_1 = require("@nestjs/common");
+NotificationEventsController = __decorate([
+    (0, common_1.Controller)("notifications")
+], NotificationEventsController);
+__decorate([
+    (0, common_1.Get)("events")
+], NotificationEventsController.prototype, "streamNotifications", null);
+class NotificationEventsController {
+    async *streamNotifications() {
+        yield { event: "notify", data: {} };
+    }
+}`
+
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name:       "NotificationEventsController",
+			SourceFile: "/src/notification.controller.ts",
+			Routes: []analyzer.Route{
+				{
+					OperationID:   "Notification_streamNotifications",
+					MethodName:    "streamNotifications",
+					Method:        "GET",
+					IsSSE:         true,
+					IsEventStream: true,
+					SSEEventVariants: []analyzer.SSEEventVariant{
+						{EventName: "notify", DataType: metadata.Metadata{Kind: metadata.KindRef, Ref: "NotificationSSEEvent"}},
+					},
+				},
+			},
+		},
+	}
+
+	// Empty companion map — NotificationSSEEvent is a union type with no companion
+	companionMap := map[string]string{}
+
+	result := rewriteController(input, "/dist/notification.controller.js", controllers, companionMap, "esm")
+
+	// Must inject TsgonestSseInterceptor import
+	if !strings.Contains(result, "TsgonestSseInterceptor") {
+		t.Errorf("expected TsgonestSseInterceptor import even without companion files, got:\n%s", result)
+	}
+
+	// Must inject UseInterceptors(TsgonestSseInterceptor)
+	if !strings.Contains(result, "(0, common_1.UseInterceptors)(TsgonestSseInterceptor)") {
+		t.Errorf("expected UseInterceptors(TsgonestSseInterceptor) injection even without companion files, got:\n%s", result)
+	}
+
+	// Should NOT have Reflect.defineMetadata since there are no companions
+	if strings.Contains(result, `Reflect.defineMetadata("__tsgonest_sse_transforms__"`) {
+		t.Errorf("should not inject SSE transform metadata without companion files, got:\n%s", result)
+	}
+}
+
+func TestRewriteController_SSEInterceptorNoVariants(t *testing.T) {
+	// @EventStream routes with no SSEEventVariants at all (e.g. Record<string, unknown>)
+	// should still get TsgonestSseInterceptor injected.
+	input := `var common_1 = require("@nestjs/common");
+ChatEventsController = __decorate([
+    (0, common_1.Controller)("chat")
+], ChatEventsController);
+class ChatEventsController {
+    async *streamChat() {
+        yield { event: "message", data: {} };
+    }
+}`
+
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name:       "ChatEventsController",
+			SourceFile: "/src/chat.controller.ts",
+			Routes: []analyzer.Route{
+				{
+					OperationID: "Chat_streamChat",
+					MethodName:  "streamChat",
+					Method:      "GET",
+					IsSSE:       true,
+					IsEventStream: true,
+					// No SSEEventVariants — data is Record<string, unknown>
+					SSEEventVariants: nil,
+				},
+			},
+		},
+	}
+
+	companionMap := map[string]string{}
+
+	result := rewriteController(input, "/dist/chat.controller.js", controllers, companionMap, "esm")
+
+	// Must inject TsgonestSseInterceptor import
+	if !strings.Contains(result, "TsgonestSseInterceptor") {
+		t.Errorf("expected TsgonestSseInterceptor import for @EventStream with no variants, got:\n%s", result)
+	}
+
+	// Must inject UseInterceptors(TsgonestSseInterceptor)
+	if !strings.Contains(result, "(0, common_1.UseInterceptors)(TsgonestSseInterceptor)") {
+		t.Errorf("expected UseInterceptors(TsgonestSseInterceptor) injection for @EventStream with no variants, got:\n%s", result)
+	}
+}
+
+func TestRewriteController_SSEInterceptorPartialCompanions(t *testing.T) {
+	// @EventStream with multiple variants where only SOME have companions.
+	// Interceptor should be injected, and only the ones with companions get transforms.
+	input := `var common_1 = require("@nestjs/common");
+MixedEventController = __decorate([
+    (0, common_1.Controller)("events")
+], MixedEventController);
+__decorate([
+    (0, common_1.Get)("stream")
+], MixedEventController.prototype, "streamMixed", null);
+class MixedEventController {
+    async *streamMixed() {
+        yield { event: "typed", data: {} };
+        yield { event: "untyped", data: {} };
+    }
+}`
+
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name:       "MixedEventController",
+			SourceFile: "/src/mixed-event.controller.ts",
+			Routes: []analyzer.Route{
+				{
+					OperationID:   "MixedEvent_streamMixed",
+					MethodName:    "streamMixed",
+					Method:        "GET",
+					IsSSE:         true,
+					IsEventStream: true,
+					SSEEventVariants: []analyzer.SSEEventVariant{
+						{EventName: "typed", DataType: metadata.Metadata{Kind: metadata.KindRef, Ref: "TypedDto"}},
+						{EventName: "untyped", DataType: metadata.Metadata{Kind: metadata.KindRef, Ref: "UntypedUnion"}},
+					},
+				},
+			},
+		},
+	}
+
+	// Only TypedDto has a companion; UntypedUnion does not
+	companionMap := map[string]string{
+		"TypedDto": "/dist/dto.TypedDto.tsgonest.js",
+	}
+
+	result := rewriteController(input, "/dist/mixed-event.controller.js", controllers, companionMap, "esm")
+
+	// Must inject TsgonestSseInterceptor regardless
+	if !strings.Contains(result, "TsgonestSseInterceptor") {
+		t.Errorf("expected TsgonestSseInterceptor import with partial companions, got:\n%s", result)
+	}
+
+	if !strings.Contains(result, "(0, common_1.UseInterceptors)(TsgonestSseInterceptor)") {
+		t.Errorf("expected UseInterceptors(TsgonestSseInterceptor) with partial companions, got:\n%s", result)
+	}
+
+	// Should have transform metadata for the typed variant
+	if !strings.Contains(result, "assertTypedDto") {
+		t.Errorf("expected assertTypedDto for companion-backed variant, got:\n%s", result)
+	}
+
+	// Should NOT reference the untyped variant in transforms
+	if strings.Contains(result, "UntypedUnion") {
+		t.Errorf("should not reference UntypedUnion (no companion) in transforms, got:\n%s", result)
+	}
+}
+
+func TestRewriteController_MultipleControllersSSEWithoutCompanions(t *testing.T) {
+	// Multiple controllers with @EventStream, none with companions — all should
+	// get the interceptor injected.
+	input := `var common_1 = require("@nestjs/common");
+NotifController = __decorate([
+    (0, common_1.Controller)("notif")
+], NotifController);
+OAuthController = __decorate([
+    (0, common_1.Controller)("oauth")
+], OAuthController);
+class NotifController {
+    async *stream() {
+        yield { data: {} };
+    }
+}
+class OAuthController {
+    async *events() {
+        yield { data: {} };
+    }
+}`
+
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name:       "NotifController",
+			SourceFile: "/src/notif.controller.ts",
+			Routes: []analyzer.Route{
+				{
+					OperationID:      "Notif_stream",
+					MethodName:       "stream",
+					Method:           "GET",
+					IsSSE:            true,
+					IsEventStream:    true,
+					SSEEventVariants: nil,
+				},
+			},
+		},
+		{
+			Name:       "OAuthController",
+			SourceFile: "/src/oauth.controller.ts",
+			Routes: []analyzer.Route{
+				{
+					OperationID:      "OAuth_events",
+					MethodName:       "events",
+					Method:           "GET",
+					IsSSE:            true,
+					IsEventStream:    true,
+					SSEEventVariants: nil,
+				},
+			},
+		},
+	}
+
+	companionMap := map[string]string{}
+
+	result := rewriteController(input, "/dist/controllers.js", controllers, companionMap, "esm")
+
+	// Both controllers should get the interceptor
+	// Count occurrences of UseInterceptors(TsgonestSseInterceptor)
+	count := strings.Count(result, "(0, common_1.UseInterceptors)(TsgonestSseInterceptor)")
+	if count != 2 {
+		t.Errorf("expected 2 UseInterceptors(TsgonestSseInterceptor) injections (one per controller), got %d in:\n%s", count, result)
+	}
+
+	// Single import line
+	importCount := strings.Count(result, "TsgonestSseInterceptor")
+	// 1 import + 2 UseInterceptors = 3 occurrences
+	if importCount != 3 {
+		t.Errorf("expected 3 TsgonestSseInterceptor occurrences (1 import + 2 uses), got %d in:\n%s", importCount, result)
+	}
+}
+
 // --- FormData body validation tests ---
 
 func TestRewriteController_FormDataBodyValidation(t *testing.T) {
