@@ -76,84 +76,35 @@ export class BunAdapter extends AbstractHttpAdapter {
       if (typeof arg === 'function') callback = arg;
     }
 
-    // Compile collected routes into a fast lookup structure
-    const routeMatcher = this._compileRoutes();
+    // Compile collected routes into Bun.serve()'s native `routes` object.
+    // Bun routes use a C++ radix-tree for O(1) matching — significantly faster
+    // than JavaScript regex matching for parameterized routes.
+    const nativeRoutes = this._buildNativeRoutes();
     const adapter = this;
-    const middlewares = this._middlewares;
-    const hasMiddleware = middlewares.length > 0;
-    const noopNext = () => {};
 
     this._server = Bun.serve({
       port: portNum,
       hostname,
       tls: this._tlsOptions,
 
+      // Native C++ radix-tree routing — handles all registered routes
+      routes: nativeRoutes,
+
+      // Fallback: only reached for routes not registered via NestJS (404s)
       async fetch(req: Request, _server: any): Promise<Response> {
         const bunReq = new BunRequest(req);
         const bunRes = new BunResponse();
 
-        // Match route using pre-compiled patterns
-        const match = routeMatcher(bunReq.method, bunReq.url);
-        if (match) {
-          if (match.params) bunReq.params = match.params;
-          const handler = match.handler;
-
-          if (hasMiddleware) {
-            await executeMiddlewareChain(
-              middlewares,
-              bunReq.url,
-              bunReq,
-              bunRes,
-              async () => {
-                try {
-                  await handler(bunReq, bunRes, noopNext);
-                } catch (err: any) {
-                  if (!bunRes.headersSent) {
-                    if (adapter._errorHandler) {
-                      adapter._errorHandler(err, bunReq, bunRes);
-                    } else {
-                      bunRes.status(500).json({
-                        statusCode: 500,
-                        message: err?.message || 'Internal Server Error',
-                      });
-                    }
-                  }
-                }
-              },
-            );
-          } else {
-            try {
-              await handler(bunReq, bunRes, noopNext);
-            } catch (err: any) {
-              if (!bunRes.headersSent) {
-                if (adapter._errorHandler) {
-                  adapter._errorHandler(err, bunReq, bunRes);
-                } else {
-                  bunRes.status(500).json({
-                    statusCode: 500,
-                    message: err?.message || 'Internal Server Error',
-                  });
-                }
-              }
-            }
-          }
+        if (adapter._notFoundHandler) {
+          adapter._notFoundHandler(bunReq, bunRes);
         } else {
-          if (adapter._notFoundHandler) {
-            adapter._notFoundHandler(bunReq, bunRes);
-          } else {
-            bunRes.status(404).json({
-              statusCode: 404,
-              message: 'Cannot ' + bunReq.method + ' ' + bunReq.url,
-            });
-          }
+          bunRes.status(404).json({
+            statusCode: 404,
+            message: 'Cannot ' + bunReq.method + ' ' + bunReq.url,
+          });
         }
 
-        // Hot path: response ended synchronously (99% of API requests).
-        // Build Response directly — zero Promise allocation, zero microtask.
-        if (bunRes._ended) {
-          return bunRes.toResponse();
-        }
-        // Streaming/deferred path: wait for end() to be called
+        if (bunRes._ended) return bunRes.toResponse();
         return bunRes.getResponse();
       },
 
@@ -507,88 +458,44 @@ export class BunAdapter extends AbstractHttpAdapter {
   }
 
   /**
-   * Compile collected routes into a fast route matching function.
+   * Build a Bun.serve() native `routes` object from collected NestJS routes.
    *
-   * Two-tier lookup:
-   * 1. Static routes (no params): O(1) Map lookup by "METHOD /path"
-   * 2. Param routes: regex match (only tried if static lookup misses)
+   * Bun's native router uses a C++ radix-tree that matches URL patterns
+   * (including :param and * wildcards) before JavaScript even runs.
+   * Each route handler wraps the NestJS handler with middleware and error
+   * handling, then returns a web-native Response.
    */
-  private _compileRoutes(): (method: string, pathname: string) => RouteMatch | null {
-    // Tier 1: static routes — two-level Map (method → path → result)
-    // Avoids string concatenation on every request.
-    const staticByMethod = new Map<string, Map<string, RouteMatch>>();
-
-    // Tier 2: param routes — regex match, grouped by method
-    const paramByMethod = new Map<string, Array<{
-      regex: RegExp;
-      paramNames: string[];
-      handler: Function;
-    }>>();
+  private _buildNativeRoutes(): Record<string, any> {
+    const routes: Record<string, any> = {};
+    const adapter = this;
+    const middlewares = this._middlewares;
+    const hasMiddleware = middlewares.length > 0;
+    const noopNext = () => {};
 
     for (const [path, methods] of this._routeMap) {
-      const hasParams = path.includes(':') || path.includes('*');
+      const methodHandlers: Record<string, (req: Request) => Promise<Response>> = {};
 
-      if (hasParams) {
-        const paramNames: string[] = [];
-        const regexStr = path
-          .replace(/\/:([^/]+)/g, (_match, name) => {
-            paramNames.push(name);
-            return '/([^/]+)';
-          })
-          .replace(/\*/g, '.*');
+      for (const [method, handler] of methods) {
+        methodHandlers[method] = async (req: Request): Promise<Response> => {
+          const bunReq = new BunRequest(req);
+          const bunRes = new BunResponse();
 
-        const regex = new RegExp('^' + regexStr + '$');
-        for (const [method, handler] of methods) {
-          let arr = paramByMethod.get(method);
-          if (!arr) { arr = []; paramByMethod.set(method, arr); }
-          arr.push({ regex, paramNames, handler });
-        }
-      } else {
-        // Static path — pre-allocate match result objects at compile time
-        for (const [method, handler] of methods) {
-          let methodMap = staticByMethod.get(method);
-          if (!methodMap) { methodMap = new Map(); staticByMethod.set(method, methodMap); }
-          methodMap.set(path, { handler, params: null });
-        }
+          // Bun's native router populates req.params for :param routes
+          const params = (req as any).params;
+          if (params) bunReq.params = params;
+
+          await handleRoute(adapter, middlewares, hasMiddleware, handler, bunReq, bunRes, noopNext);
+
+          if (bunRes._ended) return bunRes.toResponse();
+          return bunRes.getResponse();
+        };
       }
+
+      routes[path] = methodHandlers;
     }
 
-    const hasParamRoutes = paramByMethod.size > 0;
-
-    return (method: string, pathname: string) => {
-      // Tier 1: exact static match — zero allocation (returns pre-built object)
-      const methodMap = staticByMethod.get(method);
-      if (methodMap) {
-        const match = methodMap.get(pathname);
-        if (match) return match;
-      }
-
-      // Tier 2: param route regex match (pre-filtered by method)
-      if (hasParamRoutes) {
-        const routes = paramByMethod.get(method);
-        if (routes) {
-          for (const route of routes) {
-            const match = pathname.match(route.regex);
-            if (match) {
-              const params: Record<string, string> = {};
-              for (let i = 0; i < route.paramNames.length; i++) {
-                params[route.paramNames[i]] = match[i + 1];
-              }
-              return { handler: route.handler, params };
-            }
-          }
-        }
-      }
-
-      return null;
-    };
+    return routes;
   }
-}
-
-/** Pre-compiled route match result. */
-interface RouteMatch {
-  handler: Function;
-  params: Record<string, string> | null;
 }
 
 /** Parse request body based on content-type. Extracted from the body parser
@@ -636,5 +543,51 @@ async function parseRequestBody(req: BunRequest): Promise<void> {
     }
   } catch {
     req.body = undefined;
+  }
+}
+
+/** Execute a route handler with middleware and error handling. */
+async function handleRoute(
+  adapter: BunAdapter,
+  middlewares: MiddlewareEntry[],
+  hasMiddleware: boolean,
+  handler: Function,
+  bunReq: BunRequest,
+  bunRes: BunResponse,
+  noopNext: () => void,
+): Promise<void> {
+  if (hasMiddleware) {
+    await executeMiddlewareChain(
+      middlewares,
+      bunReq.url,
+      bunReq,
+      bunRes,
+      async () => {
+        try {
+          await handler(bunReq, bunRes, noopNext);
+        } catch (err: any) {
+          handleError(adapter, err, bunReq, bunRes);
+        }
+      },
+    );
+  } else {
+    try {
+      await handler(bunReq, bunRes, noopNext);
+    } catch (err: any) {
+      handleError(adapter, err, bunReq, bunRes);
+    }
+  }
+}
+
+/** Handle a route error via the adapter's error handler or default 500. */
+function handleError(adapter: BunAdapter, err: any, bunReq: BunRequest, bunRes: BunResponse): void {
+  if (bunRes.headersSent) return;
+  if (adapter['_errorHandler']) {
+    adapter['_errorHandler'](err, bunReq, bunRes);
+  } else {
+    bunRes.status(500).json({
+      statusCode: 500,
+      message: err?.message || 'Internal Server Error',
+    });
   }
 }
