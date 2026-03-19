@@ -371,12 +371,39 @@ func collectTypeImports(ctrl ControllerGroup, schemas map[string]*SchemaNode) []
 }
 
 func collectRefs(tsType string, schemas map[string]*SchemaNode, refs map[string]bool) {
-	// Simple heuristic: if the type name matches a schema name, it's a reference
-	for name := range schemas {
-		if strings.Contains(tsType, name) {
-			refs[name] = true
+	// Extract type name tokens from the TS type string.
+	// A type string can be "Foo", "Foo | null", "Foo | Bar", "Foo[]", etc.
+	// We split on non-identifier characters and check each token against schemas.
+	for _, token := range splitTypeTokens(tsType) {
+		if _, ok := schemas[token]; ok {
+			refs[token] = true
 		}
 	}
+}
+
+// splitTypeTokens splits a TS type string into individual type name tokens.
+// "SandboxOrderResponse | null" → ["SandboxOrderResponse", "null"]
+// "PaginatedResponse_Foo[]"     → ["PaginatedResponse_Foo"]
+func splitTypeTokens(tsType string) []string {
+	var tokens []string
+	start := -1
+	for i, c := range tsType {
+		isIdent := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'
+		if isIdent {
+			if start < 0 {
+				start = i
+			}
+		} else {
+			if start >= 0 {
+				tokens = append(tokens, tsType[start:i])
+				start = -1
+			}
+		}
+	}
+	if start >= 0 {
+		tokens = append(tokens, tsType[start:])
+	}
+	return tokens
 }
 
 func sortStrings(s []string) {
