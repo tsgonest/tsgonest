@@ -72,6 +72,12 @@ func collectNeededTypes(controllers []analyzer.ControllerInfo, markerCalls map[s
 			}
 			// Return types
 			collectTypeNamesFromMetadata(&route.ReturnType, needed)
+
+			// SSE event variant data types need companions for per-event
+			// validation (assert) and serialization (stringify).
+			for i := range route.SSEEventVariants {
+				collectTypeNamesFromMetadata(&route.SSEEventVariants[i].DataType, needed)
+			}
 		}
 	}
 

@@ -71,21 +71,35 @@ func TestResponseTypeHint_AllBranches(t *testing.T) {
 	}
 }
 
-func TestCollectRefs_SubstringFalsePositive(t *testing.T) {
-	// Schema "Id" should match "OrderId" because collectRefs uses substring matching.
-	// This documents the known behavior.
+func TestCollectRefs_NoSubstringFalsePositive(t *testing.T) {
+	// Schema "Id" should NOT match when the type is "OrderId" — only whole
+	// type name tokens are matched, not substrings.
 	schemas := map[string]*SchemaNode{
 		"Id":      {Type: "string"},
 		"OrderId": {Type: "string"},
 	}
 	refs := make(map[string]bool)
 	collectRefs("OrderId", schemas, refs)
-	// Both "Id" and "OrderId" match because "Id" is a substring of "OrderId"
-	if !refs["Id"] {
-		t.Error("expected Id to be matched (substring false positive)")
+	if refs["Id"] {
+		t.Error("Id should NOT match — it's a substring of OrderId, not a separate type")
 	}
 	if !refs["OrderId"] {
 		t.Error("expected OrderId to be matched")
+	}
+}
+
+func TestCollectRefs_UnionType(t *testing.T) {
+	schemas := map[string]*SchemaNode{
+		"ConversationResponse":        {Type: "object"},
+		"SandboxConversationResponse": {Type: "object"},
+	}
+	refs := make(map[string]bool)
+	collectRefs("SandboxConversationResponse | null", schemas, refs)
+	if !refs["SandboxConversationResponse"] {
+		t.Error("expected SandboxConversationResponse")
+	}
+	if refs["ConversationResponse"] {
+		t.Error("ConversationResponse should NOT match — it's a substring, not a separate token")
 	}
 }
 

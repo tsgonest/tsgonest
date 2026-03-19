@@ -28,12 +28,14 @@ export function buildIntegrationFixture() {
  * Returns the base URL and a cleanup function.
  */
 export async function startServer(
-  entryFile: string
+  entryFile: string,
+  opts?: { runtime?: string }
 ): Promise<{ url: string; process: ChildProcess; stop: () => Promise<void> }> {
   const entryPath = resolve(INTEGRATION_DIST, entryFile);
+  const runtime = opts?.runtime || "node";
 
   return new Promise((resolvePromise, reject) => {
-    const child = spawn("node", [entryPath], {
+    const child = spawn(runtime, [entryPath], {
       cwd: INTEGRATION_DIR,
       env: { ...process.env, PORT: "0", NODE_OPTIONS: "--enable-source-maps" },
       stdio: ["pipe", "pipe", "pipe"],

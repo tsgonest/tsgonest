@@ -6,6 +6,7 @@
     "@nestjs/core": "^11.1.17",
     "@nestjs/platform-express": "^11.1.17",
     "@nestjs/platform-fastify": "^11.1.17",
+    "@tsgonest/platform-bun": "workspace:*",
     "@tsgonest/runtime": "workspace:*",
     "multer": "^2.1.1",
     "reflect-metadata": "^0.2.2",
