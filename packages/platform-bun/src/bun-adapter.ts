@@ -412,6 +412,27 @@ export class BunAdapter extends AbstractHttpAdapter {
             req.body = await raw.json();
           } else if (contentType.includes('text/')) {
             req.body = await raw.text();
+          } else if (contentType.includes('multipart/form-data')) {
+            // Bun natively parses multipart/form-data via Request.formData().
+            // File fields become web-native File instances — tsgonest's generated
+            // validation code uses `instanceof File` which works without conversion.
+            const formData = await raw.formData();
+            const body: Record<string, any> = {};
+            for (const [key, value] of formData.entries()) {
+              if (value instanceof File) {
+                const existing = body[key];
+                if (existing instanceof File) {
+                  body[key] = [existing, value];
+                } else if (Array.isArray(existing)) {
+                  existing.push(value);
+                } else {
+                  body[key] = value;
+                }
+              } else {
+                body[key] = value; // string field
+              }
+            }
+            req.body = body;
           } else if (contentType.includes('application/x-www-form-urlencoded')) {
             const text = await raw.text();
             const params = new URLSearchParams(text);

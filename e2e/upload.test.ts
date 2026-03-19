@@ -1,29 +1,20 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { execSync } from "child_process";
 import type { ChildProcess } from "child_process";
 import { buildIntegrationFixture, startServer } from "./integration-helpers";
 
 let compiled = false;
-let url: string;
-let serverProcess: ChildProcess;
-let stop: () => Promise<void>;
 
-describe("File upload / multipart form-data integration (Express)", () => {
-  beforeAll(async () => {
-    if (!compiled) {
-      const result = buildIntegrationFixture();
-      expect(result.exitCode).toBe(0);
-      compiled = true;
-    }
-    const server = await startServer("main-express.js");
-    url = server.url;
-    serverProcess = server.process;
-    stop = server.stop;
-  }, 60000);
+function ensureCompiled() {
+  if (!compiled) {
+    const result = buildIntegrationFixture();
+    expect(result.exitCode).toBe(0);
+    compiled = true;
+  }
+}
 
-  afterAll(async () => {
-    await stop?.();
-  });
-
+/** Shared upload test cases — same assertions for every platform. */
+function uploadTests(getUrl: () => string) {
   it("should upload a single file with validated metadata", async () => {
     const formData = new FormData();
     formData.append(
@@ -34,7 +25,7 @@ describe("File upload / multipart form-data integration (Express)", () => {
     formData.append("title", "My Upload");
     formData.append("category", "42");
 
-    const res = await fetch(`${url}/upload/single`, {
+    const res = await fetch(`${getUrl()}/upload/single`, {
       method: "POST",
       body: formData,
     });
@@ -66,7 +57,7 @@ describe("File upload / multipart form-data integration (Express)", () => {
     );
     formData.append("albumName", "Vacation");
 
-    const res = await fetch(`${url}/upload/gallery`, {
+    const res = await fetch(`${getUrl()}/upload/gallery`, {
       method: "POST",
       body: formData,
     });
@@ -87,7 +78,7 @@ describe("File upload / multipart form-data integration (Express)", () => {
     formData.append("title", ""); // violates @minLength 1
     formData.append("category", "1");
 
-    const res = await fetch(`${url}/upload/validate`, {
+    const res = await fetch(`${getUrl()}/upload/validate`, {
       method: "POST",
       body: formData,
     });
@@ -107,11 +98,88 @@ describe("File upload / multipart form-data integration (Express)", () => {
     formData.append("title", "Valid Title");
     formData.append("category", "0"); // violates @minimum 1
 
-    const res = await fetch(`${url}/upload/validate`, {
+    const res = await fetch(`${getUrl()}/upload/validate`, {
       method: "POST",
       body: formData,
     });
 
     expect(res.status).toBeGreaterThanOrEqual(400);
   });
+}
+
+// ── Express ──────────────────────────────────────────────────────
+
+describe("File upload / multipart form-data integration (Express)", () => {
+  let url: string;
+  let serverProcess: ChildProcess;
+  let stop: () => Promise<void>;
+
+  beforeAll(async () => {
+    ensureCompiled();
+    const server = await startServer("main-express.js");
+    url = server.url;
+    serverProcess = server.process;
+    stop = server.stop;
+  }, 60000);
+
+  afterAll(async () => {
+    await stop?.();
+  });
+
+  uploadTests(() => url);
+});
+
+// ── Fastify ──────────────────────────────────────────────────────
+
+describe("File upload / multipart form-data integration (Fastify)", () => {
+  let url: string;
+  let serverProcess: ChildProcess;
+  let stop: () => Promise<void>;
+
+  beforeAll(async () => {
+    ensureCompiled();
+    const server = await startServer("main-fastify.js");
+    url = server.url;
+    serverProcess = server.process;
+    stop = server.stop;
+  }, 60000);
+
+  afterAll(async () => {
+    await stop?.();
+  });
+
+  uploadTests(() => url);
+});
+
+// ── Bun ──────────────────────────────────────────────────────────
+
+function hasBun(): boolean {
+  try {
+    execSync("bun --version", { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const describeBun = hasBun() ? describe : describe.skip;
+
+describeBun("File upload / multipart form-data integration (Bun)", () => {
+  let url: string;
+  let serverProcess: ChildProcess;
+  let stop: () => Promise<void>;
+
+  beforeAll(async () => {
+    ensureCompiled();
+    const server = await startServer("main-bun.js", { runtime: "bun" });
+    url = server.url;
+    serverProcess = server.process;
+    stop = server.stop;
+  }, 60000);
+
+  afterAll(async () => {
+    await stop?.();
+  });
+
+  uploadTests(() => url);
 });

@@ -289,6 +289,9 @@ importers:
       '@nestjs/platform-fastify':
         specifier: ^11.1.17
         version: 11.1.17(@nestjs/common@11.1.17(class-transformer@0.5.1)(class-validator@0.15.1)(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/core@11.1.17)
+      '@tsgonest/platform-bun':
+        specifier: workspace:*
+        version: link:../../packages/platform-bun
       '@tsgonest/runtime':
         specifier: workspace:*
         version: link:../../packages/runtime
