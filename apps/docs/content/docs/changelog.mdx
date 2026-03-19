@@ -5,6 +5,23 @@ description: All notable changes to tsgonest.
 
 
 ### Bug Fixes
+- Fix substring false positives in SDK import collection *(sdkgen)*  ([`b51b360`](https://github.com/tsgonest/tsgonest/commit/b51b360b9068149e04917a0c1039152755a507d1))
+- Auto-inject TsgonestSseInterceptor for all @EventStream routes *(sse)*  ([`192e125`](https://github.com/tsgonest/tsgonest/commit/192e12555f8d2b0180c8bc92eef1b63d131ed136))
+
+
+### Features
+- Multipart/form-data file upload support across all platforms ([`748ae02`](https://github.com/tsgonest/tsgonest/commit/748ae0210d1dde370143f95915ef4a781fa16ef1))
+- Add SSE (Server-Sent Events) streaming support *(platform-bun)*  ([`710ad43`](https://github.com/tsgonest/tsgonest/commit/710ad435be4f0f9815c45f83f6ae05ab5bd2d2dd))
+
+
+### Performance
+- Skip Headers allocation for common responses *(platform-bun)*  ([`c31e61c`](https://github.com/tsgonest/tsgonest/commit/c31e61c4658ef181b7c842c721c44f553bf52eba))
+- Optimize route matching and body parser *(platform-bun)*  ([`e4c7f0a`](https://github.com/tsgonest/tsgonest/commit/e4c7f0a598ed38e59ddc571a5fcafe066f3e711b))
+- Use Bun.serve() native C++ radix-tree routing *(platform-bun)*  ([`9bbd70f`](https://github.com/tsgonest/tsgonest/commit/9bbd70f6c44ffacec474380aaf8e698d5b769d0a))
+
+## [0.10.0] - 2026-03-18
+
+### Bug Fixes
 - Detect stale .tsbuildinfo and honor deleteOutDir config *(build)*  ([`de546e3`](https://github.com/tsgonest/tsgonest/commit/de546e3d3088db01528041513ca658fe8d957e8a))
 - Gate bug-demo tests behind RUNNER_BUG_TESTS env var *(test)*  ([`8f45970`](https://github.com/tsgonest/tsgonest/commit/8f45970cc5a9f976ea2894ee819930e1dfe3f4c3))
 - Fix process leaks and improve cross-platform process management *(runner)*  ([`5a7f512`](https://github.com/tsgonest/tsgonest/commit/5a7f5124737aa69ee1b420cab5ab32bf170c0571))
