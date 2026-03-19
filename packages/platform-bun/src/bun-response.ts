@@ -18,6 +18,8 @@ export class BunResponse {
   _body: any = null;
   /** @internal */
   _ended: boolean = false;
+  /** @internal Tracks whether any header has array values (Set-Cookie). */
+  private _hasArrayHeaders: boolean = false;
 
   // Lazy promise — only allocated for streaming/deferred responses
   private _resolve: ((response: Response) => void) | null = null;
@@ -39,6 +41,7 @@ export class BunResponse {
     if (key === 'set-cookie') {
       // Set-Cookie headers must NOT be comma-joined (RFC 6265)
       this._headers[key] = Array.isArray(value) ? value : [value];
+      this._hasArrayHeaders = true;
     } else {
       this._headers[key] = Array.isArray(value) ? value.join(', ') : value;
     }
@@ -56,6 +59,7 @@ export class BunResponse {
     const existing = this._headers[key];
     if (key === 'set-cookie') {
       // Set-Cookie must be kept as separate header entries
+      this._hasArrayHeaders = true;
       if (Array.isArray(existing)) {
         existing.push(value);
       } else if (existing) {
@@ -187,7 +191,16 @@ export class BunResponse {
       }
     }
 
-    // Build Headers object to correctly handle multi-value headers (Set-Cookie)
+    // Fast path (99% of responses): no array-valued headers, pass plain object
+    // directly to Response constructor — avoids allocating a Headers object.
+    if (!this._hasArrayHeaders) {
+      return new Response(responseBody, {
+        status: this.statusCode,
+        headers: this._headers as Record<string, string>,
+      });
+    }
+
+    // Slow path: build Headers object for multi-value headers (Set-Cookie)
     const headers = new Headers();
     for (const [key, val] of Object.entries(this._headers)) {
       if (Array.isArray(val)) {
