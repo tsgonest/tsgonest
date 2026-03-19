@@ -480,13 +480,18 @@ export class BunAdapter extends AbstractHttpAdapter {
           const bunReq = new BunRequest(req);
           const bunRes = new BunResponse();
 
+          // Wire SSE disconnect: when the ReadableStream is cancelled (client
+          // disconnects), fire the 'close' event on the request so NestJS
+          // SseStream unsubscribes from the Observable and cleans up.
+          bunRes._onCancel = () => bunReq._emitClose();
+
           // Bun's native router populates req.params for :param routes
           const params = (req as any).params;
           if (params) bunReq.params = params;
 
           await handleRoute(adapter, middlewares, hasMiddleware, handler, bunReq, bunRes, noopNext);
 
-          if (bunRes._ended) return bunRes.toResponse();
+          if (bunRes._ended && !bunRes._streamController) return bunRes.toResponse();
           return bunRes.getResponse();
         };
       }
