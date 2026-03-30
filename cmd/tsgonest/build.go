@@ -333,7 +333,7 @@ func runBuildWithIncrAndProgram(args []string, oldIncrProgram *shimincremental.P
 	// Only do pre-emit analysis if no errors (type checker data may be unreliable)
 	if !hasPreEmitErrors && (needCompanions || needControllers) {
 		checkerStart := time.Now()
-		sharedChecker, checkerRelease = program.GetTypeChecker(context.Background())
+		sharedChecker, checkerRelease = shimcompiler.Program_GetTypeChecker(program, context.Background())
 		if sharedChecker == nil {
 			fmt.Fprintln(os.Stderr, "error: could not get type checker")
 			return 1

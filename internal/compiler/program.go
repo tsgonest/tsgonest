@@ -145,7 +145,7 @@ func GatherDiagnostics(program *shimcompiler.Program, noCheck bool) []*ast.Diagn
 	ctx := context.Background()
 
 	if noCheck {
-		return program.GetSyntacticDiagnostics(ctx, nil)
+		return shimcompiler.Program_GetSyntacticDiagnostics(program, ctx, nil)
 	}
 
 	return shimcompiler.GetDiagnosticsOfAnyProgram(
@@ -161,7 +161,7 @@ func GatherDiagnostics(program *shimcompiler.Program, noCheck bool) []*ast.Diagn
 			return nil
 		},
 		func(ctx context.Context, file *ast.SourceFile) []*ast.Diagnostic {
-			return program.GetSemanticDiagnostics(ctx, file)
+			return shimcompiler.Program_GetSemanticDiagnostics(program, ctx, file)
 		},
 	)
 }
@@ -169,7 +169,7 @@ func GatherDiagnostics(program *shimcompiler.Program, noCheck bool) []*ast.Diagn
 // GetSyntacticDiagnostics returns parse errors for all source files.
 func GetSyntacticDiagnostics(program *shimcompiler.Program) []*ast.Diagnostic {
 	ctx := context.Background()
-	return program.GetSyntacticDiagnostics(ctx, nil)
+	return shimcompiler.Program_GetSyntacticDiagnostics(program, ctx, nil)
 }
 
 // CreateIncrementalProgram wraps a compiler.Program with incremental state.
@@ -258,7 +258,7 @@ func UpdateProgram(oldProgram *shimcompiler.Program, changedFilePath string, cwd
 	// Convert to tspath.Path — the canonicalized format used by program internals.
 	canonPath := tspath.ToPath(changedFilePath, cwd, oldProgram.UseCaseSensitiveFileNames())
 
-	newProgram, reused := oldProgram.UpdateProgram(canonPath, host)
+	newProgram, reused := shimcompiler.Program_UpdateProgram(oldProgram, canonPath, host)
 	if newProgram != nil {
 		newProgram.BindSourceFiles()
 	}

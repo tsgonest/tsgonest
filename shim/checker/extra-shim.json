@@ -6,9 +6,13 @@
       "getPropertyNameForKnownSymbolName",
       "isArrayOrTupleType",
       "isArrayType",
+      "getResolvedSignature",
       "getWidenedType",
       "isTypeAssignableTo",
-      "isReadonlySymbol"
+      "GetNonNullableType",
+      "IsNullableType",
+      "isReadonlySymbol",
+      "GetAliasedSymbol"
     ]
   },
   "ExtraFields": {

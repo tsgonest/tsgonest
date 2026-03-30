@@ -5,10 +5,12 @@ package compiler
 
 import "context"
 import "github.com/microsoft/typescript-go/internal/ast"
+import "github.com/microsoft/typescript-go/internal/checker"
 import "github.com/microsoft/typescript-go/internal/compiler"
 import "github.com/microsoft/typescript-go/internal/core"
 import "github.com/microsoft/typescript-go/internal/diagnostics"
 import "github.com/microsoft/typescript-go/internal/tsoptions"
+import "github.com/microsoft/typescript-go/internal/tspath"
 import "github.com/microsoft/typescript-go/internal/vfs"
 import _ "unsafe"
 
@@ -16,7 +18,6 @@ type CheckerPool = compiler.CheckerPool
 //go:linkname CombineEmitResults github.com/microsoft/typescript-go/internal/compiler.CombineEmitResults
 func CombineEmitResults(results []*compiler.EmitResult) *compiler.EmitResult
 type CompilerHost = compiler.CompilerHost
-type DuplicateSourceFile = compiler.DuplicateSourceFile
 const EmitAll = compiler.EmitAll
 type EmitHost = compiler.EmitHost
 type EmitOnly = compiler.EmitOnly
@@ -40,6 +41,18 @@ func NewCompilerHost(currentDirectory string, fs vfs.FS, defaultLibraryPath stri
 //go:linkname NewProgram github.com/microsoft/typescript-go/internal/compiler.NewProgram
 func NewProgram(opts compiler.ProgramOptions) *compiler.Program
 type Program = compiler.Program
+//go:linkname Program_UpdateProgram github.com/microsoft/typescript-go/internal/compiler.(*Program).UpdateProgram
+func Program_UpdateProgram(recv *compiler.Program, changedFilePath tspath.Path, newHost compiler.CompilerHost) (*compiler.Program, bool)
+//go:linkname Program_GetTypeChecker github.com/microsoft/typescript-go/internal/compiler.(*Program).GetTypeChecker
+func Program_GetTypeChecker(recv *compiler.Program, ctx context.Context) (*checker.Checker, func())
+//go:linkname Program_ForEachCheckerParallel github.com/microsoft/typescript-go/internal/compiler.(*Program).ForEachCheckerParallel
+func Program_ForEachCheckerParallel(recv *compiler.Program, cb func(idx int, c *checker.Checker))
+//go:linkname Program_GetTypeCheckerForFile github.com/microsoft/typescript-go/internal/compiler.(*Program).GetTypeCheckerForFile
+func Program_GetTypeCheckerForFile(recv *compiler.Program, ctx context.Context, file *ast.SourceFile) (*checker.Checker, func())
+//go:linkname Program_GetSyntacticDiagnostics github.com/microsoft/typescript-go/internal/compiler.(*Program).GetSyntacticDiagnostics
+func Program_GetSyntacticDiagnostics(recv *compiler.Program, ctx context.Context, sourceFile *ast.SourceFile) []*ast.Diagnostic
+//go:linkname Program_GetSemanticDiagnostics github.com/microsoft/typescript-go/internal/compiler.(*Program).GetSemanticDiagnostics
+func Program_GetSemanticDiagnostics(recv *compiler.Program, ctx context.Context, sourceFile *ast.SourceFile) []*ast.Diagnostic
 type ProgramLike = compiler.ProgramLike
 type ProgramOptions = compiler.ProgramOptions
 //go:linkname SortAndDeduplicateDiagnostics github.com/microsoft/typescript-go/internal/compiler.SortAndDeduplicateDiagnostics
