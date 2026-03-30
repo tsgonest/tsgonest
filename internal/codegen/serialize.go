@@ -414,7 +414,7 @@ func generateSerializeDiscriminatedUnion(accessor string, meta *metadata.Metadat
 		}
 		member := meta.UnionMembers[idx]
 		memberExpr := generateSerializeExpr(accessor, &member, registry, depth+1, ctx)
-		parts = append(parts, fmt.Sprintf("case %s: return %s;", jsLiteral(val), memberExpr))
+		parts = append(parts, fmt.Sprintf("case %s: return %s;", discLiteral(val, disc), memberExpr))
 	}
 
 	parts = append(parts, fmt.Sprintf("default: return JSON.stringify(%s); } }())", accessor))

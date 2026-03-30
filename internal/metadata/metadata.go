@@ -190,9 +190,13 @@ type Constraints struct {
 type Discriminant struct {
 	// Property is the name of the discriminant property (e.g., "type", "kind").
 	Property string `json:"property"`
-	// Mapping maps literal values to union member indices.
+	// Mapping maps literal values (as strings) to union member indices.
 	// e.g., {"card": 0, "bank": 1, "crypto": 2}
 	Mapping map[string]int `json:"mapping"`
+	// Values maps each string key in Mapping to its original typed literal value.
+	// This preserves the Go type (string, float64, bool) so that code generation
+	// can emit correct JavaScript literals (e.g., case true instead of case "true").
+	Values map[string]any `json:"values,omitempty"`
 }
 
 // TupleElement represents an element in a tuple type.

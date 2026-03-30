@@ -260,7 +260,7 @@ func generateTransformDiscriminatedUnion(accessor string, meta *metadata.Metadat
 		}
 		member := meta.UnionMembers[idx]
 		memberExpr := generateTransformExpr(accessor, &member, registry, depth+1, ctx)
-		parts = append(parts, fmt.Sprintf("case %s: return %s;", jsLiteral(val), memberExpr))
+		parts = append(parts, fmt.Sprintf("case %s: return %s;", discLiteral(val, disc), memberExpr))
 	}
 
 	parts = append(parts, fmt.Sprintf("default: return %s; } }())", accessor))

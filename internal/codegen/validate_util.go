@@ -33,6 +33,19 @@ func jsLiteral(v any) string {
 	}
 }
 
+// discLiteral returns the correctly-typed JavaScript literal for a discriminant
+// mapping key. It uses the Values map (if present) to preserve the original Go type
+// (bool, float64) so that jsLiteral emits unquoted boolean/number case labels.
+// Falls back to treating the key as a quoted string if Values is nil.
+func discLiteral(key string, disc *metadata.Discriminant) string {
+	if disc.Values != nil {
+		if v, ok := disc.Values[key]; ok {
+			return jsLiteral(v)
+		}
+	}
+	return jsLiteral(key)
+}
+
 // joinQuoted joins strings as JavaScript quoted values: "a", "b", "c"
 func joinQuoted(keys []string) string {
 	parts := make([]string, len(keys))

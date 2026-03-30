@@ -7,13 +7,21 @@ import (
 	shimscanner "github.com/microsoft/typescript-go/shim/scanner"
 )
 
+// ParamLoc holds position info for a single method parameter.
+type ParamLoc struct {
+	Name     string // identifier text (empty string for destructured/complex patterns)
+	PatStart int    // byte offset of the parameter pattern start (after trivia)
+	PatEnd   int    // byte offset past the parameter pattern end
+}
+
 // MethodLoc holds AST-derived positions for a class method.
 type MethodLoc struct {
 	MethodNamePos  int         // byte offset of method name identifier (after trivia)
 	BodyOpenBrace  int         // byte offset of '{' opening the method body
 	BodyCloseBrace int         // byte offset of '}' closing the method body
 	IsAsync        bool        // has `async` modifier
-	Parameters     []string    // parameter names in order
+	Parameters     []string    // parameter names in order (empty string for destructured)
+	ParamLocs      []ParamLoc  // position info for each parameter
 	Returns        []ReturnLoc // top-level return statements (not inside nested functions)
 }
 
@@ -177,16 +185,33 @@ func extractMethod(text string, node *ast.Node, cls *ClassLoc) {
 
 	isAsync := node.ModifierFlags()&ast.ModifierFlagsAsync != 0
 
-	// Extract parameter names (only simple identifiers, skip destructured patterns)
+	// Extract parameter names and positions
 	var params []string
+	var paramLocs []ParamLoc
 	if method.Parameters != nil {
 		for _, p := range method.Parameters.Nodes {
 			pName := p.Name()
 			if pName != nil && pName.Kind == ast.KindIdentifier {
-				params = append(params, pName.AsIdentifier().Text)
-			} else {
+				name := pName.AsIdentifier().Text
+				params = append(params, name)
+				nameStart := shimscanner.SkipTrivia(text, pName.Pos())
+				paramLocs = append(paramLocs, ParamLoc{
+					Name:     name,
+					PatStart: nameStart,
+					PatEnd:   pName.End(),
+				})
+			} else if pName != nil {
 				// Destructured or other pattern — emit empty string as placeholder
 				params = append(params, "")
+				patStart := shimscanner.SkipTrivia(text, pName.Pos())
+				paramLocs = append(paramLocs, ParamLoc{
+					Name:     "",
+					PatStart: patStart,
+					PatEnd:   pName.End(),
+				})
+			} else {
+				params = append(params, "")
+				paramLocs = append(paramLocs, ParamLoc{})
 			}
 		}
 	}
@@ -197,6 +222,7 @@ func extractMethod(text string, node *ast.Node, cls *ClassLoc) {
 		BodyCloseBrace: closeBrace,
 		IsAsync:        isAsync,
 		Parameters:     params,
+		ParamLocs:      paramLocs,
 	}
 
 	// Collect top-level return statements using ForEachReturnStatement

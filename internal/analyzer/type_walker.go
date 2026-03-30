@@ -619,6 +619,7 @@ func (w *TypeWalker) detectDiscriminant(members []metadata.Metadata) *metadata.D
 	for _, prop := range resolved[0].props {
 		candidateName := prop.Name
 		mapping := make(map[string]int)
+		values := make(map[string]any)
 
 		valid := true
 		for i, mp := range resolved {
@@ -638,6 +639,7 @@ func (w *TypeWalker) detectDiscriminant(members []metadata.Metadata) *metadata.D
 						break
 					}
 					mapping[litVal] = i
+					values[litVal] = p.Type.LiteralValue
 					break
 				}
 			}
@@ -651,6 +653,7 @@ func (w *TypeWalker) detectDiscriminant(members []metadata.Metadata) *metadata.D
 			return &metadata.Discriminant{
 				Property: candidateName,
 				Mapping:  mapping,
+				Values:   values,
 			}
 		}
 	}

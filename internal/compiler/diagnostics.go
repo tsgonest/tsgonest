@@ -10,7 +10,6 @@ import (
 	"unicode"
 
 	"github.com/microsoft/typescript-go/shim/ast"
-	shimast "github.com/microsoft/typescript-go/shim/ast"
 	shimscanner "github.com/microsoft/typescript-go/shim/scanner"
 )
 
@@ -108,7 +107,7 @@ func writePlainDiagnostic(w io.Writer, d *ast.Diagnostic, cwd string) {
 		fmt.Fprintf(w, "%s(%d,%d): ", fileName, line+1, int(char)+1)
 	}
 
-	cat := DiagnosticCategory(shimast.Diagnostic_Category(d))
+	cat := DiagnosticCategory(d.Category())
 	fmt.Fprintf(w, "%s TS%d: %s\n", cat.Name(), d.Code(), d.String())
 }
 
@@ -116,7 +115,7 @@ func writePlainDiagnostic(w io.Writer, d *ast.Diagnostic, cwd string) {
 // file:line:col - error TS2322: message
 // <code snippet with squiggles>
 func writePrettyDiagnostic(w io.Writer, d *ast.Diagnostic, cwd string) {
-	cat := DiagnosticCategory(shimast.Diagnostic_Category(d))
+	cat := DiagnosticCategory(d.Category())
 
 	if d.File() != nil {
 		line, char := shimscanner.GetECMALineAndUTF16CharacterOfPosition(d.File(), d.Pos())
@@ -220,7 +219,7 @@ func WriteErrorSummary(w io.Writer, diags []*ast.Diagnostic, cwd string) {
 	fileErrors := make(map[string]int) // fileName -> count
 
 	for _, d := range diags {
-		cat := DiagnosticCategory(shimast.Diagnostic_Category(d))
+		cat := DiagnosticCategory(d.Category())
 		if cat != CategoryError {
 			continue
 		}
@@ -269,7 +268,7 @@ func WriteErrorSummary(w io.Writer, diags []*ast.Diagnostic, cwd string) {
 func CountErrors(diags []*ast.Diagnostic) int {
 	count := 0
 	for _, d := range diags {
-		if DiagnosticCategory(shimast.Diagnostic_Category(d)) == CategoryError {
+		if DiagnosticCategory(d.Category()) == CategoryError {
 			count++
 		}
 	}

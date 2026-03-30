@@ -76,7 +76,7 @@ func setupWalker(t *testing.T, tsSource string) *walkerEnv {
 	}
 
 	// Get the type checker
-	checker, release := shimcompiler.Program_GetTypeChecker(program, context.Background())
+	checker, release := program.GetTypeChecker(context.Background())
 	if checker == nil {
 		t.Fatal("failed to get type checker")
 	}
@@ -127,7 +127,7 @@ func setupWalkerMultiFile(t *testing.T, files map[string]string, mainFile string
 		t.Fatalf("source file %q not found in program", mainFile)
 	}
 
-	checker, release := shimcompiler.Program_GetTypeChecker(program, context.Background())
+	checker, release := program.GetTypeChecker(context.Background())
 	if checker == nil {
 		t.Fatal("failed to get type checker")
 	}
