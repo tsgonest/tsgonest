@@ -288,7 +288,7 @@ func generateIsDiscriminatedUnionExpr(accessor string, meta *metadata.Metadata, 
 		}
 		member := meta.UnionMembers[idx]
 		memberExpr := generateIsExprInner(accessor, &member, registry, depth+1, ctx)
-		parts = append(parts, fmt.Sprintf("case %s: return %s;", jsLiteral(val), memberExpr))
+		parts = append(parts, fmt.Sprintf("case %s: return %s;", discLiteral(val, disc), memberExpr))
 	}
 	parts = append(parts, "default: return false; } }()))")
 	return strings.Join(parts, " ")

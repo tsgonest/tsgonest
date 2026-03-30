@@ -1694,6 +1694,96 @@ func TestValidateDiscriminatedUnion_DefaultCaseError(t *testing.T) {
 	assertContains(t, code, `"square"`)
 }
 
+func TestValidateDiscriminatedUnion_BooleanDiscriminant(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+	meta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Properties: []metadata.Property{
+			{
+				Name:     "result",
+				Required: true,
+				Type: metadata.Metadata{
+					Kind: metadata.KindUnion,
+					Discriminant: &metadata.Discriminant{
+						Property: "ok",
+						Mapping:  map[string]int{"false": 0, "true": 1},
+						Values:   map[string]any{"false": false, "true": true},
+					},
+					UnionMembers: []metadata.Metadata{
+						{
+							Kind: metadata.KindObject,
+							Properties: []metadata.Property{
+								{Name: "ok", Required: true, Type: metadata.Metadata{Kind: metadata.KindLiteral, LiteralValue: false}},
+								{Name: "error", Required: true, Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}},
+							},
+						},
+						{
+							Kind: metadata.KindObject,
+							Properties: []metadata.Property{
+								{Name: "ok", Required: true, Type: metadata.Metadata{Kind: metadata.KindLiteral, LiteralValue: true}},
+								{Name: "data", Required: true, Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	code := GenerateCompanionSelective("Dto", meta, reg, true, false)
+	// Boolean discriminant values must be unquoted JS booleans
+	assertContains(t, code, "case false:")
+	assertContains(t, code, "case true:")
+	// Must NOT have string-quoted boolean values
+	assertNotContains(t, code, `case "false"`)
+	assertNotContains(t, code, `case "true"`)
+}
+
+func TestValidateDiscriminatedUnion_NumericDiscriminant(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+	meta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Properties: []metadata.Property{
+			{
+				Name:     "msg",
+				Required: true,
+				Type: metadata.Metadata{
+					Kind: metadata.KindUnion,
+					Discriminant: &metadata.Discriminant{
+						Property: "code",
+						Mapping:  map[string]int{"1": 0, "2": 1},
+						Values:   map[string]any{"1": float64(1), "2": float64(2)},
+					},
+					UnionMembers: []metadata.Metadata{
+						{
+							Kind: metadata.KindObject,
+							Properties: []metadata.Property{
+								{Name: "code", Required: true, Type: metadata.Metadata{Kind: metadata.KindLiteral, LiteralValue: float64(1)}},
+								{Name: "text", Required: true, Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}},
+							},
+						},
+						{
+							Kind: metadata.KindObject,
+							Properties: []metadata.Property{
+								{Name: "code", Required: true, Type: metadata.Metadata{Kind: metadata.KindLiteral, LiteralValue: float64(2)}},
+								{Name: "data", Required: true, Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "number"}},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	code := GenerateCompanionSelective("Dto", meta, reg, true, false)
+	// Numeric discriminant values must be unquoted JS numbers
+	assertContains(t, code, "case 1:")
+	assertContains(t, code, "case 2:")
+	// Must NOT have string-quoted numeric values
+	assertNotContains(t, code, `case "1"`)
+	assertNotContains(t, code, `case "2"`)
+}
+
 // --- Per-Constraint Error Tests ---
 
 func TestValidatePerConstraintError_Format(t *testing.T) {
@@ -2379,6 +2469,51 @@ func TestSerializeDiscriminatedUnion(t *testing.T) {
 	// Each case should serialize properly (not just JSON.stringify the whole union)
 	assertContains(t, code, `__s(input.payment.last4)`)
 	assertContains(t, code, `__s(input.payment.routing)`)
+}
+
+func TestSerializeDiscriminatedUnion_BooleanDiscriminant(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+	successMeta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Properties: []metadata.Property{
+			{Name: "ok", Type: metadata.Metadata{Kind: metadata.KindLiteral, LiteralValue: true}, Required: true},
+			{Name: "data", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+		},
+	}
+	errorMeta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Properties: []metadata.Property{
+			{Name: "ok", Type: metadata.Metadata{Kind: metadata.KindLiteral, LiteralValue: false}, Required: true},
+			{Name: "error", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+		},
+	}
+	reg.Register("SuccessResult", successMeta)
+	reg.Register("ErrorResult", errorMeta)
+
+	meta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Properties: []metadata.Property{
+			{Name: "result", Type: metadata.Metadata{
+				Kind: metadata.KindUnion,
+				UnionMembers: []metadata.Metadata{
+					{Kind: metadata.KindRef, Ref: "SuccessResult"},
+					{Kind: metadata.KindRef, Ref: "ErrorResult"},
+				},
+				Discriminant: &metadata.Discriminant{
+					Property: "ok",
+					Mapping:  map[string]int{"true": 0, "false": 1},
+					Values:   map[string]any{"true": true, "false": false},
+				},
+			}, Required: true},
+		},
+	}
+
+	code := GenerateCompanionSelective("Response", meta, reg, false, true)
+	// Boolean discriminant values must be unquoted JS booleans in serialization
+	assertContains(t, code, "case true:")
+	assertContains(t, code, "case false:")
+	assertNotContains(t, code, `case "true"`)
+	assertNotContains(t, code, `case "false"`)
 }
 
 func TestSerializeLiteralUnion(t *testing.T) {

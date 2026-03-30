@@ -1802,3 +1802,223 @@ class UserController {
 		t.Errorf("interceptor should NOT be injected for body-only controller, got:\n%s", result)
 	}
 }
+
+// --- Bug 2: Body param index + destructured parameter tests ---
+
+func TestRewriteController_BodyNotFirstParam_Destructured(t *testing.T) {
+	// @Param('companyID') companyID: string, @Body() { content }: UpdateDTO, @UserId() userID: string
+	// In emitted JS: setPrompt(companyID, { content }, userID)
+	input := `class PromptController {
+    async setPrompt(companyID, { content }, userID) {
+        return this.service.setPrompt(companyID, content, userID);
+    }
+}`
+
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name:       "PromptController",
+			SourceFile: "/src/prompt.controller.ts",
+			Routes: []analyzer.Route{
+				{
+					OperationID: "setPrompt",
+					MethodName:  "setPrompt",
+					Parameters: []analyzer.RouteParameter{
+						{
+							Category:       "param",
+							Name:           "companyID",
+							LocalName:      "companyID",
+							ParameterIndex: 0,
+						},
+						{
+							Category:       "body",
+							LocalName:      "", // destructured — no simple LocalName
+							ParameterIndex: 1,
+							Type:           metadata.Metadata{Kind: metadata.KindRef, Ref: "UpdateDTO"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	companionMap := map[string]string{
+		"UpdateDTO": "/dist/dto.UpdateDTO.tsgonest.js",
+	}
+
+	result := rewriteController(input, "/dist/prompt.controller.js", controllers, companionMap, "esm")
+
+	// Must NOT assert the wrong parameter
+	if strings.Contains(result, "companyID = assertUpdateDTO(companyID)") {
+		t.Errorf("BUG: assertion applied to wrong parameter (companyID instead of body), got:\n%s", result)
+	}
+
+	// Should replace destructured pattern with synthetic name and assert it
+	if !strings.Contains(result, "assertUpdateDTO(__body)") {
+		t.Errorf("expected assertUpdateDTO(__body) for destructured body param, got:\n%s", result)
+	}
+
+	// Should reconstruct destructuring inside method body
+	if !strings.Contains(result, "const { content } = __body") {
+		t.Errorf("expected destructuring reconstruction, got:\n%s", result)
+	}
+}
+
+func TestRewriteController_BodyNotFirstParam_DestructuredWithDefaults(t *testing.T) {
+	// @Param('id') id: string, @Body() { x = 1, y }: SomeDto
+	input := `class MyController {
+    async update(id, { x = 1, y }) {
+        return this.service.update(id, x, y);
+    }
+}`
+
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name:       "MyController",
+			SourceFile: "/src/my.controller.ts",
+			Routes: []analyzer.Route{
+				{
+					OperationID: "update",
+					MethodName:  "update",
+					Parameters: []analyzer.RouteParameter{
+						{
+							Category:       "param",
+							Name:           "id",
+							LocalName:      "id",
+							ParameterIndex: 0,
+						},
+						{
+							Category:       "body",
+							LocalName:      "", // destructured with defaults
+							ParameterIndex: 1,
+							Type:           metadata.Metadata{Kind: metadata.KindRef, Ref: "SomeDto"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	companionMap := map[string]string{
+		"SomeDto": "/dist/dto.SomeDto.tsgonest.js",
+	}
+
+	result := rewriteController(input, "/dist/my.controller.js", controllers, companionMap, "esm")
+
+	// Must NOT assert the wrong parameter
+	if strings.Contains(result, "id = assertSomeDto(id)") {
+		t.Errorf("BUG: assertion applied to wrong parameter (id instead of body), got:\n%s", result)
+	}
+
+	// Should replace destructured pattern and assert
+	if !strings.Contains(result, "assertSomeDto(__body)") {
+		t.Errorf("expected assertSomeDto(__body), got:\n%s", result)
+	}
+
+	// Should reconstruct destructuring with defaults
+	if !strings.Contains(result, "const { x = 1, y } = __body") {
+		t.Errorf("expected destructuring with defaults reconstruction, got:\n%s", result)
+	}
+}
+
+func TestRewriteController_BodyNotFirstParam_SimpleLocalName(t *testing.T) {
+	// @Param('id') id: string, @Body() body: UpdateDTO — LocalName present, no destructuring
+	input := `class ItemController {
+    async update(id, body) {
+        return this.service.update(id, body);
+    }
+}`
+
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name:       "ItemController",
+			SourceFile: "/src/item.controller.ts",
+			Routes: []analyzer.Route{
+				{
+					OperationID: "update",
+					MethodName:  "update",
+					Parameters: []analyzer.RouteParameter{
+						{
+							Category:       "param",
+							Name:           "id",
+							LocalName:      "id",
+							ParameterIndex: 0,
+						},
+						{
+							Category:       "body",
+							LocalName:      "body",
+							ParameterIndex: 1,
+							Type:           metadata.Metadata{Kind: metadata.KindRef, Ref: "UpdateDTO"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	companionMap := map[string]string{
+		"UpdateDTO": "/dist/dto.UpdateDTO.tsgonest.js",
+	}
+
+	result := rewriteController(input, "/dist/item.controller.js", controllers, companionMap, "esm")
+
+	// LocalName is present → no destructured rewrite needed, simple assertion
+	if !strings.Contains(result, "body = assertUpdateDTO(body)") {
+		t.Errorf("expected body = assertUpdateDTO(body), got:\n%s", result)
+	}
+
+	// Must NOT assert the wrong parameter
+	if strings.Contains(result, "id = assertUpdateDTO(id)") {
+		t.Errorf("BUG: assertion applied to wrong parameter, got:\n%s", result)
+	}
+}
+
+func TestRewriteController_BodyThirdParam_Destructured(t *testing.T) {
+	// @Param('orgId') orgId: string, @Param('teamId') teamId: string, @Body() { name, role }: MemberDto
+	input := `class TeamController {
+    async addMember(orgId, teamId, { name, role }) {
+        return this.service.add(orgId, teamId, name, role);
+    }
+}`
+
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name:       "TeamController",
+			SourceFile: "/src/team.controller.ts",
+			Routes: []analyzer.Route{
+				{
+					OperationID: "addMember",
+					MethodName:  "addMember",
+					Parameters: []analyzer.RouteParameter{
+						{Category: "param", Name: "orgId", LocalName: "orgId", ParameterIndex: 0},
+						{Category: "param", Name: "teamId", LocalName: "teamId", ParameterIndex: 1},
+						{
+							Category:       "body",
+							LocalName:      "",
+							ParameterIndex: 2,
+							Type:           metadata.Metadata{Kind: metadata.KindRef, Ref: "MemberDto"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	companionMap := map[string]string{
+		"MemberDto": "/dist/dto.MemberDto.tsgonest.js",
+	}
+
+	result := rewriteController(input, "/dist/team.controller.js", controllers, companionMap, "esm")
+
+	// Must assert the body, not orgId or teamId
+	if strings.Contains(result, "orgId = assertMemberDto") || strings.Contains(result, "teamId = assertMemberDto") {
+		t.Errorf("BUG: assertion applied to wrong parameter, got:\n%s", result)
+	}
+
+	if !strings.Contains(result, "assertMemberDto(__body)") {
+		t.Errorf("expected assertMemberDto(__body), got:\n%s", result)
+	}
+
+	if !strings.Contains(result, "const { name, role } = __body") {
+		t.Errorf("expected destructuring reconstruction, got:\n%s", result)
+	}
+}

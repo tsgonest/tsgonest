@@ -954,7 +954,7 @@ func generateDiscriminatedUnionCheck(e *Emitter, accessor string, path string, m
 		member := meta.UnionMembers[memberIdx]
 		memberCopy := member
 
-		e.Line("case %s:", jsLiteral(val))
+		e.Line("case %s:", discLiteral(val, disc))
 		e.indent++
 		generateTypeCheckInner(e, accessor, path, &memberCopy, registry, depth+1, ctx)
 		e.Line("break;")
@@ -966,7 +966,7 @@ func generateDiscriminatedUnionCheck(e *Emitter, accessor string, path string, m
 	e.indent++
 	expectedVals := make([]string, len(discValues))
 	for i, v := range discValues {
-		expectedVals[i] = jsLiteral(v)
+		expectedVals[i] = discLiteral(v, disc)
 	}
 	expectedStr := jsStringEscape("one of " + strings.Join(expectedVals, " | "))
 	e.Line("errors.push({ path: \"%s%s\", expected: \"%s\", received: %s });", path, jsStringEscape(jsPropPathSuffix(disc.Property)), expectedStr, discAccessor)

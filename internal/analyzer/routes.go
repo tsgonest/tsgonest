@@ -195,6 +195,10 @@ type RouteParameter struct {
 	ContentType string
 	// Description is from JSDoc @param tag. Used as ParameterObject.description in OpenAPI.
 	Description string
+	// ParameterIndex is the zero-based ordinal position of this parameter in the
+	// method's parameter list. Used by the rewriter to locate the correct JS
+	// parameter when LocalName is unavailable (e.g., destructured body params).
+	ParameterIndex int
 }
 
 // ControllerAnalyzer extracts NestJS controller information from source files.
@@ -208,7 +212,7 @@ type ControllerAnalyzer struct {
 
 // NewControllerAnalyzer creates a new controller analyzer.
 func NewControllerAnalyzer(program *shimcompiler.Program) (*ControllerAnalyzer, func()) {
-	checker, release := shimcompiler.Program_GetTypeChecker(program, context.Background())
+	checker, release := program.GetTypeChecker(context.Background())
 	walker := NewTypeWalker(checker)
 
 	return &ControllerAnalyzer{
@@ -690,13 +694,14 @@ func (a *ControllerAnalyzer) analyzeMethod(methodNode *ast.Node, controllerPath 
 	var params []RouteParameter
 	usesRawResponse := false
 	if methodDecl.Parameters != nil {
-		for _, paramNode := range methodDecl.Parameters.Nodes {
+		for paramIdx, paramNode := range methodDecl.Parameters.Nodes {
 			// Check for @Res/@Response before full analysis (analyzeParameter returns nil for these)
 			if hasResponseDecorator(paramNode) {
 				usesRawResponse = true
 			}
 			param := a.analyzeParameter(paramNode, className, operationID, sourceFile, methodNode)
 			if param != nil {
+				param.ParameterIndex = paramIdx
 				params = append(params, *param)
 			}
 		}

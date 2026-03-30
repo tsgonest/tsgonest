@@ -45,10 +45,12 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 	// ── Phase 1: Collect transform specifications (unchanged metadata logic) ──
 
 	type bodyValidation struct {
-		className  string
-		methodName string
-		paramName  string
-		typeName   string
+		className      string
+		methodName     string
+		paramName      string
+		typeName       string
+		paramIndex     int  // JS parameter index (used for destructured param replacement)
+		isDestructured bool // true if the JS param is a destructured pattern
 	}
 	type returnTransform struct {
 		className  string
@@ -101,17 +103,25 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 					if paramName == "" {
 						paramName = param.Name
 					}
+					isDestructured := false
 					if paramName == "" {
-						paramName = findBodyParamName(text, ctrl.Name, route.MethodName)
+						// LocalName is empty (destructured param). Use ParameterIndex
+						// to find the correct JS parameter instead of always picking
+						// the first one.
+						paramName = findBodyParamNameByIndex(text, ctrl.Name, route.MethodName, param.ParameterIndex)
 						if paramName == "" {
-							continue
+							// Parameter at this index is destructured — generate a synthetic name
+							paramName = "__body"
+							isDestructured = true
 						}
 					}
 					validations = append(validations, bodyValidation{
-						className:  ctrl.Name,
-						methodName: route.MethodName,
-						paramName:  paramName,
-						typeName:   typeName,
+						className:      ctrl.Name,
+						methodName:     route.MethodName,
+						paramName:      paramName,
+						typeName:       typeName,
+						paramIndex:     param.ParameterIndex,
+						isDestructured: isDestructured,
 					})
 					neededTypes[typeName] = true
 
@@ -263,13 +273,38 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 			continue
 		}
 		assertFunc := companionFuncName("assert", v.typeName)
-		assertLine := "\n    " + v.paramName + " = " + assertFunc + "(" + v.paramName + ");"
-		edits = append(edits, prioritizedEdit{
-			pos:      ml.BodyOpenBrace + 1,
-			end:      ml.BodyOpenBrace + 1,
-			priority: 30,
-			newText:  assertLine,
-		})
+
+		if v.isDestructured && v.paramIndex >= 0 && v.paramIndex < len(ml.ParamLocs) {
+			pl := ml.ParamLocs[v.paramIndex]
+			// Extract the raw destructured pattern text from the JS source
+			destructuredPattern := text[pl.PatStart:pl.PatEnd]
+
+			// Replace the destructured pattern in the parameter list with the synthetic name
+			edits = append(edits, prioritizedEdit{
+				pos:      pl.PatStart,
+				end:      pl.PatEnd,
+				priority: 10, // before body injection
+				newText:  v.paramName,
+			})
+
+			// Inject assertion + destructuring reconstruction at method body start
+			assertLine := "\n    " + v.paramName + " = " + assertFunc + "(" + v.paramName + ");"
+			destructLine := "\n    const " + destructuredPattern + " = " + v.paramName + ";"
+			edits = append(edits, prioritizedEdit{
+				pos:      ml.BodyOpenBrace + 1,
+				end:      ml.BodyOpenBrace + 1,
+				priority: 30,
+				newText:  assertLine + destructLine,
+			})
+		} else {
+			assertLine := "\n    " + v.paramName + " = " + assertFunc + "(" + v.paramName + ");"
+			edits = append(edits, prioritizedEdit{
+				pos:      ml.BodyOpenBrace + 1,
+				end:      ml.BodyOpenBrace + 1,
+				priority: 30,
+				newText:  assertLine,
+			})
+		}
 	}
 
 	// (b) Scalar coercion injection at method body start
@@ -708,6 +743,30 @@ func resolvePrimitiveReturn(m *metadata.Metadata) (atomic string, nullable bool)
 }
 
 // ─── Backward-compatible thin wrappers (used by tests) ──────────────────────
+
+// findBodyParamNameByIndex finds the parameter name at a specific index in the
+// method signature. Returns the identifier name, or "" if the parameter at that
+// index is destructured or the index is out of range.
+func findBodyParamNameByIndex(text string, className string, methodName string, paramIndex int) string {
+	locs := LocateJS(text)
+	cls, ok := locs.Classes[className]
+	if !ok {
+		return ""
+	}
+	m, ok := cls.Methods[methodName]
+	if !ok {
+		return ""
+	}
+	if paramIndex < 0 || paramIndex >= len(m.Parameters) {
+		return ""
+	}
+	name := m.Parameters[paramIndex]
+	// Reject destructured or empty names
+	if name == "" || strings.ContainsAny(name, "{}[]") {
+		return ""
+	}
+	return name
+}
 
 // findBodyParamName finds the parameter name for an unnamed @Body() decorator
 // by looking at the method signature in the emitted JS via AST parsing.
