@@ -41,6 +41,58 @@ export interface SDKConfig {
   input?: string;
 }
 
+/** Per-output SDK generation settings. */
+export interface SDKOutputConfig {
+  /** SDK output directory for this OpenAPI output. */
+  output: string;
+}
+
+/**
+ * Per-output OpenAPI configuration.
+ * Used in array mode for generating multiple OpenAPI documents from a single build.
+ */
+export interface OpenAPIOutputConfig {
+  /** Logical name for this output (e.g., "public", "internal"). Used with --name flag. */
+  name?: string;
+  /** Output path for the generated OpenAPI document. Empty string disables generation. */
+  output: string;
+  /** Controller filters specific to this output. Overrides top-level controllers config. */
+  controllers?: {
+    include?: string[];
+    exclude?: string[];
+  };
+  /** Only include routes matching at least one of these tags. */
+  includeTags?: string[];
+  /** Exclude routes matching any of these tags. */
+  excludeTags?: string[];
+  /** Per-output SDK generation. When set, SDK is generated from this output's OpenAPI spec. */
+  sdk?: SDKOutputConfig;
+  /** API title for the OpenAPI info section. */
+  title?: string;
+  /** API version for the OpenAPI info section. */
+  version?: string;
+  /** API description for the OpenAPI info section. */
+  description?: string;
+  /** Contact info for the OpenAPI info section. */
+  contact?: OpenAPIContact;
+  /** License info for the OpenAPI info section. */
+  license?: OpenAPILicense;
+  /** Server list for the OpenAPI document. */
+  servers?: OpenAPIServer[];
+  /** Named security schemes for the OpenAPI document. */
+  securitySchemes?: Record<string, OpenAPISecurityScheme>;
+  /**
+   * Global security requirements applied to all operations.
+   * Routes with @public JSDoc opt out.
+   * @example [{ bearer: [] }]
+   */
+  security?: Array<Record<string, string[]>>;
+  /** Tag descriptions for the OpenAPI document. Tags referenced by controllers are auto-collected. */
+  tags?: OpenAPITag[];
+  /** URL to the API terms of service. */
+  termsOfService?: string;
+}
+
 /** API versioning settings. */
 export interface VersioningConfig {
   /** Versioning strategy: "URI" (default), "HEADER", "MEDIA_TYPE", "CUSTOM". */
@@ -97,35 +149,25 @@ export interface TsgonestConfig {
     exclude?: string[];
   };
 
-  /** OpenAPI document generation settings. Omit or set output to "" to disable. */
-  openapi?: {
-    /** Output path for the generated OpenAPI document. Empty string disables generation. */
-    output?: string;
-    /** API title for the OpenAPI info section. */
-    title?: string;
-    /** API version for the OpenAPI info section. */
-    version?: string;
-    /** API description for the OpenAPI info section. */
-    description?: string;
-    /** Contact info for the OpenAPI info section. */
-    contact?: OpenAPIContact;
-    /** License info for the OpenAPI info section. */
-    license?: OpenAPILicense;
-    /** Server list for the OpenAPI document. */
-    servers?: OpenAPIServer[];
-    /** Named security schemes for the OpenAPI document. */
-    securitySchemes?: Record<string, OpenAPISecurityScheme>;
-    /**
-     * Global security requirements applied to all operations.
-     * Routes with @public JSDoc opt out.
-     * @example [{ bearer: [] }]
-     */
-    security?: Array<Record<string, string[]>>;
-    /** Tag descriptions for the OpenAPI document. Tags referenced by controllers are auto-collected. */
-    tags?: OpenAPITag[];
-    /** URL to the API terms of service. */
-    termsOfService?: string;
-  };
+  /**
+   * OpenAPI document generation settings.
+   * Accepts a single output config (backward-compatible) or an array for multiple outputs.
+   * Omit or set output to "" to disable generation.
+   *
+   * @example Single output:
+   * ```ts
+   * openapi: { output: "dist/openapi.json", title: "My API" }
+   * ```
+   *
+   * @example Multiple outputs:
+   * ```ts
+   * openapi: [
+   *   { name: "public", output: "dist/public-api.json", includeTags: ["public"] },
+   *   { name: "internal", output: "dist/internal-api.json" },
+   * ]
+   * ```
+   */
+  openapi?: OpenAPIOutputConfig | OpenAPIOutputConfig[];
 
   /** TypeScript SDK generation settings. */
   sdk?: SDKConfig;

@@ -23,6 +23,8 @@ func run() int {
 		return runBuild(os.Args[2:])
 	case "dev":
 		return runDev(os.Args[2:])
+	case "openapi":
+		return runOpenAPI(os.Args[2:])
 	case "migrate":
 		return runMigrate(os.Args[2:])
 	case "sdk":
@@ -51,6 +53,7 @@ func printUsage() {
 	fmt.Println("  tsgonest [flags]              Build project (default)")
 	fmt.Println("  tsgonest build [flags]        Build project")
 	fmt.Println("  tsgonest dev [flags]          Watch mode (build + start + reload)")
+	fmt.Println("  tsgonest openapi [flags]      Generate OpenAPI spec (no build/emit)")
 	fmt.Println("  tsgonest migrate [flags]      Migrate from class-validator/Nestia to tsgonest")
 	fmt.Println("  tsgonest sdk [flags]          Generate TypeScript SDK from OpenAPI spec")
 	fmt.Println()
@@ -66,6 +69,13 @@ func printUsage() {
 	fmt.Println("  --assets <glob>        Glob pattern for static assets to copy to output")
 	fmt.Println("  --no-check             Skip type checking (syntax errors still reported)")
 	fmt.Println("  [tsgo flags]           Any tsgo compiler flag (--strict, --noEmit, etc.)")
+	fmt.Println()
+	fmt.Println("OpenAPI Flags:")
+	fmt.Println("  --config <path>        Path to tsgonest config file")
+	fmt.Println("  --project, -p <path>   Path to tsconfig.json (default: tsconfig.json)")
+	fmt.Println("  --output <path>        Override output path (single-output mode)")
+	fmt.Println("  --name <name>          Generate only the named output (multi-output mode)")
+	fmt.Println("  --no-check             Skip type checking (syntax errors still reported)")
 	fmt.Println()
 	fmt.Println("Migrate Flags:")
 	fmt.Println("  --apply                Write changes to disk (default: dry-run preview)")
@@ -91,6 +101,8 @@ func printUsage() {
 	fmt.Println("  tsgonest migrate --apply --yes             # Apply all changes (non-interactive)")
 	fmt.Println("  tsgonest migrate --include 'src/**/*.ts'   # Scan all TS files")
 	fmt.Println("  tsgonest migrate --force                   # Skip git dirty check")
+	fmt.Println("  tsgonest openapi                           # Generate OpenAPI spec only")
+	fmt.Println("  tsgonest openapi --name public              # Generate only 'public' output")
 	fmt.Println("  tsgonest sdk --input dist/openapi.json     # Generate SDK")
 	fmt.Println("  tsgonest sdk --input api.json --output ./client  # Custom output dir")
 	fmt.Println()

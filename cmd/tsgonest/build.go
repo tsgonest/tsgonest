@@ -637,13 +637,38 @@ func runBuildWithIncrAndProgram(args []string, oldIncrProgram *shimincremental.P
 		allWarnings = append(allWarnings, sharedWalker.Warnings()...)
 	}
 
-	// Generate OpenAPI document (using pre-analyzed controllers)
+	// Generate OpenAPI documents (using pre-analyzed controllers)
 	openapiStart := time.Now()
-	if cfg != nil && cfg.OpenAPI.Output != "" && len(controllers) > 0 {
-		openapiErr := generateOpenAPIFromControllers(controllers, controllerRegistry, cfg, configDir)
-		if openapiErr != nil {
-			fmt.Fprintf(os.Stderr, "error generating OpenAPI: %v\n", openapiErr)
-			return 1
+	if cfg != nil && len(cfg.OpenAPIOutputs) > 0 && len(controllers) > 0 {
+		for i := range cfg.OpenAPIOutputs {
+			outputCfg := &cfg.OpenAPIOutputs[i]
+			if outputCfg.Output == "" {
+				continue
+			}
+			// Post-filter controllers for this output
+			filtered := controllers
+			if outputCfg.Controllers != nil || len(outputCfg.IncludeTags) > 0 || len(outputCfg.ExcludeTags) > 0 {
+				filterOpts := openapi.FilterOptions{
+					IncludeTags: outputCfg.IncludeTags,
+					ExcludeTags: outputCfg.ExcludeTags,
+				}
+				if outputCfg.Controllers != nil {
+					filterOpts.ControllerInclude = outputCfg.Controllers.Include
+					filterOpts.ControllerExclude = outputCfg.Controllers.Exclude
+				}
+				filtered = openapi.FilterControllers(controllers, filterOpts)
+			}
+			if len(filtered) == 0 {
+				continue
+			}
+			if err := generateOpenAPIFromOutput(filtered, controllerRegistry, outputCfg, cfg, configDir); err != nil {
+				label := outputCfg.Output
+				if outputCfg.Name != "" {
+					label = outputCfg.Name + " (" + outputCfg.Output + ")"
+				}
+				fmt.Fprintf(os.Stderr, "error generating OpenAPI %s: %v\n", label, err)
+				return 1
+			}
 		}
 	}
 	timing.OpenAPI = time.Since(openapiStart)
@@ -717,12 +742,17 @@ func runBuildWithIncrAndProgram(args []string, oldIncrProgram *shimincremental.P
 	// Record what we just built so the next incremental warm build can skip
 	// post-processing when nothing changed.
 	var cacheOutputs []string
-	if cfg != nil && cfg.OpenAPI.Output != "" {
-		openapiOutput := cfg.OpenAPI.Output
-		if !filepath.IsAbs(openapiOutput) {
-			openapiOutput = filepath.Join(configDir, openapiOutput)
+	if cfg != nil {
+		for _, oc := range cfg.OpenAPIOutputs {
+			if oc.Output == "" {
+				continue
+			}
+			p := oc.Output
+			if !filepath.IsAbs(p) {
+				p = filepath.Join(configDir, p)
+			}
+			cacheOutputs = append(cacheOutputs, p)
 		}
-		cacheOutputs = append(cacheOutputs, openapiOutput)
 	}
 	postCache := buildcache.New(configHash, cacheOutputs)
 	if saveErr := buildcache.Save(postCachePath, postCache); saveErr != nil {
@@ -820,10 +850,10 @@ func smartCleanDir(outDir string, tsbuildInfoPath string) error {
 	return nil
 }
 
-// generateOpenAPIFromControllers generates an OpenAPI 3.1 document from pre-analyzed controllers.
-// This avoids creating a duplicate type checker and re-analyzing controllers.
-func generateOpenAPIFromControllers(controllers []analyzer.ControllerInfo, registry *metadata.TypeRegistry, cfg *config.Config, configDir string) error {
-	// Generate OpenAPI document with versioning and prefix options
+// generateOpenAPIFromOutput generates an OpenAPI 3.2 document for a single output configuration.
+func generateOpenAPIFromOutput(controllers []analyzer.ControllerInfo, registry *metadata.TypeRegistry, outputCfg *config.OpenAPIOutputConfig, cfg *config.Config, configDir string) error {
+	// Each output gets its own generator (and SchemaGenerator) so only
+	// schemas referenced by its filtered controllers end up in components/schemas.
 	gen := openapi.NewGenerator(registry)
 
 	var genOpts *openapi.GenerateOptions
@@ -839,43 +869,42 @@ func generateOpenAPIFromControllers(controllers []analyzer.ControllerInfo, regis
 	}
 	doc := gen.GenerateWithOptions(controllers, genOpts)
 
-	// Apply document-level config (title, description, servers, security schemes)
+	// Apply document-level config from the per-output config
 	docCfg := openapi.DocumentConfig{
-		Title:          cfg.OpenAPI.Title,
-		Description:    cfg.OpenAPI.Description,
-		Version:        cfg.OpenAPI.Version,
-		TermsOfService: cfg.OpenAPI.TermsOfService,
-		Security:       cfg.OpenAPI.Security,
+		Title:          outputCfg.Title,
+		Description:    outputCfg.Description,
+		Version:        outputCfg.Version,
+		TermsOfService: outputCfg.TermsOfService,
+		Security:       outputCfg.Security,
 	}
-	// Map config tags to openapi tags
-	for _, t := range cfg.OpenAPI.Tags {
+	for _, t := range outputCfg.Tags {
 		docCfg.Tags = append(docCfg.Tags, openapi.Tag{
 			Name:        t.Name,
 			Description: t.Description,
 		})
 	}
-	if cfg.OpenAPI.Contact != nil {
+	if outputCfg.Contact != nil {
 		docCfg.Contact = &openapi.Contact{
-			Name:  cfg.OpenAPI.Contact.Name,
-			URL:   cfg.OpenAPI.Contact.URL,
-			Email: cfg.OpenAPI.Contact.Email,
+			Name:  outputCfg.Contact.Name,
+			URL:   outputCfg.Contact.URL,
+			Email: outputCfg.Contact.Email,
 		}
 	}
-	if cfg.OpenAPI.License != nil {
+	if outputCfg.License != nil {
 		docCfg.License = &openapi.License{
-			Name: cfg.OpenAPI.License.Name,
-			URL:  cfg.OpenAPI.License.URL,
+			Name: outputCfg.License.Name,
+			URL:  outputCfg.License.URL,
 		}
 	}
-	for _, s := range cfg.OpenAPI.Servers {
+	for _, s := range outputCfg.Servers {
 		docCfg.Servers = append(docCfg.Servers, openapi.Server{
 			URL:         s.URL,
 			Description: s.Description,
 		})
 	}
-	if len(cfg.OpenAPI.SecuritySchemes) > 0 {
+	if len(outputCfg.SecuritySchemes) > 0 {
 		docCfg.SecuritySchemes = make(map[string]*openapi.SecurityScheme)
-		for name, s := range cfg.OpenAPI.SecuritySchemes {
+		for name, s := range outputCfg.SecuritySchemes {
 			docCfg.SecuritySchemes[name] = &openapi.SecurityScheme{
 				Type:         s.Type,
 				Scheme:       s.Scheme,
@@ -895,7 +924,7 @@ func generateOpenAPIFromControllers(controllers []analyzer.ControllerInfo, regis
 	}
 
 	// Resolve output path relative to config file directory
-	outputPath := cfg.OpenAPI.Output
+	outputPath := outputCfg.Output
 	if !filepath.IsAbs(outputPath) {
 		outputPath = filepath.Join(configDir, outputPath)
 	}
@@ -911,7 +940,11 @@ func generateOpenAPIFromControllers(controllers []analyzer.ControllerInfo, regis
 		return fmt.Errorf("writing %s: %w", outputPath, err)
 	}
 
-	printStatus(os.Stderr, compiler.IsPrettyOutput(), "✓", "generated OpenAPI document: %s", cfg.OpenAPI.Output)
+	label := outputCfg.Output
+	if outputCfg.Name != "" {
+		label = outputCfg.Name + " → " + outputCfg.Output
+	}
+	printStatus(os.Stderr, compiler.IsPrettyOutput(), "✓", "generated OpenAPI document: %s", label)
 	return nil
 }
 

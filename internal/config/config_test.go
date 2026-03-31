@@ -152,7 +152,7 @@ func TestValidateCompanionsOnlyNoOpenAPI(t *testing.T) {
 
 func TestValidateNonJSONOpenAPIOutput(t *testing.T) {
 	cfg := DefaultConfig()
-	cfg.OpenAPI.Output = "dist/openapi.yaml"
+	cfg.OpenAPIOutputs = []OpenAPIOutputConfig{{Output: "dist/openapi.yaml"}}
 
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected validation error for non-json openapi output")
@@ -708,5 +708,159 @@ func TestLoadTS_ViaLoadDispatch(t *testing.T) {
 	}
 	if cfg.Controllers.Include[0] != "src/**/*.controller.ts" {
 		t.Fatalf("unexpected include: %v", cfg.Controllers.Include)
+	}
+}
+
+// ── Multi-output OpenAPI config tests ────────────────────────────────
+
+func TestOpenAPISingleObjectBackwardCompat(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "tsgonest.config.json")
+	content := `{
+		"controllers": { "include": ["src/**/*.controller.ts"] },
+		"openapi": {
+			"output": "dist/openapi.json",
+			"title": "My API",
+			"version": "1.0.0"
+		}
+	}`
+	os.WriteFile(configPath, []byte(content), 0o644)
+
+	cfg, err := LoadJSON(configPath)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Legacy field should be populated
+	if cfg.OpenAPI.Output != "dist/openapi.json" {
+		t.Fatalf("expected legacy output 'dist/openapi.json', got %q", cfg.OpenAPI.Output)
+	}
+	if cfg.OpenAPI.Title != "My API" {
+		t.Fatalf("expected legacy title 'My API', got %q", cfg.OpenAPI.Title)
+	}
+
+	// OpenAPIOutputs should have one entry
+	if len(cfg.OpenAPIOutputs) != 1 {
+		t.Fatalf("expected 1 output, got %d", len(cfg.OpenAPIOutputs))
+	}
+	if cfg.OpenAPIOutputs[0].Output != "dist/openapi.json" {
+		t.Fatalf("expected output 'dist/openapi.json', got %q", cfg.OpenAPIOutputs[0].Output)
+	}
+}
+
+func TestOpenAPIArrayMultiOutput(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "tsgonest.config.json")
+	content := `{
+		"controllers": { "include": ["src/**/*.controller.ts"] },
+		"openapi": [
+			{
+				"name": "public",
+				"output": "dist/public-api.json",
+				"title": "Public API",
+				"controllers": {
+					"include": ["src/public/**/*.controller.ts"]
+				},
+				"includeTags": ["public"]
+			},
+			{
+				"name": "internal",
+				"output": "dist/internal-api.json",
+				"title": "Internal API",
+				"excludeTags": ["deprecated"]
+			}
+		]
+	}`
+	os.WriteFile(configPath, []byte(content), 0o644)
+
+	cfg, err := LoadJSON(configPath)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(cfg.OpenAPIOutputs) != 2 {
+		t.Fatalf("expected 2 outputs, got %d", len(cfg.OpenAPIOutputs))
+	}
+
+	// Check first output
+	pub := cfg.OpenAPIOutputs[0]
+	if pub.Name != "public" {
+		t.Fatalf("expected name 'public', got %q", pub.Name)
+	}
+	if pub.Output != "dist/public-api.json" {
+		t.Fatalf("expected output 'dist/public-api.json', got %q", pub.Output)
+	}
+	if pub.Controllers == nil || len(pub.Controllers.Include) != 1 {
+		t.Fatal("expected per-output controllers config")
+	}
+	if len(pub.IncludeTags) != 1 || pub.IncludeTags[0] != "public" {
+		t.Fatalf("expected includeTags ['public'], got %v", pub.IncludeTags)
+	}
+
+	// Check second output
+	internal := cfg.OpenAPIOutputs[1]
+	if internal.Name != "internal" {
+		t.Fatalf("expected name 'internal', got %q", internal.Name)
+	}
+	if len(internal.ExcludeTags) != 1 || internal.ExcludeTags[0] != "deprecated" {
+		t.Fatalf("expected excludeTags ['deprecated'], got %v", internal.ExcludeTags)
+	}
+
+	// Legacy field should be populated from first output
+	if cfg.OpenAPI.Output != "dist/public-api.json" {
+		t.Fatalf("expected legacy output from first entry, got %q", cfg.OpenAPI.Output)
+	}
+	if cfg.OpenAPI.Title != "Public API" {
+		t.Fatalf("expected legacy title from first entry, got %q", cfg.OpenAPI.Title)
+	}
+}
+
+func TestOpenAPIValidationDuplicateOutputPaths(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.OpenAPIOutputs = []OpenAPIOutputConfig{
+		{Output: "dist/api.json"},
+		{Output: "dist/api.json"},
+	}
+
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected validation error for duplicate output paths")
+	} else if !strings.Contains(err.Error(), "duplicate openapi output path") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestOpenAPIValidationDuplicateNames(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.OpenAPIOutputs = []OpenAPIOutputConfig{
+		{Name: "api", Output: "dist/api1.json"},
+		{Name: "api", Output: "dist/api2.json"},
+	}
+
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected validation error for duplicate output names")
+	} else if !strings.Contains(err.Error(), "duplicate openapi output name") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestOpenAPINoOutputMeansDefault(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "tsgonest.config.json")
+	// No openapi field at all — should get default
+	content := `{
+		"controllers": { "include": ["src/**/*.controller.ts"] }
+	}`
+	os.WriteFile(configPath, []byte(content), 0o644)
+
+	cfg, err := LoadJSON(configPath)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(cfg.OpenAPIOutputs) != 1 {
+		t.Fatalf("expected 1 default output, got %d", len(cfg.OpenAPIOutputs))
+	}
+	if cfg.OpenAPIOutputs[0].Output != "dist/openapi.json" {
+		t.Fatalf("expected default output 'dist/openapi.json', got %q", cfg.OpenAPIOutputs[0].Output)
 	}
 }

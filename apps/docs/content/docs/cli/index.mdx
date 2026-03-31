@@ -3,7 +3,7 @@ title: CLI Reference
 description: Complete reference for tsgonest build and dev commands, flags, and exit codes.
 ---
 
-tsgonest provides two subcommands: `build` for production compilation and `dev` for watch-mode development. If no subcommand is given, `build` is assumed.
+tsgonest provides several subcommands: `build` for production compilation, `dev` for watch-mode development, and `openapi` for standalone OpenAPI spec generation. If no subcommand is given, `build` is assumed.
 
 ## tsgonest build
 
@@ -119,6 +119,45 @@ tsgonest dev --project tsconfig.build.json --config tsgonest.config.json
 
 # Don't clear terminal on rebuild
 tsgonest dev --preserveWatchOutput
+```
+
+---
+
+## tsgonest openapi
+
+Generate OpenAPI documents without running a full build. Skips TypeScript emit, companion file generation, SDK generation, and asset copying. Useful for CI/CD pipelines, documentation publishing, and API diff checks.
+
+```bash
+tsgonest openapi [flags]
+```
+
+### Flags
+
+| Flag | Alias | Description | Default |
+| --- | --- | --- | --- |
+| `--config <path>` | | Path to `tsgonest.config.ts` or `.json` | auto-detect |
+| `--project <path>` | `-p` | Path to `tsconfig.json` | `tsconfig.json` |
+| `--output <path>` | | Override the output path (single-output mode only) | from config |
+| `--name <name>` | | Generate only the named output (multi-output mode) | all outputs |
+| `--no-check` | | Skip type checking (syntax errors still reported) | `false` |
+
+### Examples
+
+```bash
+# Generate from default config
+tsgonest openapi
+
+# Generate only the "public" output from a multi-output config
+tsgonest openapi --name public
+
+# Override output path
+tsgonest openapi --output dist/api-spec.json
+
+# Skip type checking for faster generation
+tsgonest openapi --no-check
+
+# Use a specific config
+tsgonest openapi --config tsgonest.public.config.ts
 ```
 
 ---

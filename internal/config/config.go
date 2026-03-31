@@ -15,9 +15,21 @@ import (
 type Config struct {
 	Controllers ControllersConfig `json:"controllers"`
 	Transforms  TransformsConfig  `json:"transforms"`
-	OpenAPI     OpenAPIConfig     `json:"openapi"`
-	SDK         SDKConfig         `json:"sdk,omitempty"`
-	NestJS      NestJSConfig      `json:"nestjs,omitempty"`
+
+	// OpenAPI is the legacy single-output config, populated from the first element
+	// of OpenAPIOutputs for backward compatibility. Not directly JSON-deserialized.
+	OpenAPI OpenAPIConfig `json:"-"`
+
+	// OpenAPIOutputs is the resolved list of OpenAPI output configurations.
+	// Populated by resolveOpenAPI() from OpenAPIRaw after JSON unmarshaling.
+	OpenAPIOutputs []OpenAPIOutputConfig `json:"-"`
+
+	// OpenAPIRaw holds the raw JSON for the "openapi" field.
+	// Can be a single object or an array. Resolved by resolveOpenAPI().
+	OpenAPIRaw json.RawMessage `json:"openapi,omitempty"`
+
+	SDK    SDKConfig    `json:"sdk,omitempty"`
+	NestJS NestJSConfig `json:"nestjs,omitempty"`
 
 	// Dev/build settings (matching nest-cli.json conventions)
 	EntryFile     string `json:"entryFile,omitempty"`     // Entry point name without extension (default: "main")
@@ -41,12 +53,12 @@ type ControllersConfig struct {
 
 // TransformsConfig specifies which code transformations to apply.
 type TransformsConfig struct {
-	Validation        bool     `json:"validation"`
-	Serialization     bool     `json:"serialization"`
-	StandardSchema    bool     `json:"standardSchema,omitempty"`    // Generate Standard Schema v1 wrappers (default: false)
+	Validation         bool     `json:"validation"`
+	Serialization      bool     `json:"serialization"`
+	StandardSchema     bool     `json:"standardSchema,omitempty"`     // Generate Standard Schema v1 wrappers (default: false)
 	ResponseSerializer string   `json:"responseSerializer,omitempty"` // "guard" (default), "safe", or "none" — controls type checking on response serialization
-	Include           []string `json:"include,omitempty"`           // Glob patterns for source files to generate companions for (e.g., ["src/**/*.dto.ts"])
-	Exclude           []string `json:"exclude,omitempty"`           // Type name patterns to exclude from codegen (e.g., "Legacy*", "SomeInternalDto")
+	Include            []string `json:"include,omitempty"`            // Glob patterns for source files to generate companions for (e.g., ["src/**/*.dto.ts"])
+	Exclude            []string `json:"exclude,omitempty"`            // Type name patterns to exclude from codegen (e.g., "Legacy*", "SomeInternalDto")
 }
 
 // OpenAPIConfig specifies OpenAPI generation settings.
@@ -67,6 +79,47 @@ type OpenAPIConfig struct {
 	Tags []OpenAPITag `json:"tags,omitempty"`
 	// TermsOfService is the URL to the API terms of service.
 	TermsOfService string `json:"termsOfService,omitempty"`
+}
+
+// OpenAPIOutputConfig represents a single OpenAPI output specification.
+// Used in both single-output and multi-output modes.
+type OpenAPIOutputConfig struct {
+	// Name is the logical name for this output (e.g., "public", "internal").
+	// Optional for single-output; useful for --name flag in multi-output mode.
+	Name string `json:"name,omitempty"`
+
+	// Output path for the generated OpenAPI document.
+	Output string `json:"output"`
+
+	// Controllers overrides the top-level controllers.include/exclude for this output.
+	// When nil, inherits from the top-level controllers config.
+	Controllers *ControllersConfig `json:"controllers,omitempty"`
+
+	// IncludeTags keeps only routes matching at least one of these tags.
+	IncludeTags []string `json:"includeTags,omitempty"`
+	// ExcludeTags removes routes matching any of these tags.
+	ExcludeTags []string `json:"excludeTags,omitempty"`
+
+	// SDK configures per-output SDK generation. When set, SDK is generated
+	// from this output's OpenAPI spec.
+	SDK *SDKOutputConfig `json:"sdk,omitempty"`
+
+	// Document metadata (same fields as OpenAPIConfig).
+	Title           string                           `json:"title,omitempty"`
+	Description     string                           `json:"description,omitempty"`
+	Version         string                           `json:"version,omitempty"`
+	Contact         *OpenAPIContact                  `json:"contact,omitempty"`
+	License         *OpenAPILicense                  `json:"license,omitempty"`
+	Servers         []OpenAPIServer                  `json:"servers,omitempty"`
+	SecuritySchemes map[string]OpenAPISecurityScheme `json:"securitySchemes,omitempty"`
+	Security        []map[string][]string            `json:"security,omitempty"`
+	Tags            []OpenAPITag                     `json:"tags,omitempty"`
+	TermsOfService  string                           `json:"termsOfService,omitempty"`
+}
+
+// SDKOutputConfig specifies per-output SDK generation settings.
+type SDKOutputConfig struct {
+	Output string `json:"output"` // SDK output directory for this OpenAPI output
 }
 
 // OpenAPITag represents a tag with an optional description in the OpenAPI document.
@@ -118,19 +171,21 @@ type VersioningConfig struct {
 }
 
 // DefaultConfig returns a config with sensible defaults.
+// When loading from JSON/TS, resolveOpenAPI() overrides OpenAPI/OpenAPIOutputs
+// from the raw JSON. For non-loading use cases, defaults are pre-populated.
 func DefaultConfig() Config {
+	defaultOutput := OpenAPIOutputConfig{Output: "dist/openapi.json"}
 	return Config{
 		Controllers: ControllersConfig{
 			Include: []string{"src/**/*.controller.ts"},
 		},
 		Transforms: TransformsConfig{
-			Validation:        true,
-			Serialization:     true,
+			Validation:         true,
+			Serialization:      true,
 			ResponseSerializer: "guard",
 		},
-		OpenAPI: OpenAPIConfig{
-			Output: "dist/openapi.json",
-		},
+		OpenAPI:        outputToLegacyConfig(defaultOutput),
+		OpenAPIOutputs: []OpenAPIOutputConfig{defaultOutput},
 	}
 }
 
@@ -175,6 +230,10 @@ func LoadJSON(path string) (*Config, error) {
 	config := DefaultConfig()
 	if err := json.Unmarshal(data, &config); err != nil {
 		return nil, fmt.Errorf("failed to parse config file %q: %w", path, err)
+	}
+
+	if err := config.resolveOpenAPI(); err != nil {
+		return nil, fmt.Errorf("invalid config in %q: %w", path, err)
 	}
 
 	if err := config.Validate(); err != nil {
@@ -239,6 +298,10 @@ func LoadTS(path string) (*Config, error) {
 		return nil, fmt.Errorf("failed to parse config from %q: %w", path, err)
 	}
 
+	if err := config.resolveOpenAPI(); err != nil {
+		return nil, fmt.Errorf("invalid config in %q: %w", path, err)
+	}
+
 	if err := config.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid config in %q: %w", path, err)
 	}
@@ -283,18 +346,85 @@ func execRuntime(runtime string, dir string, args []string) ([]byte, error) {
 	}
 }
 
+// resolveOpenAPI parses the raw JSON "openapi" field into OpenAPIOutputs.
+// Supports both a single object (backward-compatible) and an array of outputs.
+// Must be called after JSON unmarshaling and before Validate().
+func (c *Config) resolveOpenAPI() error {
+	if len(c.OpenAPIRaw) == 0 || string(c.OpenAPIRaw) == "null" {
+		// No openapi specified — use default single output
+		c.OpenAPIOutputs = []OpenAPIOutputConfig{{Output: "dist/openapi.json"}}
+		c.OpenAPI = outputToLegacyConfig(c.OpenAPIOutputs[0])
+		return nil
+	}
+
+	trimmed := bytes.TrimSpace(c.OpenAPIRaw)
+	if len(trimmed) > 0 && trimmed[0] == '[' {
+		// Array mode: multiple outputs
+		var outputs []OpenAPIOutputConfig
+		if err := json.Unmarshal(c.OpenAPIRaw, &outputs); err != nil {
+			return fmt.Errorf("parsing openapi array: %w", err)
+		}
+		c.OpenAPIOutputs = outputs
+	} else {
+		// Single object mode (backward-compatible)
+		var output OpenAPIOutputConfig
+		if err := json.Unmarshal(c.OpenAPIRaw, &output); err != nil {
+			return fmt.Errorf("parsing openapi config: %w", err)
+		}
+		c.OpenAPIOutputs = []OpenAPIOutputConfig{output}
+	}
+
+	// Populate legacy OpenAPI from first output for backward compat
+	if len(c.OpenAPIOutputs) > 0 {
+		c.OpenAPI = outputToLegacyConfig(c.OpenAPIOutputs[0])
+	}
+
+	return nil
+}
+
+// outputToLegacyConfig converts an OpenAPIOutputConfig to the legacy OpenAPIConfig struct.
+func outputToLegacyConfig(o OpenAPIOutputConfig) OpenAPIConfig {
+	return OpenAPIConfig{
+		Output:          o.Output,
+		Title:           o.Title,
+		Description:     o.Description,
+		Version:         o.Version,
+		Contact:         o.Contact,
+		License:         o.License,
+		Servers:         o.Servers,
+		SecuritySchemes: o.SecuritySchemes,
+		Security:        o.Security,
+		Tags:            o.Tags,
+		TermsOfService:  o.TermsOfService,
+	}
+}
+
 // Validate checks the config for logical errors.
 func (c *Config) Validate() error {
 	if len(c.Controllers.Include) == 0 {
 		return fmt.Errorf("controllers.include must have at least one pattern")
 	}
 
-	// OpenAPI output is optional — empty string means "no OpenAPI generation".
-	// When set, ensure the output path has a .json extension.
-	if c.OpenAPI.Output != "" {
-		ext := filepath.Ext(c.OpenAPI.Output)
+	// Validate each OpenAPI output
+	outputPaths := make(map[string]bool)
+	outputNames := make(map[string]bool)
+	for i, o := range c.OpenAPIOutputs {
+		if o.Output == "" {
+			continue // empty output means "skip this output"
+		}
+		ext := filepath.Ext(o.Output)
 		if ext != ".json" {
-			return fmt.Errorf("openapi.output must have a .json extension, got %q", ext)
+			return fmt.Errorf("openapi[%d].output must have a .json extension, got %q", i, ext)
+		}
+		if outputPaths[o.Output] {
+			return fmt.Errorf("duplicate openapi output path: %q", o.Output)
+		}
+		outputPaths[o.Output] = true
+		if o.Name != "" {
+			if outputNames[o.Name] {
+				return fmt.Errorf("duplicate openapi output name: %q", o.Name)
+			}
+			outputNames[o.Name] = true
 		}
 	}
 
