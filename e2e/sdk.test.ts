@@ -5,25 +5,67 @@ import {
   readFileSync,
   rmSync,
   mkdtempSync,
+  mkdirSync,
   writeFileSync,
   statSync,
 } from "fs";
 import { tmpdir } from "os";
 import { resolve } from "path";
-import { runTsgonest, FIXTURES_DIR } from "./helpers";
+import { runTsgonest, PROJECT_ROOT, FIXTURES_DIR } from "./helpers";
+
+/**
+ * Helper: creates a temp config that points to a fixture OpenAPI file with
+ * sdk output configured. Returns { configPath, outputDir, cleanup }.
+ */
+function createSdkFixture(openApiFixture: string, extraName: string) {
+  const tmpDir = mkdtempSync(resolve(tmpdir(), `tsgonest-sdk-${extraName}-`));
+  const outputDir = resolve(tmpDir, "sdk");
+  mkdirSync(outputDir, { recursive: true });
+
+  // Resolve absolute path to the fixture
+  const absInput = resolve(PROJECT_ROOT, openApiFixture);
+
+  const configPath = resolve(tmpDir, "tsgonest.config.json");
+  writeFileSync(
+    configPath,
+    JSON.stringify({
+      controllers: { include: ["src/**/*.controller.ts"] },
+      openapi: [
+        {
+          name: "default",
+          output: absInput,
+          sdk: { output: outputDir },
+        },
+      ],
+    })
+  );
+
+  return {
+    configPath,
+    outputDir,
+    cleanup: () => rmSync(tmpDir, { recursive: true }),
+  };
+}
+
+/** Run SDK generation for a fixture, returning exitCode + stdout + outputDir. */
+function generateSdk(fixture: string, name: string) {
+  const { configPath, outputDir, cleanup } = createSdkFixture(fixture, name);
+  const { exitCode, stdout, stderr } = runTsgonest([
+    "sdk",
+    "--config",
+    configPath,
+  ]);
+  return { exitCode, stdout, stderr, outputDir, cleanup };
+}
 
 // ─── Group 1: tsgonest sdk CLI basics ──────────────────────────────────────
 
 describe("tsgonest sdk CLI", () => {
   it("should generate SDK from basic fixture", () => {
-    const outputDir = mkdtempSync(resolve(tmpdir(), "tsgonest-sdk-basic-"));
-    const { exitCode, stdout } = runTsgonest([
-      "sdk",
-      "--input",
+    const { exitCode, stdout, outputDir, cleanup } = generateSdk(
       "testdata/sdkgen/basic.openapi.json",
-      "--output",
-      outputDir,
-    ]);
+      "basic"
+    );
     expect(exitCode).toBe(0);
     expect(stdout).toContain("SDK generated");
 
@@ -36,36 +78,28 @@ describe("tsgonest sdk CLI", () => {
     expect(existsSync(resolve(outputDir, "orders/index.ts"))).toBe(true);
     expect(existsSync(resolve(outputDir, "products/index.ts"))).toBe(true);
 
-    rmSync(outputDir, { recursive: true });
+    cleanup();
   });
 
   it("should generate SDK from versioned fixture", () => {
-    const outputDir = mkdtempSync(resolve(tmpdir(), "tsgonest-sdk-ver-"));
-    const { exitCode } = runTsgonest([
-      "sdk",
-      "--input",
+    const { exitCode, outputDir, cleanup } = generateSdk(
       "testdata/sdkgen/versioned.openapi.json",
-      "--output",
-      outputDir,
-    ]);
+      "ver"
+    );
     expect(exitCode).toBe(0);
 
     expect(existsSync(resolve(outputDir, "health/index.ts"))).toBe(true);
     expect(existsSync(resolve(outputDir, "v1/orders/index.ts"))).toBe(true);
     expect(existsSync(resolve(outputDir, "v2/orders/index.ts"))).toBe(true);
 
-    rmSync(outputDir, { recursive: true });
+    cleanup();
   });
 
   it("should generate SDK with SSE and file uploads", () => {
-    const outputDir = mkdtempSync(resolve(tmpdir(), "tsgonest-sdk-fu-"));
-    const { exitCode } = runTsgonest([
-      "sdk",
-      "--input",
+    const { exitCode, outputDir, cleanup } = generateSdk(
       "testdata/sdkgen/file-uploads.openapi.json",
-      "--output",
-      outputDir,
-    ]);
+      "fu"
+    );
     expect(exitCode).toBe(0);
 
     const sseContent = readFileSync(resolve(outputDir, "sse.ts"), "utf-8");
@@ -73,18 +107,14 @@ describe("tsgonest sdk CLI", () => {
     const formDataContent = readFileSync(resolve(outputDir, "form-data.ts"), "utf-8");
     expect(formDataContent).toContain("buildFormData");
 
-    rmSync(outputDir, { recursive: true });
+    cleanup();
   });
 
   it("should generate SDK from edge-cases fixture", () => {
-    const outputDir = mkdtempSync(resolve(tmpdir(), "tsgonest-sdk-edge-"));
-    const { exitCode } = runTsgonest([
-      "sdk",
-      "--input",
+    const { exitCode, outputDir, cleanup } = generateSdk(
       "testdata/sdkgen/edge-cases.openapi.json",
-      "--output",
-      outputDir,
-    ]);
+      "edge"
+    );
     expect(exitCode).toBe(0);
 
     const ctrlContent = readFileSync(
@@ -96,43 +126,47 @@ describe("tsgonest sdk CLI", () => {
     // SSE + JSON coexist
     expect(ctrlContent).toContain("SSEConnection");
 
-    rmSync(outputDir, { recursive: true });
+    cleanup();
   });
 
-  it("should fail with missing --input", () => {
-    const { exitCode, stderr } = runTsgonest(["sdk"]);
-    expect(exitCode).toBe(1);
-    expect(stderr).toContain("--input");
-  });
-
-  it("should fail with nonexistent input file", () => {
+  it("should fail without config", () => {
     const { exitCode, stderr } = runTsgonest([
       "sdk",
-      "--input",
-      "nonexistent.json",
-      "--output",
-      "/tmp/sdk-out",
+      "--config",
+      "nonexistent.config.json",
     ]);
     expect(exitCode).toBe(1);
     expect(stderr).toContain("error");
   });
 
+  it("should fail when no outputs have sdk configured", () => {
+    const tmpDir = mkdtempSync(resolve(tmpdir(), "tsgonest-sdk-nosdk-"));
+    const configPath = resolve(tmpDir, "tsgonest.config.json");
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        controllers: { include: ["src/**/*.controller.ts"] },
+        openapi: [{ name: "api", output: "dist/openapi.json" }],
+      })
+    );
+    const { exitCode, stderr } = runTsgonest(["sdk", "--config", configPath]);
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain("no OpenAPI outputs have sdk.output configured");
+    rmSync(tmpDir, { recursive: true });
+  });
+
   it("should generate SDK from empty fixture", () => {
-    const outputDir = mkdtempSync(resolve(tmpdir(), "tsgonest-sdk-empty-"));
-    const { exitCode } = runTsgonest([
-      "sdk",
-      "--input",
+    const { exitCode, outputDir, cleanup } = generateSdk(
       "testdata/sdkgen/empty.openapi.json",
-      "--output",
-      outputDir,
-    ]);
+      "empty"
+    );
     expect(exitCode).toBe(0);
 
     // types.ts should have export {} (no schemas)
     const typesContent = readFileSync(resolve(outputDir, "types.ts"), "utf-8");
     expect(typesContent).toContain("export {}");
 
-    rmSync(outputDir, { recursive: true });
+    cleanup();
   });
 });
 
@@ -140,14 +174,7 @@ describe("tsgonest sdk CLI", () => {
 
 describe("generated SDK compiles with tsc", () => {
   function generateAndCompile(fixture: string, extraName: string) {
-    const outputDir = mkdtempSync(resolve(tmpdir(), `tsgonest-tsc-${extraName}-`));
-    const { exitCode: genCode } = runTsgonest([
-      "sdk",
-      "--input",
-      fixture,
-      "--output",
-      outputDir,
-    ]);
+    const { exitCode: genCode, outputDir, cleanup } = generateSdk(fixture, extraName);
     expect(genCode).toBe(0);
 
     // Write tsconfig.json for tsc --noEmit
@@ -175,7 +202,7 @@ describe("generated SDK compiles with tsc", () => {
       timeout: 30000,
     });
 
-    rmSync(outputDir, { recursive: true });
+    cleanup();
     return {
       exitCode: tscResult.status ?? 1,
       stdout: tscResult.stdout || "",
@@ -228,17 +255,13 @@ describe("generated SDK compiles with tsc", () => {
 
 describe("SDK runtime verification", () => {
   let sdkDir: string;
+  let cleanupFn: () => void;
 
   beforeAll(() => {
-    sdkDir = mkdtempSync(resolve(tmpdir(), "tsgonest-sdk-runtime-"));
-    const { exitCode } = runTsgonest([
-      "sdk",
-      "--input",
-      "testdata/sdkgen/basic.openapi.json",
-      "--output",
-      sdkDir,
-    ]);
-    expect(exitCode).toBe(0);
+    const result = generateSdk("testdata/sdkgen/basic.openapi.json", "runtime");
+    expect(result.exitCode).toBe(0);
+    sdkDir = result.outputDir;
+    cleanupFn = result.cleanup;
   });
 
   it("createClient returns object with controller namespaces", async () => {
@@ -281,16 +304,12 @@ describe("SSEConnection runtime", () => {
   let SSEConnection: any;
 
   beforeAll(async () => {
-    const sdkDir = mkdtempSync(resolve(tmpdir(), "tsgonest-sdk-sse-"));
-    const { exitCode } = runTsgonest([
-      "sdk",
-      "--input",
+    const { exitCode, outputDir } = generateSdk(
       "testdata/sdkgen/file-uploads.openapi.json",
-      "--output",
-      sdkDir,
-    ]);
+      "sse"
+    );
     expect(exitCode).toBe(0);
-    const sseMod = await import(resolve(sdkDir, "sse.ts"));
+    const sseMod = await import(resolve(outputDir, "sse.ts"));
     SSEConnection = sseMod.SSEConnection;
   });
 
@@ -420,16 +439,12 @@ describe("buildFormData runtime", () => {
   let buildFormData: any;
 
   beforeAll(async () => {
-    const sdkDir = mkdtempSync(resolve(tmpdir(), "tsgonest-sdk-form-"));
-    const { exitCode } = runTsgonest([
-      "sdk",
-      "--input",
+    const { exitCode, outputDir } = generateSdk(
       "testdata/sdkgen/file-uploads.openapi.json",
-      "--output",
-      sdkDir,
-    ]);
+      "form"
+    );
     expect(exitCode).toBe(0);
-    const formDataMod = await import(resolve(sdkDir, "form-data.ts"));
+    const formDataMod = await import(resolve(outputDir, "form-data.ts"));
     buildFormData = formDataMod.buildFormData;
   });
 
@@ -474,17 +489,11 @@ describe("buildFormData runtime", () => {
 
 describe("SDK write-if-changed behavior", () => {
   it("re-run with same input should preserve file mtimes", () => {
-    const outputDir = mkdtempSync(resolve(tmpdir(), "tsgonest-sdk-mtime-"));
     const fixture = "testdata/sdkgen/basic.openapi.json";
+    const { configPath, outputDir, cleanup } = createSdkFixture(fixture, "mtime");
 
     // First generation
-    const { exitCode: first } = runTsgonest([
-      "sdk",
-      "--input",
-      fixture,
-      "--output",
-      outputDir,
-    ]);
+    const { exitCode: first } = runTsgonest(["sdk", "--config", configPath]);
     expect(first).toBe(0);
 
     // Record mtimes
@@ -492,49 +501,41 @@ describe("SDK write-if-changed behavior", () => {
     const mtime1 = statSync(typesPath).mtimeMs;
 
     // Second generation with same input
-    const { exitCode: second } = runTsgonest([
-      "sdk",
-      "--input",
-      fixture,
-      "--output",
-      outputDir,
-    ]);
+    const { exitCode: second } = runTsgonest(["sdk", "--config", configPath]);
     expect(second).toBe(0);
 
     // mtime should be unchanged (write-if-changed)
     const mtime2 = statSync(typesPath).mtimeMs;
     expect(mtime2).toBe(mtime1);
 
-    rmSync(outputDir, { recursive: true });
+    cleanup();
   });
 
   it("re-run with different input should update files", () => {
-    const outputDir = mkdtempSync(resolve(tmpdir(), "tsgonest-sdk-update-"));
-
     // Generate from basic fixture
-    runTsgonest([
-      "sdk",
-      "--input",
+    const { exitCode: first, outputDir, cleanup } = generateSdk(
       "testdata/sdkgen/basic.openapi.json",
-      "--output",
-      outputDir,
-    ]);
-
+      "update1"
+    );
+    expect(first).toBe(0);
     const content1 = readFileSync(resolve(outputDir, "types.ts"), "utf-8");
 
-    // Generate from a different fixture into the same dir
-    runTsgonest([
-      "sdk",
-      "--input",
-      "testdata/sdkgen/file-uploads.openapi.json",
-      "--output",
-      outputDir,
-    ]);
+    // Generate from a different fixture into the same output dir
+    const absInput2 = resolve(PROJECT_ROOT, "testdata/sdkgen/file-uploads.openapi.json");
+    const configPath2 = resolve(outputDir, "..", "tsgonest2.config.json");
+    writeFileSync(
+      configPath2,
+      JSON.stringify({
+        controllers: { include: ["src/**/*.controller.ts"] },
+        openapi: [{ name: "default", output: absInput2, sdk: { output: outputDir } }],
+      })
+    );
+    runTsgonest(["sdk", "--config", configPath2]);
 
     const content2 = readFileSync(resolve(outputDir, "types.ts"), "utf-8");
     // Content should be different (different schemas)
     expect(content2).not.toBe(content1);
 
-    rmSync(outputDir, { recursive: true });
+    cleanup();
   });
 });

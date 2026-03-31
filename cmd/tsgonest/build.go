@@ -202,16 +202,6 @@ func runBuildWithIncrAndProgram(args []string, oldIncrProgram *shimincremental.P
 	opts := parsedConfig.CompilerOptions()
 	modFmt := rewrite.DetectModuleFormat(moduleFormatFromOpts(opts))
 
-	// Auto-infer rootDir if not set, so users get flat dist/ output without configuring it.
-	// Computes common prefix of all source files (like tsc does).
-	if opts.RootDir == "" && opts.OutDir != "" {
-		inferredRootDir := pathalias.InferRootDir(parsedConfig.FileNames())
-		if inferredRootDir != "" {
-			printStatus(os.Stderr, pretty, "◆", "inferred rootDir: %s", inferredRootDir)
-			opts.RootDir = inferredRootDir
-		}
-	}
-
 	// Resolve tsconfig path for cache file derivation
 	resolvedTsconfigPath := tsconfigPath
 	if !filepath.IsAbs(resolvedTsconfigPath) {
@@ -676,6 +666,7 @@ func runBuildWithIncrAndProgram(args []string, oldIncrProgram *shimincremental.P
 	// Generate TypeScript SDK if configured (runs in background goroutine).
 	// Supports both top-level sdk.output (legacy) and per-output sdk.output.
 	var sdkWg sync.WaitGroup
+	var sdkMu sync.Mutex
 	var sdkErr error
 
 	// Build shared SDK options from config
@@ -717,45 +708,14 @@ func runBuildWithIncrAndProgram(args []string, oldIncrProgram *shimincremental.P
 					return
 				}
 				if err := sdkgen.Generate(input, output, sdkOpts); err != nil {
+					sdkMu.Lock()
 					sdkErr = err
+					sdkMu.Unlock()
 					return
 				}
 				os.WriteFile(sdkHashPath, []byte(inputHash), 0o644)
 				printStatus(os.Stderr, pretty, "✓", "generated SDK: %s → %s", label, output)
 			}(sdkInput, sdkOutput, label)
-		}
-	}
-
-	// Top-level SDK generation (legacy — backward compat)
-	if cfg != nil && cfg.SDK.Output != "" {
-		sdkInput := cfg.SDK.Input
-		if sdkInput == "" {
-			sdkInput = cfg.OpenAPI.Output
-		}
-		if sdkInput != "" {
-			if !filepath.IsAbs(sdkInput) {
-				sdkInput = filepath.Join(configDir, sdkInput)
-			}
-			sdkOutput := cfg.SDK.Output
-			if !filepath.IsAbs(sdkOutput) {
-				sdkOutput = filepath.Join(configDir, sdkOutput)
-			}
-			sdkWg.Add(1)
-			go func() {
-				defer sdkWg.Done()
-				sdkHashPath := filepath.Join(sdkOutput, ".sdk-hash")
-				inputHash := hashFileContent(sdkInput)
-				if existingHash, err := os.ReadFile(sdkHashPath); err == nil && string(existingHash) == inputHash {
-					printStatus(os.Stderr, pretty, "·", "SDK up to date, skipping generation")
-					return
-				}
-				if err := sdkgen.Generate(sdkInput, sdkOutput, sdkOpts); err != nil {
-					sdkErr = err
-					return
-				}
-				os.WriteFile(sdkHashPath, []byte(inputHash), 0o644)
-				printStatus(os.Stderr, pretty, "✓", "generated SDK: %s", cfg.SDK.Output)
-			}()
 		}
 	}
 

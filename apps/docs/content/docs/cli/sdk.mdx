@@ -8,48 +8,27 @@ description: Generate a fully-typed TypeScript SDK client from your OpenAPI spec
 ## Usage
 
 ```bash
-# Generate SDK from OpenAPI spec
-tsgonest sdk --input dist/openapi.json
-
-# Custom output directory
-tsgonest sdk --input dist/openapi.json --output ./client
-
-# Uses config defaults (sdk.input falls back to openapi.output)
+# Generate SDK for all outputs that have sdk.output configured
 tsgonest sdk
+
+# Generate SDK for a specific named output
+tsgonest sdk --name public
+
+# Override output directory
+tsgonest sdk --name public --output ./client
 ```
 
 ## Flags
 
 | Flag | Description | Default |
 | --- | --- | --- |
-| `--input <path>` | Path to OpenAPI JSON file (legacy) | From config: `sdk.input` or `openapi.output` |
-| `--output <path>` | Output directory for generated SDK | From config: `sdk.output` or `./sdk` |
+| `--name <name>` | Generate SDK for a specific named OpenAPI output | all outputs |
+| `--output <path>` | Override output directory for generated SDK | from config |
 | `--config <path>` | Path to tsgonest config file | auto-detect |
-| `--name <name>` | Generate SDK for a specific named OpenAPI output | |
 
 ## Config
 
-### Top-level SDK config (legacy)
-
-```ts title="tsgonest.config.ts"
-import { defineConfig } from '@tsgonest/runtime';
-
-export default defineConfig({
-  openapi: {
-    output: 'dist/openapi.json',
-    title: 'My API',
-    version: '1.0.0',
-  },
-  sdk: {
-    output: './sdk',          // Output directory (default: "./sdk")
-    input: 'dist/openapi.json', // Defaults to openapi.output if omitted
-  },
-});
-```
-
-### Per-output SDK config
-
-When using multiple OpenAPI outputs, configure SDK generation per output:
+Configure SDK generation per OpenAPI output:
 
 ```ts title="tsgonest.config.ts"
 import { defineConfig } from '@tsgonest/runtime';
@@ -72,13 +51,22 @@ export default defineConfig({
 });
 ```
 
-Generate a specific output's SDK:
+Single-output configs work the same way:
 
-```bash
-tsgonest sdk --name public
+```ts title="tsgonest.config.ts"
+import { defineConfig } from '@tsgonest/runtime';
+
+export default defineConfig({
+  openapi: {
+    output: 'dist/openapi.json',
+    title: 'My API',
+    version: '1.0.0',
+    sdk: { output: './sdk' },
+  },
+});
 ```
 
-During `tsgonest build`, per-output SDKs are generated automatically alongside the top-level SDK (if configured).
+During `tsgonest build`, per-output SDKs are generated automatically.
 
 ---
 
@@ -254,23 +242,11 @@ The `globalPrefix` and `versionPrefix` from your tsgonest config are automatical
 
 ## Workflow
 
-The recommended workflow is to run `tsgonest sdk` after `tsgonest build`:
-
-```json title="package.json"
-{
-  "scripts": {
-    "build": "tsgonest build",
-    "sdk": "tsgonest sdk",
-    "build:all": "tsgonest build && tsgonest sdk"
-  }
-}
-```
-
-Or configure both `openapi.output` and `sdk.output` in your config, then:
+SDK generation happens automatically during `tsgonest build` when `sdk.output` is configured. For standalone generation:
 
 ```bash
-tsgonest build    # Compiles + generates openapi.json
-tsgonest sdk      # Reads openapi.json → generates sdk/
+tsgonest build    # Compiles + generates openapi.json + SDK
+tsgonest sdk      # Regenerate SDK from existing openapi.json
 ```
 
 The SDK is plain TypeScript with no runtime dependencies — copy it into a frontend project, publish it as an internal package, or commit it to a monorepo.

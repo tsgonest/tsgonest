@@ -11,7 +11,6 @@ import (
 	"syscall"
 	"time"
 
-	shimcompiler "github.com/microsoft/typescript-go/shim/compiler"
 	"github.com/tsgonest/tsgonest/internal/analyzer"
 	"github.com/tsgonest/tsgonest/internal/compiler"
 	"github.com/tsgonest/tsgonest/internal/watcher"
@@ -81,6 +80,7 @@ func runCheckOnce(configPath, tsconfigPath string, noCheck bool) int {
 	}
 	if len(programDiags) > 0 {
 		fmt.Fprint(os.Stderr, compiler.FormatDiagnostics(programDiags))
+		return 1
 	}
 
 	// Gather TypeScript diagnostics
@@ -145,103 +145,19 @@ func runCheckOnce(configPath, tsconfigPath string, noCheck bool) int {
 	return 0
 }
 
-// checkBuilder holds program state for incremental check rebuilds.
+// checkBuilder holds state for watch-mode check rebuilds.
+// Each rebuild runs a full check (no emit) — fast enough without incremental.
 type checkBuilder struct {
 	mu           sync.Mutex
-	baseProgram  *shimcompiler.Program
 	configPath   string
 	tsconfigPath string
 	noCheck      bool
-	cwd          string
 }
 
 func (b *checkBuilder) Check() int {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.fullCheck()
-}
-
-func (b *checkBuilder) CheckSingleFile(changedFile string) int {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	if b.baseProgram == nil {
-		return b.fullCheck()
-	}
-
-	fs := compiler.CreateDefaultFS()
-	updatedProgram, reused := compiler.UpdateProgram(b.baseProgram, changedFile, b.cwd, fs)
-	if !reused || updatedProgram == nil {
-		return b.fullCheck()
-	}
-
-	b.baseProgram = updatedProgram
-	return b.runCheckWithProgram(updatedProgram)
-}
-
-func (b *checkBuilder) fullCheck() int {
-	code := runCheckOnce(b.configPath, b.tsconfigPath, b.noCheck)
-	// We can't easily extract the program from runCheckOnce, so clear it
-	// to force a full rebuild next time. This is simpler than threading the
-	// program through — the full check is fast enough without emit.
-	return code
-}
-
-func (b *checkBuilder) runCheckWithProgram(program *shimcompiler.Program) int {
-	// Simplified check path using a pre-built program
-	pretty := compiler.IsPrettyOutput()
-
-	cfgResult, err := loadOrDiscoverConfig(b.configPath, b.cwd)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		return 1
-	}
-	cfg := cfgResult.Config
-
-	allDiags := compiler.GatherDiagnostics(program, b.noCheck)
-	if len(allDiags) > 0 {
-		reportDiag := compiler.CreateDiagnosticReporter(os.Stderr, b.cwd, pretty)
-		for _, d := range allDiags {
-			reportDiag(d)
-		}
-	}
-	tsErrorCount := compiler.CountErrors(allDiags)
-
-	needControllers := cfg != nil && len(cfg.Controllers.Include) > 0
-	if needControllers && tsErrorCount == 0 {
-		sharedChecker, release := program.GetTypeChecker(context.Background())
-		if sharedChecker == nil {
-			fmt.Fprintln(os.Stderr, "error: could not get type checker")
-			return 1
-		}
-		defer release()
-
-		sharedWalker := analyzer.NewTypeWalker(sharedChecker)
-		ca := analyzer.NewControllerAnalyzerWithWalker(program, sharedChecker, sharedWalker)
-		controllers := ca.AnalyzeProgram(cfg.Controllers.Include, cfg.Controllers.Exclude)
-
-		var allWarnings []string
-		for _, w := range ca.Warnings() {
-			allWarnings = append(allWarnings, w.Message)
-		}
-		allWarnings = append(allWarnings, sharedWalker.Warnings()...)
-
-		printStatus(os.Stderr, pretty, "✓", "analyzed %d controller(s)", len(controllers))
-
-		if len(allWarnings) > 0 {
-			fmt.Fprintln(os.Stderr)
-			for _, w := range allWarnings {
-				printStatus(os.Stderr, pretty, "●", "%s", w)
-			}
-		}
-	}
-
-	if tsErrorCount > 0 {
-		printStatus(os.Stderr, pretty, "✗", "found %d error(s)", tsErrorCount)
-		return 1
-	}
-	printStatus(os.Stderr, pretty, "✓", "no errors")
-	return 0
+	return runCheckOnce(b.configPath, b.tsconfigPath, b.noCheck)
 }
 
 // runCheckWatch runs the check command in watch mode.
@@ -267,7 +183,6 @@ func runCheckWatch(configPath, tsconfigPath string, noCheck bool) int {
 		configPath:   configPath,
 		tsconfigPath: tsconfigPath,
 		noCheck:      noCheck,
-		cwd:          cwd,
 	}
 
 	// Initial check
@@ -279,13 +194,7 @@ func runCheckWatch(configPath, tsconfigPath string, noCheck bool) int {
 	rebuild := func(events []watcher.Event) {
 		fmt.Fprintf(os.Stderr, "\n─────────────────────────────────\n")
 		fmt.Fprintf(os.Stderr, "detected %d change(s), rechecking...\n\n", len(events))
-
-		if len(events) == 1 && events[0].Op == "write" {
-			builder.CheckSingleFile(events[0].Path)
-		} else {
-			builder.Check()
-		}
-
+		builder.Check()
 		printStatus(os.Stderr, pretty, "◆", "watching for changes...")
 	}
 

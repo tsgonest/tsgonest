@@ -89,7 +89,7 @@ Use `--watch` for continuous checking during development:
 tsgonest check --watch
 ```
 
-On each file save, only the changed file is re-parsed (via `UpdateProgram` fast path when possible), and the full check pipeline re-runs.
+On each file save the full check pipeline re-runs. Since check skips emit, this is fast enough for interactive use.
 
 ### Examples
 
