@@ -673,13 +673,63 @@ func runBuildWithIncrAndProgram(args []string, oldIncrProgram *shimincremental.P
 	}
 	timing.OpenAPI = time.Since(openapiStart)
 
-	// Generate TypeScript SDK if configured (runs in background goroutine)
+	// Generate TypeScript SDK if configured (runs in background goroutine).
+	// Supports both top-level sdk.output (legacy) and per-output sdk.output.
 	var sdkWg sync.WaitGroup
 	var sdkErr error
+
+	// Build shared SDK options from config
+	var sdkOpts *sdkgen.GenerateOptions
+	if cfg != nil {
+		sdkOpts = &sdkgen.GenerateOptions{
+			GlobalPrefix: cfg.NestJS.GlobalPrefix,
+		}
+		if cfg.NestJS.Versioning != nil && cfg.NestJS.Versioning.Prefix != "" {
+			sdkOpts.VersionPrefix = cfg.NestJS.Versioning.Prefix
+		}
+	}
+
+	// Per-output SDK generation
+	if cfg != nil {
+		for _, oc := range cfg.OpenAPIOutputs {
+			if oc.SDK == nil || oc.SDK.Output == "" || oc.Output == "" {
+				continue
+			}
+			sdkInput := oc.Output
+			if !filepath.IsAbs(sdkInput) {
+				sdkInput = filepath.Join(configDir, sdkInput)
+			}
+			sdkOutput := oc.SDK.Output
+			if !filepath.IsAbs(sdkOutput) {
+				sdkOutput = filepath.Join(configDir, sdkOutput)
+			}
+			label := oc.Output
+			if oc.Name != "" {
+				label = oc.Name
+			}
+			sdkWg.Add(1)
+			go func(input, output, label string) {
+				defer sdkWg.Done()
+				sdkHashPath := filepath.Join(output, ".sdk-hash")
+				inputHash := hashFileContent(input)
+				if existingHash, err := os.ReadFile(sdkHashPath); err == nil && string(existingHash) == inputHash {
+					printStatus(os.Stderr, pretty, "·", "SDK (%s) up to date, skipping", label)
+					return
+				}
+				if err := sdkgen.Generate(input, output, sdkOpts); err != nil {
+					sdkErr = err
+					return
+				}
+				os.WriteFile(sdkHashPath, []byte(inputHash), 0o644)
+				printStatus(os.Stderr, pretty, "✓", "generated SDK: %s → %s", label, output)
+			}(sdkInput, sdkOutput, label)
+		}
+	}
+
+	// Top-level SDK generation (legacy — backward compat)
 	if cfg != nil && cfg.SDK.Output != "" {
 		sdkInput := cfg.SDK.Input
 		if sdkInput == "" {
-			// Default: use OpenAPI output as SDK input
 			sdkInput = cfg.OpenAPI.Output
 		}
 		if sdkInput != "" {
@@ -693,22 +743,11 @@ func runBuildWithIncrAndProgram(args []string, oldIncrProgram *shimincremental.P
 			sdkWg.Add(1)
 			go func() {
 				defer sdkWg.Done()
-				// Hash-based skip: compare SHA256 of input against cached hash
 				sdkHashPath := filepath.Join(sdkOutput, ".sdk-hash")
 				inputHash := hashFileContent(sdkInput)
 				if existingHash, err := os.ReadFile(sdkHashPath); err == nil && string(existingHash) == inputHash {
 					printStatus(os.Stderr, pretty, "·", "SDK up to date, skipping generation")
 					return
-				}
-				// Build SDK options from config
-				var sdkOpts *sdkgen.GenerateOptions
-				if cfg != nil {
-					sdkOpts = &sdkgen.GenerateOptions{
-						GlobalPrefix: cfg.NestJS.GlobalPrefix,
-					}
-					if cfg.NestJS.Versioning != nil && cfg.NestJS.Versioning.Prefix != "" {
-						sdkOpts.VersionPrefix = cfg.NestJS.Versioning.Prefix
-					}
 				}
 				if err := sdkgen.Generate(sdkInput, sdkOutput, sdkOpts); err != nil {
 					sdkErr = err

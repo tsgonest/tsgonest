@@ -3,7 +3,7 @@ title: CLI Reference
 description: Complete reference for tsgonest build and dev commands, flags, and exit codes.
 ---
 
-tsgonest provides several subcommands: `build` for production compilation, `dev` for watch-mode development, and `openapi` for standalone OpenAPI spec generation. If no subcommand is given, `build` is assumed.
+tsgonest provides several subcommands: `build` for production compilation, `check` for fast type checking without emit, `dev` for watch-mode development, and `openapi` for standalone OpenAPI spec generation. If no subcommand is given, `build` is assumed.
 
 ## tsgonest build
 
@@ -55,6 +55,64 @@ tsgonest build --dump-metadata
 | `0` | Success — no errors |
 | `1` | TypeScript errors found, but JS was still emitted |
 | `2` | Fatal error — JS was not emitted |
+
+---
+
+## tsgonest check
+
+Type check your project and run tsgonest-specific analysis without emitting any files. Catches both TypeScript errors and tsgonest-specific warnings (invalid parameter types, unsupported decorator patterns, anonymous generic arguments, etc.).
+
+```bash
+tsgonest check [flags]
+```
+
+### Flags
+
+| Flag | Alias | Description | Default |
+| --- | --- | --- | --- |
+| `--project <path>` | `-p` | Path to `tsconfig.json` | `tsconfig.json` |
+| `--config <path>` | | Path to `tsgonest.config.ts` or `.json` | auto-detect |
+| `--watch` | | Re-check on file changes | `false` |
+| `--no-check` | | Skip semantic type checking (syntax errors still reported) | `false` |
+
+### What it checks
+
+1. **TypeScript diagnostics** — syntax and semantic errors (same as `tsc --noEmit`)
+2. **Controller analysis** — validates NestJS decorators, parameter types, and route definitions (14 warning kinds including `param-non-scalar`, `query-complex-type`, `unsupported-dynamic-route-path`, etc.)
+3. **Type walker** — detects anonymous generic type arguments that can't be named in OpenAPI
+
+### Watch mode
+
+Use `--watch` for continuous checking during development:
+
+```bash
+tsgonest check --watch
+```
+
+On each file save, only the changed file is re-parsed (via `UpdateProgram` fast path when possible), and the full check pipeline re-runs.
+
+### Examples
+
+```bash
+# One-shot check
+tsgonest check
+
+# Continuous watch
+tsgonest check --watch
+
+# Custom tsconfig
+tsgonest check --project tsconfig.build.json
+
+# Skip type checking for tsgonest-only analysis
+tsgonest check --no-check
+```
+
+### Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| `0` | No errors (warnings may be present) |
+| `1` | TypeScript errors found |
 
 ---
 

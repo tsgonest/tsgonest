@@ -22,13 +22,14 @@ tsgonest sdk
 
 | Flag | Description | Default |
 | --- | --- | --- |
-| `--input <path>` | Path to OpenAPI JSON file | From config: `sdk.input` or `openapi.output` |
+| `--input <path>` | Path to OpenAPI JSON file (legacy) | From config: `sdk.input` or `openapi.output` |
 | `--output <path>` | Output directory for generated SDK | From config: `sdk.output` or `./sdk` |
 | `--config <path>` | Path to tsgonest config file | auto-detect |
+| `--name <name>` | Generate SDK for a specific named OpenAPI output | |
 
 ## Config
 
-Configure SDK generation in `tsgonest.config.ts`:
+### Top-level SDK config (legacy)
 
 ```ts title="tsgonest.config.ts"
 import { defineConfig } from '@tsgonest/runtime';
@@ -45,6 +46,39 @@ export default defineConfig({
   },
 });
 ```
+
+### Per-output SDK config
+
+When using multiple OpenAPI outputs, configure SDK generation per output:
+
+```ts title="tsgonest.config.ts"
+import { defineConfig } from '@tsgonest/runtime';
+
+export default defineConfig({
+  openapi: [
+    {
+      name: 'public',
+      output: 'dist/public-api.json',
+      title: 'Public API',
+      sdk: { output: './sdk/public' },
+    },
+    {
+      name: 'internal',
+      output: 'dist/internal-api.json',
+      title: 'Internal API',
+      // No sdk — no SDK generated for this output
+    },
+  ],
+});
+```
+
+Generate a specific output's SDK:
+
+```bash
+tsgonest sdk --name public
+```
+
+During `tsgonest build`, per-output SDKs are generated automatically alongside the top-level SDK (if configured).
 
 ---
 
