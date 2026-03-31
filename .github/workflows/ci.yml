@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [main]
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   # ── Cross-platform runner process management tests ────────────
   runner-tests:
@@ -24,7 +28,7 @@ jobs:
           cache: true
           cache-dependency-path: '**/go.sum'
 
-      - uses: extractions/setup-just@v2
+      - uses: extractions/setup-just@v3
 
       - name: Initialize project
         run: just init
@@ -45,15 +49,16 @@ jobs:
           cache: true
           cache-dependency-path: '**/go.sum'
 
-      - uses: extractions/setup-just@v2
+      - uses: extractions/setup-just@v3
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v5
         with:
           version: '10'
 
       - uses: actions/setup-node@v6
         with:
           node-version: '24'
+          cache: 'pnpm'
 
       - name: Initialize project
         run: just init

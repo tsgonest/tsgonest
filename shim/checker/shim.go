@@ -78,16 +78,10 @@ const CheckModeSkipContextSensitive = checker.CheckModeSkipContextSensitive
 const CheckModeSkipGenericFunctions = checker.CheckModeSkipGenericFunctions
 const CheckModeTypeOnly = checker.CheckModeTypeOnly
 type Checker = checker.Checker
-//go:linkname Checker_getResolvedSignature github.com/microsoft/typescript-go/internal/checker.(*Checker).getResolvedSignature
-func Checker_getResolvedSignature(recv *checker.Checker, node *ast.Node, candidatesOutArray *[]*checker.Signature, checkMode checker.CheckMode) *checker.Signature
 //go:linkname Checker_isReadonlySymbol github.com/microsoft/typescript-go/internal/checker.(*Checker).isReadonlySymbol
 func Checker_isReadonlySymbol(recv *checker.Checker, symbol *ast.Symbol) bool
 //go:linkname Checker_getWidenedType github.com/microsoft/typescript-go/internal/checker.(*Checker).getWidenedType
 func Checker_getWidenedType(recv *checker.Checker, t *checker.Type) *checker.Type
-//go:linkname Checker_GetNonNullableType github.com/microsoft/typescript-go/internal/checker.(*Checker).GetNonNullableType
-func Checker_GetNonNullableType(recv *checker.Checker, t *checker.Type) *checker.Type
-//go:linkname Checker_IsNullableType github.com/microsoft/typescript-go/internal/checker.(*Checker).IsNullableType
-func Checker_IsNullableType(recv *checker.Checker, t *checker.Type) bool
 //go:linkname Checker_getIndexTypeOfType github.com/microsoft/typescript-go/internal/checker.(*Checker).getIndexTypeOfType
 func Checker_getIndexTypeOfType(recv *checker.Checker, t *checker.Type, keyType *checker.Type) *checker.Type
 //go:linkname Checker_getApparentType github.com/microsoft/typescript-go/internal/checker.(*Checker).getApparentType
@@ -96,8 +90,6 @@ func Checker_getApparentType(recv *checker.Checker, t *checker.Type) *checker.Ty
 func Checker_isArrayType(recv *checker.Checker, t *checker.Type) bool
 //go:linkname Checker_isArrayOrTupleType github.com/microsoft/typescript-go/internal/checker.(*Checker).isArrayOrTupleType
 func Checker_isArrayOrTupleType(recv *checker.Checker, t *checker.Type) bool
-//go:linkname Checker_GetAliasedSymbol github.com/microsoft/typescript-go/internal/checker.(*Checker).GetAliasedSymbol
-func Checker_GetAliasedSymbol(recv *checker.Checker, symbol *ast.Symbol) *ast.Symbol
 //go:linkname Checker_getPropertyNameForKnownSymbolName github.com/microsoft/typescript-go/internal/checker.(*Checker).getPropertyNameForKnownSymbolName
 func Checker_getPropertyNameForKnownSymbolName(recv *checker.Checker, symbolName string) string
 //go:linkname Checker_isTypeAssignableTo github.com/microsoft/typescript-go/internal/checker.(*Checker).isTypeAssignableTo
@@ -135,6 +127,7 @@ type extra_Checker struct {
   exactOptionalPropertyTypes bool
   canCollectSymbolAliasAccessibilityData bool
   wasCanceled bool
+  saveDeferredDiagnostics bool
   arrayVariances []checker.VarianceFlags
   globals ast.SymbolTable
   evaluate evaluator.Evaluator
@@ -409,6 +402,7 @@ type extra_Checker struct {
   withinUnreachableCode bool
   reportedUnreachableNodes collections.Set[*ast.Node]
   nonExistentProperties collections.Set[checker.NonExistentPropertyKey]
+  deferredDiagnosticCallbacks []func()
   mu sync.Mutex
 }
 func Checker_globalRegExpType(v *checker.Checker) *checker.Type {

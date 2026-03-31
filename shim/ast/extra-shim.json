@@ -1,16 +1,3 @@
 {
-  "ExtraMethods": {
-    "Node": [
-      "Type"
-    ],
-    "Diagnostic": [
-      "File",
-      "Loc",
-      "Code",
-      "Category",
-      "MessageKey",
-      "MessageArgs",
-      "Localize"
-    ]
-  }
+  "ExtraMethods": {}
 }

@@ -8,24 +8,26 @@ tsgonest is a Go binary wrapping typescript-go (tsgo) that:
 4. Provides a lightweight `@tsgonest/runtime` npm package with `defineConfig` and error types
 5. Replaces `nest` CLI with `tsgonest dev` (watch+reload) and `tsgonest build` (with tsconfig path alias resolution)
 
-## CRITICAL: typescript-go Submodule Warning
-
-**DO NOT COMMIT SUBMODULE CHANGES WHEN FINALIZING WORK**
+## CRITICAL: typescript-go Submodule Rules
 
 The `typescript-go/` directory is a Git submodule referencing Microsoft's TypeScript Go port.
 
-### During Development
+### What IS allowed
 
-- Changes ARE allowed to the typescript-go submodule for testing
-- You can freely modify and commit within the `typescript-go/` folder
+- **Submodule pointer updates** (upgrading to a newer upstream commit) — always commit these
+  along with regenerated shims (`just shim`), updated `go.work.sum`, and any code that
+  adapts to the new API surface (`cmd/`, `internal/compiler/`, etc.)
+- Temporary modifications inside `typescript-go/` during development for testing
 
-### Before Finalizing Work
+### What is NOT allowed
 
-- Convert any typescript-go changes into patch files in `patches/`
-- **NEVER** commit the submodule pointer changes to the tsgonest repository
-- When you see `modified: typescript-go (new commits)` in git status, do NOT stage/commit it
+- Committing **code changes you made inside** `typescript-go/` to the tsgonest repository.
+  These must be converted to patch files in `patches/` instead (see below).
+- In other words: the submodule pointer should always point to an **unmodified upstream commit**.
+  If you made local commits inside `typescript-go/`, those are your patches — extract them
+  and reset the submodule before finalizing.
 
-### Creating Permanent Changes
+### Creating Permanent Changes to typescript-go internals
 
 1. Test your changes locally in the typescript-go directory
 2. Create a patch file in `patches/` using `git format-patch`
