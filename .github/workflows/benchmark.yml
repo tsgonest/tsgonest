@@ -3,6 +3,18 @@ name: Benchmark
 on:
   pull_request:
     branches: [main]
+    # Only run benchmarks when Go source or benchmark code changes
+    paths:
+      - 'cmd/**'
+      - 'internal/**'
+      - 'shim/**'
+      - 'benchmarks/**'
+      - 'go.mod'
+      - 'go.sum'
+
+concurrency:
+  group: benchmark-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   pull-requests: write
@@ -13,25 +25,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout PR
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+        uses: actions/checkout@v6
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: "1.26"
+          cache: true
+          cache-dependency-path: '**/go.sum'
 
-      - name: Setup Just
-        uses: extractions/setup-just@v2
+      - uses: extractions/setup-just@v3
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v5
         with:
           version: 10
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: "24"
           cache: "pnpm"
@@ -43,51 +52,19 @@ jobs:
       - name: Install benchmark deps
         run: cd benchmarks && pnpm install --frozen-lockfile
 
-      # ── PR benchmarks ──
-      - name: Build PR binary
+      # ── PR benchmarks only (skip base comparison to halve CI time) ──
+      - name: Build binary
         run: just build
 
-      - name: Build PR companions
+      - name: Build companions
         run: cd benchmarks && pnpm run build
 
-      - name: Run PR benchmarks
+      - name: Run benchmarks
         run: cd benchmarks && npx tsx --tsconfig bench/tsconfig.json bench/bench-all.ts --json > /tmp/pr-bench.json
 
-      # ── Base benchmarks ──
-      - name: Checkout base
-        run: git checkout ${{ github.event.pull_request.base.sha }}
-
-      - name: Rebuild for base
-        id: base-build
-        continue-on-error: true
+      - name: Generate report
         run: |
-          just init
-          just build
-          cd benchmarks && pnpm run build
-
-      - name: Run base benchmarks
-        id: base-bench
-        if: steps.base-build.outcome == 'success'
-        continue-on-error: true
-        run: cd benchmarks && npx tsx --tsconfig bench/tsconfig.json bench/bench-all.ts --json > /tmp/base-bench.json
-
-      # ── Comparison ──
-      - name: Checkout PR (for comparison script)
-        uses: actions/checkout@v4
-        with:
-          clean: false
-
-      - name: Generate comparison
-        if: steps.base-bench.outcome == 'success'
-        run: node .github/scripts/compare-benchmarks.js /tmp/base-bench.json /tmp/pr-bench.json > /tmp/bench-comment.md
-
-      - name: Generate PR-only report
-        if: steps.base-bench.outcome != 'success'
-        run: |
-          echo "## Benchmark Results (PR only)" > /tmp/bench-comment.md
-          echo "" >> /tmp/bench-comment.md
-          echo "Base benchmark could not be run (build or runtime error on base branch)." >> /tmp/bench-comment.md
-          echo "Showing PR benchmark results only:" >> /tmp/bench-comment.md
+          echo "## Benchmark Results" > /tmp/bench-comment.md
           echo "" >> /tmp/bench-comment.md
           echo '```json' >> /tmp/bench-comment.md
           cat /tmp/pr-bench.json >> /tmp/bench-comment.md

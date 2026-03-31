@@ -13,7 +13,7 @@
     "@nestjs/platform-fastify": "^11.0.0",
     "@tsgonest/platform-bun": "workspace:*",
     "@tsgonest/runtime": "workspace:*",
-    "autocannon": "^7.15.0",
+    "autocannon": "^8.0.0",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.0"
   },

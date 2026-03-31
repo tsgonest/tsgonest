@@ -29,7 +29,7 @@ type fileDump struct {
 // runDumpMetadata extracts type metadata from all non-declaration source files
 // and outputs it as JSON to stdout.
 func runDumpMetadata(program *shimcompiler.Program, opts *core.CompilerOptions) int {
-	checker, release := shimcompiler.Program_GetTypeChecker(program, context.Background())
+	checker, release := program.GetTypeChecker(context.Background())
 	if checker == nil {
 		fmt.Fprintln(os.Stderr, "error: could not get type checker")
 		return 1

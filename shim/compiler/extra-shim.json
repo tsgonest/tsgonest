@@ -1,12 +1,3 @@
 {
-  "ExtraMethods": {
-    "Program": [
-      "ForEachCheckerParallel",
-      "GetSemanticDiagnostics",
-      "GetSyntacticDiagnostics",
-      "GetTypeChecker",
-      "GetTypeCheckerForFile",
-      "UpdateProgram"
-    ]
-  }
+  "ExtraMethods": {}
 }
