@@ -33,6 +33,93 @@ This produces:
 }
 ```
 
+## Multiple Outputs
+
+Generate multiple OpenAPI documents from a single build, each with its own controller filters, metadata, and security configuration. Pass an array instead of a single object:
+
+```ts title="tsgonest.config.ts"
+import { defineConfig } from '@tsgonest/runtime';
+
+export default defineConfig({
+  controllers: {
+    include: ['src/**/*.controller.ts'],
+  },
+  openapi: [
+    {
+      name: 'public',
+      output: 'dist/public-api.json',
+      title: 'Public API',
+      version: '1.0.0',
+      controllers: {
+        include: ['src/public/**/*.controller.ts'],
+      },
+      securitySchemes: {
+        apiKey: { type: 'apiKey', in: 'header', name: 'X-API-Key' },
+      },
+    },
+    {
+      name: 'internal',
+      output: 'dist/internal-api.json',
+      title: 'Internal API',
+      version: '1.0.0',
+      // No controllers filter — inherits all from top-level
+    },
+  ],
+});
+```
+
+### Per-Output Controller Filtering
+
+Each output can filter controllers using file globs or route tags:
+
+```ts
+openapi: [
+  {
+    name: 'public',
+    output: 'dist/public-api.json',
+    // File-based: only include controllers from specific directories
+    controllers: {
+      include: ['src/public/**/*.controller.ts'],
+    },
+    // Tag-based: only include routes tagged "public", exclude "deprecated"
+    includeTags: ['public'],
+    excludeTags: ['deprecated'],
+  },
+]
+```
+
+File and tag filters compose as AND — a route must match both the file glob filter and the tag filter to be included.
+
+When a per-output `controllers` field is omitted, it inherits the top-level `controllers.include`/`exclude` patterns.
+
+### Tag-Based Filtering
+
+Use the `@tag` JSDoc annotation on your controllers to assign tags, then filter by tag in the config:
+
+```ts
+/** @tag public */
+@Controller('public/v1/meetings')
+export class PublicMeetingController { ... }
+
+/** @tag internal */
+@Controller('admin/meetings')
+export class AdminMeetingController { ... }
+```
+
+### Standalone Generation
+
+Use the `tsgonest openapi` subcommand to generate specs without a full build:
+
+```bash
+# Generate all configured outputs
+tsgonest openapi
+
+# Generate only the "public" output
+tsgonest openapi --name public
+```
+
+See [CLI Reference](/docs/cli#tsgonest-openapi) for all flags.
+
 ## Contact and License
 
 Add contact information and license details to the API info block:
@@ -168,9 +255,12 @@ findAll(): UserDto[] { ... }
 
 ### OpenAPI Fields
 
+The `openapi` field accepts a single object or an array of objects (for multiple outputs).
+
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `output` | `string` | Yes | Output path for the generated JSON file |
+| `name` | `string` | No | Logical name for this output (used with `--name` flag) |
 | `title` | `string` | Yes | API title in the info block |
 | `version` | `string` | Yes | API version in the info block |
 | `description` | `string` | No | API description |
@@ -178,6 +268,10 @@ findAll(): UserDto[] { ... }
 | `license` | `object` | No | License info (`name`, `url`) |
 | `servers` | `array` | No | Server URLs (`url`, `description`) |
 | `securitySchemes` | `object` | No | Named security scheme definitions |
+| `controllers` | `object` | No | Per-output controller filter (`include`, `exclude` globs) |
+| `includeTags` | `string[]` | No | Only include routes with these tags |
+| `excludeTags` | `string[]` | No | Exclude routes with these tags |
+| `sdk` | `object` | No | Per-output SDK generation settings (`output` directory) |
 
 ### NestJS Fields
 

@@ -72,11 +72,9 @@ func globMatch(filePath, pattern string) bool {
 				return true
 			}
 		} else {
-			// Pattern like src/**/*.controller.ts — find prefix in path, then match suffix
-			searchStr := "/" + prefix + "/"
-			idx := strings.Index(filePath, searchStr)
-			if idx >= 0 {
-				remaining := filePath[idx+len(searchStr):]
+			// Pattern like src/**/*.controller.ts — find prefix in path, then match suffix.
+			// Check both "/prefix/" (absolute paths) and "prefix/" at the start (relative paths).
+			matchRemaining := func(remaining string) bool {
 				if suffix == "" {
 					return true
 				}
@@ -85,6 +83,22 @@ func globMatch(filePath, pattern string) bool {
 					return true
 				}
 				if matched, _ := filepath.Match(suffix, remaining); matched {
+					return true
+				}
+				return false
+			}
+
+			// Check for /prefix/ anywhere in the path (handles absolute paths)
+			searchStr := "/" + prefix + "/"
+			if idx := strings.Index(filePath, searchStr); idx >= 0 {
+				if matchRemaining(filePath[idx+len(searchStr):]) {
+					return true
+				}
+			}
+
+			// Check for prefix/ at the start of the path (handles relative paths)
+			if strings.HasPrefix(filePath, prefix+"/") {
+				if matchRemaining(filePath[len(prefix)+1:]) {
 					return true
 				}
 			}
