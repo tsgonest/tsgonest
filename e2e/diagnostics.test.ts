@@ -100,4 +100,22 @@ describe("tsgonest diagnostics and exit codes", () => {
     expect(stderr).toContain("bad-types.ts");
     expect(stderr).toMatch(/bad-types\.ts[\(:]/);
   });
+
+  it("should exit 1 when rootDir is missing from tsconfig", () => {
+    const { exitCode, stderr } = runTsgonest([
+      "--project",
+      "testdata/missing-rootdir/tsconfig.json",
+    ]);
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain("rootDir");
+  });
+
+  it("should exit 1 when baseUrl is set in tsconfig", () => {
+    const { exitCode, stderr } = runTsgonest([
+      "--project",
+      "testdata/has-baseurl/tsconfig.json",
+    ]);
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain("baseUrl");
+  });
 });

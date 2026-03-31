@@ -202,16 +202,6 @@ func runBuildWithIncrAndProgram(args []string, oldIncrProgram *shimincremental.P
 	opts := parsedConfig.CompilerOptions()
 	modFmt := rewrite.DetectModuleFormat(moduleFormatFromOpts(opts))
 
-	// Auto-infer rootDir if not set, so users get flat dist/ output without configuring it.
-	// Computes common prefix of all source files (like tsc does).
-	if opts.RootDir == "" && opts.OutDir != "" {
-		inferredRootDir := pathalias.InferRootDir(parsedConfig.FileNames())
-		if inferredRootDir != "" {
-			printStatus(os.Stderr, pretty, "◆", "inferred rootDir: %s", inferredRootDir)
-			opts.RootDir = inferredRootDir
-		}
-	}
-
 	// Resolve tsconfig path for cache file derivation
 	resolvedTsconfigPath := tsconfigPath
 	if !filepath.IsAbs(resolvedTsconfigPath) {
@@ -673,50 +663,59 @@ func runBuildWithIncrAndProgram(args []string, oldIncrProgram *shimincremental.P
 	}
 	timing.OpenAPI = time.Since(openapiStart)
 
-	// Generate TypeScript SDK if configured (runs in background goroutine)
+	// Generate TypeScript SDK if configured (runs in background goroutine).
+	// Supports both top-level sdk.output (legacy) and per-output sdk.output.
 	var sdkWg sync.WaitGroup
+	var sdkMu sync.Mutex
 	var sdkErr error
-	if cfg != nil && cfg.SDK.Output != "" {
-		sdkInput := cfg.SDK.Input
-		if sdkInput == "" {
-			// Default: use OpenAPI output as SDK input
-			sdkInput = cfg.OpenAPI.Output
+
+	// Build shared SDK options from config
+	var sdkOpts *sdkgen.GenerateOptions
+	if cfg != nil {
+		sdkOpts = &sdkgen.GenerateOptions{
+			GlobalPrefix: cfg.NestJS.GlobalPrefix,
 		}
-		if sdkInput != "" {
+		if cfg.NestJS.Versioning != nil && cfg.NestJS.Versioning.Prefix != "" {
+			sdkOpts.VersionPrefix = cfg.NestJS.Versioning.Prefix
+		}
+	}
+
+	// Per-output SDK generation
+	if cfg != nil {
+		for _, oc := range cfg.OpenAPIOutputs {
+			if oc.SDK == nil || oc.SDK.Output == "" || oc.Output == "" {
+				continue
+			}
+			sdkInput := oc.Output
 			if !filepath.IsAbs(sdkInput) {
 				sdkInput = filepath.Join(configDir, sdkInput)
 			}
-			sdkOutput := cfg.SDK.Output
+			sdkOutput := oc.SDK.Output
 			if !filepath.IsAbs(sdkOutput) {
 				sdkOutput = filepath.Join(configDir, sdkOutput)
 			}
+			label := oc.Output
+			if oc.Name != "" {
+				label = oc.Name
+			}
 			sdkWg.Add(1)
-			go func() {
+			go func(input, output, label string) {
 				defer sdkWg.Done()
-				// Hash-based skip: compare SHA256 of input against cached hash
-				sdkHashPath := filepath.Join(sdkOutput, ".sdk-hash")
-				inputHash := hashFileContent(sdkInput)
+				sdkHashPath := filepath.Join(output, ".sdk-hash")
+				inputHash := hashFileContent(input)
 				if existingHash, err := os.ReadFile(sdkHashPath); err == nil && string(existingHash) == inputHash {
-					printStatus(os.Stderr, pretty, "·", "SDK up to date, skipping generation")
+					printStatus(os.Stderr, pretty, "·", "SDK (%s) up to date, skipping", label)
 					return
 				}
-				// Build SDK options from config
-				var sdkOpts *sdkgen.GenerateOptions
-				if cfg != nil {
-					sdkOpts = &sdkgen.GenerateOptions{
-						GlobalPrefix: cfg.NestJS.GlobalPrefix,
-					}
-					if cfg.NestJS.Versioning != nil && cfg.NestJS.Versioning.Prefix != "" {
-						sdkOpts.VersionPrefix = cfg.NestJS.Versioning.Prefix
-					}
-				}
-				if err := sdkgen.Generate(sdkInput, sdkOutput, sdkOpts); err != nil {
+				if err := sdkgen.Generate(input, output, sdkOpts); err != nil {
+					sdkMu.Lock()
 					sdkErr = err
+					sdkMu.Unlock()
 					return
 				}
 				os.WriteFile(sdkHashPath, []byte(inputHash), 0o644)
-				printStatus(os.Stderr, pretty, "✓", "generated SDK: %s", cfg.SDK.Output)
-			}()
+				printStatus(os.Stderr, pretty, "✓", "generated SDK: %s → %s", label, output)
+			}(sdkInput, sdkOutput, label)
 		}
 	}
 

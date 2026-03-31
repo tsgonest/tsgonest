@@ -131,7 +131,7 @@ func TestValidateEmptyInclude(t *testing.T) {
 
 func TestValidateEmptyOpenAPIOutput(t *testing.T) {
 	cfg := DefaultConfig()
-	cfg.OpenAPI.Output = ""
+	cfg.OpenAPIOutputs = []OpenAPIOutputConfig{{Output: ""}}
 
 	// Empty openapi.output is valid — it means "no OpenAPI generation"
 	if err := cfg.Validate(); err != nil {
@@ -141,7 +141,7 @@ func TestValidateEmptyOpenAPIOutput(t *testing.T) {
 
 func TestValidateCompanionsOnlyNoOpenAPI(t *testing.T) {
 	cfg := DefaultConfig()
-	cfg.OpenAPI.Output = ""
+	cfg.OpenAPIOutputs = []OpenAPIOutputConfig{{Output: ""}}
 	cfg.Transforms.Validation = true
 	cfg.Transforms.Serialization = true
 

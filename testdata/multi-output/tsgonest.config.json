@@ -1,0 +1,29 @@
+{
+  "controllers": {
+    "include": ["src/**/*.controller.ts"]
+  },
+  "transforms": {
+    "validation": false,
+    "serialization": false
+  },
+  "openapi": [
+    {
+      "name": "public",
+      "output": "dist/public-api.json",
+      "title": "Public API",
+      "version": "1.0.0",
+      "controllers": {
+        "include": ["src/public.controller.ts"]
+      }
+    },
+    {
+      "name": "internal",
+      "output": "dist/internal-api.json",
+      "title": "Internal API",
+      "version": "1.0.0",
+      "controllers": {
+        "include": ["src/internal.controller.ts"]
+      }
+    }
+  ]
+}
