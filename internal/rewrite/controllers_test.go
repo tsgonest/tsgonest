@@ -255,7 +255,7 @@ func TestRewriteController_ArrayReturn(t *testing.T) {
 
 	result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm")
 
-	if !strings.Contains(result, `"[" + (await this.service.findAll()).map(_v => serializeUserResponse(_v)).join(",") + "]"`) {
+	if !strings.Contains(result, `"[" + (await this.service.findAll()).map((_i) => serializeUserResponse(_i)).join(",") + "]"`) {
 		t.Errorf("expected array return serialize, got:\n%s", result)
 	}
 }

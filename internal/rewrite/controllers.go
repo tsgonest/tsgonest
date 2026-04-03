@@ -16,6 +16,7 @@ type sseTransformEntry struct {
 	eventName     string // literal event name, or "*" for generic string
 	assertFunc    string
 	stringifyFunc string
+	nullable      bool
 }
 
 // sseTransform holds SSE transform metadata for a single @EventStream method.
@@ -53,10 +54,12 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 		isDestructured bool // true if the JS param is a destructured pattern
 	}
 	type returnTransform struct {
-		className  string
-		methodName string
-		typeName   string
-		isArray    bool
+		className        string
+		methodName       string
+		typeName         string
+		isArray          bool
+		nullable         bool
+		elementNullable  bool
 	}
 	type primitiveReturnTransform struct {
 		className  string
@@ -190,6 +193,7 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 						eventName:     eventKey,
 						assertFunc:    companionFuncName("assert", typeName),
 						stringifyFunc: companionFuncName("stringify", typeName),
+						nullable:      v.DataType.Nullable || v.DataType.Optional,
 					})
 					neededSSETypes[typeName] = true
 				}
@@ -226,11 +230,17 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 				continue
 			}
 			isArray := route.ReturnType.Kind == metadata.KindArray
+			var elementNullable bool
+			if isArray && route.ReturnType.ElementType != nil {
+				elementNullable = route.ReturnType.ElementType.Nullable || route.ReturnType.ElementType.Optional
+			}
 			transforms = append(transforms, returnTransform{
-				className:  ctrl.Name,
-				methodName: route.MethodName,
-				typeName:   returnTypeName,
-				isArray:    isArray,
+				className:       ctrl.Name,
+				methodName:      route.MethodName,
+				typeName:        returnTypeName,
+				isArray:         isArray,
+				nullable:        route.ReturnType.Nullable || route.ReturnType.Optional,
+				elementNullable: elementNullable,
 			})
 			neededTransformTypes[returnTypeName] = true
 		}
@@ -362,7 +372,7 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 				continue // bare return
 			}
 			expr := text[ret.ExprStart:ret.ExprEnd]
-			newExpr := wrapReturnExpression(expr, transformFunc, tr.isArray, isAsync)
+			newExpr := wrapReturnExpression(expr, transformFunc, tr.isArray, isAsync, tr.nullable, tr.elementNullable)
 			// Replace: from 'return' keyword through the end of the statement
 			suffix := ";"
 			edits = append(edits, prioritizedEdit{
@@ -526,7 +536,13 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 		}
 		var entries []string
 		for _, e := range st.entries {
-			entries = append(entries, fmt.Sprintf("  %q: [%s, %s]", e.eventName, e.assertFunc, e.stringifyFunc))
+			assertExpr := e.assertFunc
+			stringifyExpr := e.stringifyFunc
+			if e.nullable {
+				assertExpr = fmt.Sprintf("(_d) => _d == null ? _d : %s(_d)", e.assertFunc)
+				stringifyExpr = fmt.Sprintf("(_d) => _d == null ? \"null\" : %s(_d)", e.stringifyFunc)
+			}
+			entries = append(entries, fmt.Sprintf("  %q: [%s, %s]", e.eventName, assertExpr, stringifyExpr))
 		}
 		transformMap := "{\n" + strings.Join(entries, ",\n") + "\n}"
 		metadataCall := fmt.Sprintf(
@@ -610,7 +626,25 @@ func findMethodLevelDecorate(locs *JSLocations, className, methodName string) *D
 }
 
 // wrapReturnExpression wraps a DTO return expression with a transform call.
-func wrapReturnExpression(expr, transformFunc string, isArray, isAsync bool) string {
+func wrapReturnExpression(expr, transformFunc string, isArray, isAsync, nullable, elementNullable bool) string {
+	// Build the element-level mapping expression for arrays.
+	// When elements can be null (e.g., (UserDto | null)[]), each element
+	// needs a null guard before calling the transform function.
+	mapExpr := transformFunc + "(_i)"
+	if elementNullable {
+		mapExpr = "_i == null ? \"null\" : " + transformFunc + "(_i)"
+	}
+
+	if nullable {
+		awaitExpr := expr
+		if isAsync {
+			awaitExpr = "(await " + expr + ")"
+		}
+		if isArray {
+			return "((_v) => _v == null ? \"null\" : \"[\" + _v.map((_i) => " + mapExpr + ").join(\",\") + \"]\")" + awaitExpr
+		}
+		return "((_v) => _v == null ? \"null\" : " + transformFunc + "(_v))" + awaitExpr
+	}
 	if isArray {
 		var inner string
 		if isAsync {
@@ -618,7 +652,7 @@ func wrapReturnExpression(expr, transformFunc string, isArray, isAsync bool) str
 		} else {
 			inner = "(" + expr + ")"
 		}
-		return "\"[\" + " + inner + ".map(_v => " + transformFunc + "(_v)).join(\",\") + \"]\""
+		return "\"[\" + " + inner + ".map((_i) => " + mapExpr + ").join(\",\") + \"]\""
 	}
 	if isAsync {
 		return transformFunc + "(await " + expr + ")"
@@ -675,6 +709,11 @@ func resolveReturnTypeName(m *metadata.Metadata) string {
 		return m.Name
 	case metadata.KindArray:
 		if m.ElementType != nil {
+			// Reject nested arrays (T[][]) — single-level .map() wrapping
+			// can't serialize them correctly. Fall through to NestJS default.
+			if m.ElementType.Kind == metadata.KindArray {
+				return ""
+			}
 			return resolveReturnTypeName(m.ElementType)
 		}
 	case metadata.KindAtomic:
@@ -839,7 +878,7 @@ func wrapReturnsInMethod(text string, methodName string, transformFunc string, i
 			continue
 		}
 		expr := text[ret.ExprStart:ret.ExprEnd]
-		newExpr := wrapReturnExpression(expr, transformFunc, isArray, isAsync)
+		newExpr := wrapReturnExpression(expr, transformFunc, isArray, isAsync, false, false)
 		edits = append(edits, prioritizedEdit{
 			pos:      ret.ReturnKeywordPos,
 			end:      ret.StmtEnd,

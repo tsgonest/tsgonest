@@ -282,48 +282,96 @@ func runDevLoop(flags *devFlags, sigCh chan os.Signal) devLoopResult {
 		srcDir = cwd
 	}
 
-	rebuild := func(events []watcher.Event) {
-		if !flags.preserveWatchOutput {
-			fmt.Fprint(os.Stderr, "\033[2J\033[H")
-		}
+	// done is closed when runDevLoop returns, so helper goroutines can exit cleanly.
+	done := make(chan struct{})
+	defer close(done)
 
-		fmt.Fprintf(os.Stderr, "\ndetected %d change(s), rebuilding...\n", len(events))
-
-		// Fast path: single file changed with no deletes/creates — use UpdateProgram
-		// which skips re-reading/re-parsing all other source files.
-		var result int
-		if len(events) == 1 && events[0].Op == "write" {
-			result = builder.BuildSingleFile(events[0].Path)
-		} else {
-			result = builder.Build()
-		}
-
-		if result != 0 {
-			fmt.Fprintln(os.Stderr, "build failed, waiting for changes...")
-			if manualRestart {
-				fmt.Fprintln(os.Stderr, "To restart at any time, enter \"rs\".")
-			}
-			return
-		}
-
-		if proc != nil {
-			fmt.Fprintln(os.Stderr, "restarting...")
-			if err := proc.Restart(); err != nil {
-				fmt.Fprintf(os.Stderr, "error restarting: %v\n", err)
-			}
-		}
-
-		if manualRestart {
-			fmt.Fprintln(os.Stderr, "To restart at any time, enter \"rs\".")
-		}
-	}
+	// Channel-based rebuild loop: the watcher pushes debounced event batches
+	// into changeCh. A single goroutine processes them sequentially, draining
+	// any batches that arrived during a build before restarting the process.
+	// This prevents the race condition where rapid multi-file saves (IDE
+	// refactors, save-all) cause premature process restarts with a partially
+	// built output directory.
+	changeCh := make(chan []watcher.Event, 16)
 
 	w := watcher.New(
 		[]string{srcDir},
 		[]string{".ts", ".tsx", ".mts", ".cts"},
-		100*time.Millisecond,
-		rebuild,
+		300*time.Millisecond,
+		func(events []watcher.Event) {
+			select {
+			case changeCh <- events:
+			case <-done:
+			}
+		},
 	)
+
+	// Rebuild loop goroutine.
+	// Strategy: build after each debounced batch, then check whether more
+	// changes arrived during the build.  If so, DON'T restart — loop back
+	// and wait for the next debounced batch so the full "calm period" passes
+	// before the final build + restart.  This prevents the race where rapid
+	// multi-file saves cause a premature restart with a half-written dist/.
+	go func() {
+		for {
+			select {
+			case events := <-changeCh:
+				if !flags.preserveWatchOutput {
+					fmt.Fprint(os.Stderr, "\033[2J\033[H")
+				}
+
+				printStatus(os.Stderr, pretty, "◆", "detected %d change(s), rebuilding...", len(events))
+
+				// Fast path: single file changed with no deletes/creates — use UpdateProgram
+				// which skips re-reading/re-parsing all other source files.
+				var result int
+				if len(events) == 1 && events[0].Op == "write" {
+					result = builder.BuildSingleFile(events[0].Path)
+				} else {
+					result = builder.Build()
+				}
+
+				// Check whether more changes are in-flight: either already
+				// flushed to the channel, or still in the watcher's debounce
+				// buffer.  If so, skip the restart and loop back — the next
+				// debounced batch will trigger another build once things settle.
+				changedDuringBuild := false
+			drainLoop:
+				for {
+					select {
+					case <-changeCh:
+						changedDuringBuild = true
+					default:
+						break drainLoop
+					}
+				}
+				if w.Pending() {
+					changedDuringBuild = true
+				}
+
+				if changedDuringBuild {
+					printStatus(os.Stderr, pretty, "↻", "changes detected during build, debouncing...")
+					continue
+				}
+
+				if result != 0 {
+					printStatus(os.Stderr, pretty, "✗", "build failed, watching for changes...")
+				} else if proc != nil {
+					printStatus(os.Stderr, pretty, "▶", "restarting...")
+					if err := proc.Restart(); err != nil {
+						fmt.Fprintf(os.Stderr, "error restarting: %v\n", err)
+					}
+				}
+
+				if manualRestart {
+					fmt.Fprintln(os.Stderr, "To restart at any time, enter \"rs\".")
+				}
+
+			case <-done:
+				return
+			}
+		}
+	}()
 
 	// Watch config files for changes. When tsconfig.json or tsgonest.config
 	// changes, we need to restart the entire dev loop (re-parse config,
@@ -353,10 +401,6 @@ func runDevLoop(flags *devFlags, sigCh chan os.Signal) devLoopResult {
 		}
 	})
 	defer stopConfigPoller()
-
-	// done is closed when runDevLoop returns, so helper goroutines can exit cleanly.
-	done := make(chan struct{})
-	defer close(done)
 
 	// Signal handler for this loop iteration
 	go func() {

@@ -1,6 +1,7 @@
 package watcher
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -97,6 +98,98 @@ func TestWatcher_Diff_NoChange(t *testing.T) {
 	events := w.diff(snap, snap)
 	if len(events) != 0 {
 		t.Errorf("expected 0 events, got %v", events)
+	}
+}
+
+func TestWatcher_Pending(t *testing.T) {
+	called := make(chan []Event, 1)
+	w := New([]string{t.TempDir()}, []string{".ts"}, 50*time.Millisecond, func(events []Event) {
+		called <- events
+	})
+
+	// Initially no pending events
+	if w.Pending() {
+		t.Fatal("expected Pending() == false initially")
+	}
+
+	// Add an event — should be pending until debounce fires
+	w.addPending(Event{Path: "/a.ts", Op: "write"})
+	if !w.Pending() {
+		t.Fatal("expected Pending() == true after addPending")
+	}
+
+	// Wait for debounce to fire
+	<-called
+	if w.Pending() {
+		t.Fatal("expected Pending() == false after debounce flush")
+	}
+}
+
+func TestWatcher_DebounceCoalesces(t *testing.T) {
+	// Verify that rapid events within the debounce window are batched
+	// into a single onChange call.
+	called := make(chan []Event, 10)
+	w := New([]string{t.TempDir()}, []string{".ts"}, 100*time.Millisecond, func(events []Event) {
+		called <- events
+	})
+
+	// Add 5 events in rapid succession (well within 100ms debounce)
+	for i := 0; i < 5; i++ {
+		w.addPending(Event{Path: fmt.Sprintf("/file%d.ts", i), Op: "write"})
+	}
+
+	// Should get a single batch with all 5 events
+	batch := <-called
+	if len(batch) != 5 {
+		t.Fatalf("expected 5 events in single batch, got %d", len(batch))
+	}
+
+	// No more batches should follow
+	select {
+	case extra := <-called:
+		t.Fatalf("unexpected extra batch with %d events", len(extra))
+	case <-time.After(200 * time.Millisecond):
+		// Good — no extra batches
+	}
+}
+
+func TestWatcher_SlowCallbackDrainsChannel(t *testing.T) {
+	// Simulates the race condition: events arrive during a slow build.
+	// Verify that a channel-based consumer can drain events that arrive
+	// while the callback is "processing" (simulated with sleep).
+	changeCh := make(chan []Event, 16)
+	w := New([]string{t.TempDir()}, []string{".ts"}, 30*time.Millisecond, func(events []Event) {
+		changeCh <- events
+	})
+
+	// First batch
+	w.addPending(Event{Path: "/a.ts", Op: "write"})
+
+	// Wait for first batch to arrive on channel
+	first := <-changeCh
+	if len(first) != 1 || first[0].Path != "/a.ts" {
+		t.Fatalf("unexpected first batch: %v", first)
+	}
+
+	// Simulate "build in progress" — add more events while "building"
+	time.Sleep(10 * time.Millisecond)
+	w.addPending(Event{Path: "/b.ts", Op: "write"})
+	w.addPending(Event{Path: "/c.ts", Op: "write"})
+
+	// While those are pending, Pending() should be true
+	if !w.Pending() {
+		t.Fatal("expected Pending() == true during simulated build")
+	}
+
+	// Wait for the debounce to flush the second batch
+	second := <-changeCh
+	if len(second) != 2 {
+		t.Fatalf("expected 2 events in second batch, got %d", len(second))
+	}
+
+	// Now nothing pending
+	if w.Pending() {
+		t.Fatal("expected Pending() == false after all events flushed")
 	}
 }
 

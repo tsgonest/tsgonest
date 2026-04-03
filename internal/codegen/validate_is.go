@@ -92,7 +92,8 @@ func generateIsExprInner(accessor string, meta *metadata.Metadata, registry *met
 			}
 			return result
 		}
-		return "true"
+		// Unknown ref — minimal object check (consistent with serialize fallback to JSON.stringify)
+		return fmt.Sprintf("(typeof %s === \"object\" && %s !== null)", accessor, accessor)
 
 	case metadata.KindEnum:
 		if len(meta.EnumValues) > 0 {
