@@ -834,6 +834,107 @@ func TestSerialize_IntersectionMergesProperties(t *testing.T) {
 	assertContains(t, code, "name")
 }
 
+func TestSerialize_IntersectionDeduplicatesProperties(t *testing.T) {
+	// When two intersection members share a property name, the serialized
+	// output must only include the property once (avoiding malformed JSON
+	// with duplicate keys).
+	reg := metadata.NewTypeRegistry()
+	aMeta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Properties: []metadata.Property{
+			{Name: "id", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "number"}, Required: true},
+			{Name: "name", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+		},
+	}
+	bMeta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Properties: []metadata.Property{
+			{Name: "id", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+			{Name: "role", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+		},
+	}
+	reg.Register("A", aMeta)
+	reg.Register("B", bMeta)
+	meta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Properties: []metadata.Property{
+			{Name: "item", Type: metadata.Metadata{
+				Kind: metadata.KindIntersection,
+				IntersectionMembers: []metadata.Metadata{
+					{Kind: metadata.KindRef, Ref: "A"},
+					{Kind: metadata.KindRef, Ref: "B"},
+				},
+			}, Required: true},
+		},
+	}
+	code := GenerateCompanionSelective("DedupeDto", meta, reg, false, true)
+	// "id" should appear only once as a serialized property key (not duplicated).
+	// In template literals the key is escaped: \"id\"
+	count := strings.Count(code, `\"id\"`)
+	if count != 1 {
+		t.Errorf("expected '\"id\"' key exactly once in serialization, got %d occurrences:\n%s", count, code)
+	}
+	// Both non-overlapping properties should be present
+	assertContains(t, code, "name")
+	assertContains(t, code, "role")
+}
+
+func TestSerialize_DiscriminatedUnion_ObjectGuard(t *testing.T) {
+	// Discriminated union serialization must include an object type guard
+	// before accessing the discriminant property. Without it, passing a
+	// non-object value (e.g., a string) would silently succeed via the
+	// default JSON.stringify fallback instead of being caught.
+	reg := metadata.NewTypeRegistry()
+	meta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Properties: []metadata.Property{
+			{Name: "event", Type: metadata.Metadata{
+				Kind: metadata.KindUnion,
+				Discriminant: &metadata.Discriminant{
+					Property: "type",
+					Mapping:  map[string]int{"click": 0, "scroll": 1},
+				},
+				UnionMembers: []metadata.Metadata{
+					{Kind: metadata.KindObject, Properties: []metadata.Property{
+						{Name: "type", Type: metadata.Metadata{Kind: metadata.KindLiteral, LiteralValue: "click"}, Required: true},
+						{Name: "x", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "number"}, Required: true},
+					}},
+					{Kind: metadata.KindObject, Properties: []metadata.Property{
+						{Name: "type", Type: metadata.Metadata{Kind: metadata.KindLiteral, LiteralValue: "scroll"}, Required: true},
+						{Name: "y", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "number"}, Required: true},
+					}},
+				},
+			}, Required: true},
+		},
+	}
+	code := GenerateCompanionSelective("EventDto", meta, reg, false, true)
+	// The serialize function must check typeof before the switch
+	assertContains(t, code, `typeof`)
+	assertContains(t, code, `!== "object"`)
+}
+
+func TestIs_MissingRef_ObjectCheck(t *testing.T) {
+	// When a KindRef's type is not in the registry, the is() function
+	// should NOT return true unconditionally — it should at least verify
+	// the input is an object (consistent with the serialize fallback).
+	reg := metadata.NewTypeRegistry()
+	// Deliberately do NOT register "UnknownType" in the registry
+	meta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Properties: []metadata.Property{
+			{Name: "data", Type: metadata.Metadata{Kind: metadata.KindRef, Ref: "UnknownType"}, Required: true},
+		},
+	}
+	code := GenerateCompanionSelective("WrapperDto", meta, reg, true, false)
+	// The is function should check typeof for the unresolved ref
+	assertContains(t, code, `typeof`)
+	assertContains(t, code, `"object"`)
+	// Must NOT contain bare `true` as the check for the data property
+	if strings.Contains(code, "true &&") || strings.Contains(code, "&& true") {
+		t.Errorf("is() should not return bare 'true' for unresolved ref, got:\n%s", code)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // 14. Assert Function Security
 // ---------------------------------------------------------------------------

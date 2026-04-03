@@ -751,6 +751,697 @@ ControllerB = __decorate([
 		}
 	})
 
+	// ── Issue #78: Serializer fails for nullable return types (T | null) ──
+	//
+	// All Bug28-Bug34 tests cover realistic patterns where nullable/optional
+	// DTO return types cause runtime TypeErrors because the controller rewriter
+	// doesn't add null guards before calling stringify functions.
+
+	t.Run("Bug28_nullable_dto_return_rejects_null_at_runtime", func(t *testing.T) {
+		// Most common pattern: Prisma findFirst/findUnique returns T | null.
+		//   async findById(id: string): Promise<UserResponse | null> {
+		//     return this.userService.findById(id);
+		//   }
+		// Walker produces KindRef{Ref:"UserResponse", Nullable:true}.
+		// Without fix: stringifyUserResponse(await expr) → TypeError on null.
+		// With fix: ((_v) => _v == null ? "null" : stringifyUserResponse(_v))(await expr)
+		input := `class UserController {
+    async getById(id) {
+        return this.userService.findById(id);
+    }
+}`
+		controllers := []analyzer.ControllerInfo{{
+			Name:       "UserController",
+			SourceFile: "/src/user.controller.ts",
+			Routes: []analyzer.Route{{
+				MethodName: "getById",
+				ReturnType: metadata.Metadata{Kind: metadata.KindRef, Ref: "UserResponse", Nullable: true},
+			}},
+		}}
+		companionMap := map[string]string{
+			"UserResponse": "/dist/user.dto.UserResponse.tsgonest.js",
+		}
+
+		result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm")
+
+		if !strings.Contains(result, "stringifyUserResponse") {
+			t.Fatalf("expected stringifyUserResponse in result, got:\n%s", result)
+		}
+		// The crucial check: null must be checked BEFORE stringify is called.
+		if !strings.Contains(result, `== null`) && !strings.Contains(result, `=== null`) {
+			t.Fatalf("expected null equality check in return wrapping for nullable DTO return type, got:\n%s", result)
+		}
+		// The null-check path must produce the JSON literal "null" (the string).
+		if !strings.Contains(result, `"null"`) {
+			t.Fatalf("expected '\"null\"' JSON string in null branch, got:\n%s", result)
+		}
+	})
+
+	t.Run("Bug28b_non_nullable_dto_return_no_null_check", func(t *testing.T) {
+		// Baseline: non-nullable DTO returns should NOT have a null guard.
+		input := `class UserController {
+    async getById(id) {
+        return this.userService.findById(id);
+    }
+}`
+		controllers := []analyzer.ControllerInfo{{
+			Name:       "UserController",
+			SourceFile: "/src/user.controller.ts",
+			Routes: []analyzer.Route{{
+				MethodName: "getById",
+				ReturnType: metadata.Metadata{Kind: metadata.KindRef, Ref: "UserResponse"},
+			}},
+		}}
+		companionMap := map[string]string{
+			"UserResponse": "/dist/user.dto.UserResponse.tsgonest.js",
+		}
+
+		result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm")
+
+		if !strings.Contains(result, "stringifyUserResponse(await") {
+			t.Fatalf("expected direct stringifyUserResponse(await ...) for non-nullable return, got:\n%s", result)
+		}
+	})
+
+	t.Run("Bug29_nullable_array_return_crashes_on_null_map", func(t *testing.T) {
+		// Pattern: search endpoint returns array or null when no results / invalid query.
+		//   async search(q: string): Promise<UserResponse[] | null> { ... }
+		// Walker produces KindArray{ElementType:KindRef{Ref:"UserResponse"}, Nullable:true}.
+		// Without fix: (await expr).map(_v => serializeUserResponse(_v)) → TypeError:
+		//   Cannot read properties of null (reading 'map')
+		// With fix: null check before .map()
+		input := `class UserController {
+    async search(q) {
+        return this.userService.search(q);
+    }
+}`
+		controllers := []analyzer.ControllerInfo{{
+			Name:       "UserController",
+			SourceFile: "/src/user.controller.ts",
+			Routes: []analyzer.Route{{
+				MethodName: "search",
+				ReturnType: metadata.Metadata{
+					Kind:     metadata.KindArray,
+					Nullable: true,
+					ElementType: &metadata.Metadata{
+						Kind: metadata.KindRef,
+						Ref:  "UserResponse",
+					},
+				},
+			}},
+		}}
+		companionMap := map[string]string{
+			"UserResponse": "/dist/user.dto.UserResponse.tsgonest.js",
+		}
+
+		result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm")
+
+		// Must handle null before calling .map()
+		if !strings.Contains(result, `== null`) && !strings.Contains(result, `=== null`) {
+			t.Fatalf("expected null check before .map() for nullable array return, got:\n%s", result)
+		}
+		// The null branch must produce "null" JSON string (not "[]")
+		if !strings.Contains(result, `"null"`) {
+			t.Fatalf("expected '\"null\"' JSON string for null array, got:\n%s", result)
+		}
+	})
+
+	t.Run("Bug30_non_async_nullable_dto_return", func(t *testing.T) {
+		// Pattern: synchronous cache lookup or default value.
+		//   getDefault(): UserResponse | null { return this.cache.get("default"); }
+		// The rewriter must insert BOTH `async` AND the null guard.
+		input := `class UserController {
+    getDefault() {
+        return this.cache.get("default");
+    }
+}`
+		controllers := []analyzer.ControllerInfo{{
+			Name:       "UserController",
+			SourceFile: "/src/user.controller.ts",
+			Routes: []analyzer.Route{{
+				MethodName: "getDefault",
+				ReturnType: metadata.Metadata{Kind: metadata.KindRef, Ref: "UserResponse", Nullable: true},
+			}},
+		}}
+		companionMap := map[string]string{
+			"UserResponse": "/dist/user.dto.UserResponse.tsgonest.js",
+		}
+
+		result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm")
+
+		// Must insert async
+		if !strings.Contains(result, "async getDefault") {
+			t.Fatalf("expected async keyword insertion for non-async method, got:\n%s", result)
+		}
+		// Must have null guard
+		if !strings.Contains(result, `== null`) && !strings.Contains(result, `=== null`) {
+			t.Fatalf("expected null check for non-async nullable return, got:\n%s", result)
+		}
+	})
+
+	t.Run("Bug31_optional_dto_return_undefined_not_handled", func(t *testing.T) {
+		// Pattern: TypeORM v0.2 findOne() or Array.find() returns T | undefined.
+		//   async findOne(id: string): Promise<UserResponse | undefined> { ... }
+		// Walker produces KindRef{Ref:"UserResponse", Optional:true}.
+		// Without fix: stringifyUserResponse(await expr) → TypeError when undefined.
+		// JS `== null` catches both null and undefined, so the same fix applies.
+		input := `class UserController {
+    async findOne(id) {
+        return this.users.find(u => u.id === id);
+    }
+}`
+		controllers := []analyzer.ControllerInfo{{
+			Name:       "UserController",
+			SourceFile: "/src/user.controller.ts",
+			Routes: []analyzer.Route{{
+				MethodName: "findOne",
+				ReturnType: metadata.Metadata{Kind: metadata.KindRef, Ref: "UserResponse", Optional: true},
+			}},
+		}}
+		companionMap := map[string]string{
+			"UserResponse": "/dist/user.dto.UserResponse.tsgonest.js",
+		}
+
+		result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm")
+
+		if !strings.Contains(result, "stringifyUserResponse") {
+			t.Fatalf("expected stringifyUserResponse in result, got:\n%s", result)
+		}
+		// Optional (undefined) must also be guarded, same as nullable
+		if !strings.Contains(result, `== null`) && !strings.Contains(result, `=== null`) {
+			t.Fatalf("expected null/undefined check for optional DTO return, got:\n%s", result)
+		}
+	})
+
+	t.Run("Bug32_nullable_and_optional_dto_return", func(t *testing.T) {
+		// Pattern: some ORMs / utility types return T | null | undefined.
+		// Walker produces KindRef{Ref:"UserResponse", Nullable:true, Optional:true}.
+		input := `class UserController {
+    async findOne(id) {
+        return this.repo.findOneBy({ id });
+    }
+}`
+		controllers := []analyzer.ControllerInfo{{
+			Name:       "UserController",
+			SourceFile: "/src/user.controller.ts",
+			Routes: []analyzer.Route{{
+				MethodName: "findOne",
+				ReturnType: metadata.Metadata{Kind: metadata.KindRef, Ref: "UserResponse", Nullable: true, Optional: true},
+			}},
+		}}
+		companionMap := map[string]string{
+			"UserResponse": "/dist/user.dto.UserResponse.tsgonest.js",
+		}
+
+		result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm")
+
+		// Must guard against both null and undefined
+		if !strings.Contains(result, `== null`) && !strings.Contains(result, `=== null`) {
+			t.Fatalf("expected null/undefined check for nullable+optional return, got:\n%s", result)
+		}
+	})
+
+	t.Run("Bug33_nullable_dto_return_multiple_return_paths", func(t *testing.T) {
+		// Pattern: try/catch with null fallback — every return path must be wrapped.
+		//   async findOne(id): Promise<UserResponse | null> {
+		//     try { return await this.service.get(id); }
+		//     catch { return null; }
+		//   }
+		// Both `return this.service.get(id)` and `return null` are return statements
+		// that get wrapped. Without fix, both become:
+		//   return stringifyUserResponse(await this.service.get(id))
+		//   return stringifyUserResponse(await null)
+		// The second call throws. With fix, both get the null guard.
+		input := `class UserController {
+    async findOne(id) {
+        try {
+            return this.service.get(id);
+        } catch (e) {
+            return null;
+        }
+    }
+}`
+		controllers := []analyzer.ControllerInfo{{
+			Name:       "UserController",
+			SourceFile: "/src/user.controller.ts",
+			Routes: []analyzer.Route{{
+				MethodName: "findOne",
+				ReturnType: metadata.Metadata{Kind: metadata.KindRef, Ref: "UserResponse", Nullable: true},
+			}},
+		}}
+		companionMap := map[string]string{
+			"UserResponse": "/dist/user.dto.UserResponse.tsgonest.js",
+		}
+
+		result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm")
+
+		// Both return paths must have the null guard wrapper
+		nullCheckCount := strings.Count(result, `== null`)
+		if nullCheckCount < 2 {
+			t.Fatalf("expected null check on BOTH return paths (try + catch), got %d null checks:\n%s", nullCheckCount, result)
+		}
+	})
+
+	t.Run("Bug34_nullable_dto_return_cjs_format", func(t *testing.T) {
+		// Same bug in CJS output — many NestJS projects use CommonJS.
+		input := `"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+const common_1 = require("@nestjs/common");
+let UserController = class UserController {
+    async findById(id) {
+        return this.userService.findById(id);
+    }
+};
+exports.UserController = UserController = __decorate([
+    (0, common_1.Controller)('users')
+], UserController);`
+
+		controllers := []analyzer.ControllerInfo{{
+			Name:       "UserController",
+			SourceFile: "/src/user.controller.ts",
+			Routes: []analyzer.Route{{
+				MethodName: "findById",
+				ReturnType: metadata.Metadata{Kind: metadata.KindRef, Ref: "UserResponse", Nullable: true},
+			}},
+		}}
+		companionMap := map[string]string{
+			"UserResponse": "/dist/user.dto.UserResponse.tsgonest.js",
+		}
+
+		result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "cjs")
+
+		if !strings.Contains(result, "stringifyUserResponse") {
+			t.Fatalf("expected stringifyUserResponse in CJS result, got:\n%s", result)
+		}
+		if !strings.Contains(result, `== null`) && !strings.Contains(result, `=== null`) {
+			t.Fatalf("expected null check in CJS nullable DTO return, got:\n%s", result)
+		}
+	})
+
+	t.Run("Bug35_mixed_nullable_and_non_nullable_returns_in_same_controller", func(t *testing.T) {
+		// Pattern: same controller has both nullable and non-nullable DTO returns.
+		//   getById(id): Promise<UserResponse | null>     ← needs null guard
+		//   getAll():     Promise<UserResponse[]>          ← NO null guard
+		// The rewriter must be selective: only nullable returns get the guard.
+		input := `class UserController {
+    async getById(id) {
+        return this.service.findById(id);
+    }
+    async getAll() {
+        return this.service.findAll();
+    }
+}`
+		controllers := []analyzer.ControllerInfo{{
+			Name:       "UserController",
+			SourceFile: "/src/user.controller.ts",
+			Routes: []analyzer.Route{
+				{
+					MethodName: "getById",
+					ReturnType: metadata.Metadata{Kind: metadata.KindRef, Ref: "UserResponse", Nullable: true},
+				},
+				{
+					MethodName: "getAll",
+					ReturnType: metadata.Metadata{
+						Kind: metadata.KindArray,
+						ElementType: &metadata.Metadata{
+							Kind: metadata.KindRef,
+							Ref:  "UserResponse",
+						},
+					},
+				},
+			},
+		}}
+		companionMap := map[string]string{
+			"UserResponse": "/dist/user.dto.UserResponse.tsgonest.js",
+		}
+
+		result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm")
+
+		// getById: must have null guard
+		getByIdIdx := strings.Index(result, "getById")
+		getAllIdx := strings.Index(result, "getAll")
+		if getByIdIdx == -1 || getAllIdx == -1 {
+			t.Fatalf("expected both methods in result, got:\n%s", result)
+		}
+		getByIdSection := result[getByIdIdx:getAllIdx]
+		if !strings.Contains(getByIdSection, `== null`) && !strings.Contains(getByIdSection, `=== null`) {
+			t.Fatalf("expected null check in getById (nullable), got:\n%s", result)
+		}
+
+		// getAll: must NOT have null guard (non-nullable array)
+		getAllSection := result[getAllIdx:]
+		if strings.Contains(getAllSection, `== null`) || strings.Contains(getAllSection, `=== null`) {
+			t.Fatalf("unexpected null check in getAll (non-nullable array return), got:\n%s", result)
+		}
+	})
+
+	t.Run("Bug36_array_of_nullable_elements_crashes_on_null_element", func(t *testing.T) {
+		// Pattern: Promise.all over findFirst results → (UserDto | null)[]
+		//   async getByIds(ids: string[]): Promise<(UserResponse | null)[]> {
+		//     return Promise.all(ids.map(id => this.findById(id)));
+		//   }
+		// Metadata: KindArray{ElementType: KindRef{Ref:"UserResponse", Nullable:true}}
+		// Without fix: (await expr).map(_v => serializeUserResponse(_v))
+		//   serializeUserResponse(null) crashes with TypeError
+		// With fix: (await expr).map((_i) => _i == null ? "null" : serializeUserResponse(_i))
+		input := `class UserController {
+    async getByIds(ids) {
+        return Promise.all(ids.map(id => this.findById(id)));
+    }
+}`
+		controllers := []analyzer.ControllerInfo{{
+			Name:       "UserController",
+			SourceFile: "/src/user.controller.ts",
+			Routes: []analyzer.Route{{
+				MethodName: "getByIds",
+				ReturnType: metadata.Metadata{
+					Kind: metadata.KindArray,
+					ElementType: &metadata.Metadata{
+						Kind:     metadata.KindRef,
+						Ref:      "UserResponse",
+						Nullable: true,
+					},
+				},
+			}},
+		}}
+		companionMap := map[string]string{
+			"UserResponse": "/dist/user.dto.UserResponse.tsgonest.js",
+		}
+
+		result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm")
+
+		// The .map() callback must have a null guard for each element
+		if !strings.Contains(result, `== null`) {
+			t.Fatalf("expected element-level null check in .map() for array of nullable DTOs, got:\n%s", result)
+		}
+		// The null guard should produce "null" JSON string for null elements
+		if !strings.Contains(result, `"null"`) {
+			t.Fatalf("expected '\"null\"' JSON string for null array elements, got:\n%s", result)
+		}
+		// Should still contain serializeUserResponse for non-null elements
+		if !strings.Contains(result, "serializeUserResponse") {
+			t.Fatalf("expected serializeUserResponse for non-null elements, got:\n%s", result)
+		}
+	})
+
+	t.Run("Bug36b_array_of_non_nullable_elements_no_element_null_check", func(t *testing.T) {
+		// Baseline: (UserResponse)[] — elements are NOT nullable.
+		// No element-level null check should be injected.
+		input := `class UserController {
+    async findAll() {
+        return this.service.findAll();
+    }
+}`
+		controllers := []analyzer.ControllerInfo{{
+			Name:       "UserController",
+			SourceFile: "/src/user.controller.ts",
+			Routes: []analyzer.Route{{
+				MethodName: "findAll",
+				ReturnType: metadata.Metadata{
+					Kind: metadata.KindArray,
+					ElementType: &metadata.Metadata{
+						Kind: metadata.KindRef,
+						Ref:  "UserResponse",
+					},
+				},
+			}},
+		}}
+		companionMap := map[string]string{
+			"UserResponse": "/dist/user.dto.UserResponse.tsgonest.js",
+		}
+
+		result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm")
+
+		// Non-nullable elements: .map(_v => serializeUserResponse(_v)) without null guard
+		if strings.Contains(result, `== null`) {
+			t.Fatalf("unexpected element null check for non-nullable array elements, got:\n%s", result)
+		}
+	})
+
+	t.Run("Bug37_nullable_array_of_nullable_elements", func(t *testing.T) {
+		// Double nullable: Promise<(UserResponse | null)[] | null>
+		// Both the array itself AND its elements can be null.
+		// Metadata: KindArray{Nullable:true, ElementType: KindRef{Ref:"UserResponse", Nullable:true}}
+		input := `class UserController {
+    async search(q) {
+        return this.service.search(q);
+    }
+}`
+		controllers := []analyzer.ControllerInfo{{
+			Name:       "UserController",
+			SourceFile: "/src/user.controller.ts",
+			Routes: []analyzer.Route{{
+				MethodName: "search",
+				ReturnType: metadata.Metadata{
+					Kind:     metadata.KindArray,
+					Nullable: true,
+					ElementType: &metadata.Metadata{
+						Kind:     metadata.KindRef,
+						Ref:      "UserResponse",
+						Nullable: true,
+					},
+				},
+			}},
+		}}
+		companionMap := map[string]string{
+			"UserResponse": "/dist/user.dto.UserResponse.tsgonest.js",
+		}
+
+		result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm")
+
+		// Must guard the array-level null AND element-level null
+		nullChecks := strings.Count(result, `== null`)
+		if nullChecks < 2 {
+			t.Fatalf("expected at least 2 null checks (array-level + element-level), got %d:\n%s", nullChecks, result)
+		}
+	})
+
+	// ── Complex controller logic patterns ──────────────────────────────
+	// Tests for developers who write substantial inline logic in controllers
+	// rather than delegating to services. All of these use wrapReturnsInMethod
+	// which exercises the JS locator + wrapping on arbitrary controller methods.
+
+	t.Run("Bug38_inline_object_construction_in_return", func(t *testing.T) {
+		// Pattern: building response object inline in controller
+		//   return { id: user.id, name: user.firstName + " " + user.lastName, ...extra };
+		input := `class C {
+    async m(user) {
+        const extra = { role: "admin" };
+        return { id: user.id, name: user.firstName + " " + user.lastName, ...extra };
+    }
+}`
+		got := wrapReturnsInMethod(input, "m", "stringifyUser", false)
+		// The full object literal must be captured and wrapped
+		if !strings.Contains(got, "stringifyUser(await { id: user.id") {
+			t.Fatalf("expected object literal to be wrapped, got:\n%s", got)
+		}
+		if !strings.Contains(got, "...extra }") {
+			t.Fatalf("expected spread operator to be preserved, got:\n%s", got)
+		}
+	})
+
+	t.Run("Bug39_await_in_return_expression", func(t *testing.T) {
+		// Pattern: awaiting a service call directly in the return
+		//   return await this.repo.save(entity);
+		// The wrapping adds its own await: stringifyT(await await this.repo.save(entity))
+		// Double-await is harmless (await on a non-Promise is a no-op).
+		input := `class C {
+    async m(entity) {
+        return await this.repo.save(entity);
+    }
+}`
+		got := wrapReturnsInMethod(input, "m", "stringifyUser", false)
+		if !strings.Contains(got, "stringifyUser(await await this.repo.save(entity))") {
+			t.Fatalf("expected double-await wrapping (harmless), got:\n%s", got)
+		}
+	})
+
+	t.Run("Bug40_multiline_return_expression", func(t *testing.T) {
+		// Pattern: multiline chained operations in return
+		input := `class C {
+    async m(data) {
+        return this.items
+            .filter(item => item.active)
+            .map(item => this.transform(item));
+    }
+}`
+		got := wrapReturnsInMethod(input, "m", "stringifyList", false)
+		// The full chained expression should be wrapped
+		if !strings.Contains(got, "stringifyList(await this.items") {
+			t.Fatalf("expected multiline chained expression to be wrapped, got:\n%s", got)
+		}
+	})
+
+	t.Run("Bug41_conditional_early_returns_with_complex_logic", func(t *testing.T) {
+		// Pattern: controller with multiple early returns, guards, and transformations
+		input := `class C {
+    async m(id, user) {
+        if (!user.isAdmin) {
+            return this.getPublicView(id);
+        }
+        const entity = await this.repo.findOne(id);
+        if (!entity) {
+            throw new NotFoundException();
+        }
+        return this.toDto(entity);
+    }
+}`
+		got := wrapReturnsInMethod(input, "m", "stringifyUser", false)
+		// Both return paths must be wrapped
+		if !strings.Contains(got, "stringifyUser(await this.getPublicView(id))") {
+			t.Fatalf("expected first return to be wrapped, got:\n%s", got)
+		}
+		if !strings.Contains(got, "stringifyUser(await this.toDto(entity))") {
+			t.Fatalf("expected second return to be wrapped, got:\n%s", got)
+		}
+	})
+
+	t.Run("Bug42_nested_arrow_fn_return_not_wrapped", func(t *testing.T) {
+		// Pattern: controller uses .map/.filter with arrow function returns.
+		// The arrow function returns must NOT be wrapped — only the method return.
+		input := `class C {
+    async m() {
+        const items = await this.service.list();
+        const transformed = items.map(item => {
+            return { ...item, processed: true };
+        });
+        return transformed;
+    }
+}`
+		got := wrapReturnsInMethod(input, "m", "stringifyList", false)
+		// Only the method-level return should be wrapped
+		if !strings.Contains(got, "stringifyList(await transformed)") {
+			t.Fatalf("expected only method return to be wrapped, got:\n%s", got)
+		}
+		// The arrow function's return should NOT be wrapped
+		if strings.Contains(got, "stringifyList(await { ...item") {
+			t.Fatalf("arrow function return should NOT be wrapped, got:\n%s", got)
+		}
+	})
+
+	t.Run("Bug43_iife_in_return_expression", func(t *testing.T) {
+		// Pattern: IIFE for inline complex transformation
+		input := `class C {
+    async m() {
+        return (() => {
+            const base = this.getBase();
+            return { ...base, extra: true };
+        })();
+    }
+}`
+		got := wrapReturnsInMethod(input, "m", "stringifyUser", false)
+		// The method-level return (the IIFE call) should be wrapped
+		if !strings.Contains(got, "stringifyUser(await (() =>") {
+			t.Fatalf("expected IIFE return to be wrapped at method level, got:\n%s", got)
+		}
+		// Inner return (inside arrow) should NOT be wrapped
+		if strings.Count(got, "stringifyUser") != 1 {
+			t.Fatalf("expected exactly 1 stringifyUser call (method level only), got:\n%s", got)
+		}
+	})
+
+	t.Run("Bug44_nested_array_return_silently_skipped", func(t *testing.T) {
+		// Pattern: Promise<UserDto[][]> — nested array return.
+		// resolveReturnTypeName used to recurse through all array levels and return
+		// the base element type name. The .map() wrapper then called serializeUserDto
+		// on UserDto[] (an array) instead of a single UserDto → runtime crash.
+		// Fix: detect nested arrays and skip the transform entirely, letting NestJS
+		// handle serialization with its default JSON.stringify.
+		input := `class UserController {
+    async getMatrix() {
+        return this.service.getMatrix();
+    }
+}`
+		controllers := []analyzer.ControllerInfo{{
+			Name:       "UserController",
+			SourceFile: "/src/user.controller.ts",
+			Routes: []analyzer.Route{{
+				MethodName: "getMatrix",
+				ReturnType: metadata.Metadata{
+					Kind: metadata.KindArray,
+					ElementType: &metadata.Metadata{
+						Kind: metadata.KindArray,
+						ElementType: &metadata.Metadata{
+							Kind: metadata.KindRef,
+							Ref:  "UserResponse",
+						},
+					},
+				},
+			}},
+		}}
+		companionMap := map[string]string{
+			"UserResponse": "/dist/user.dto.UserResponse.tsgonest.js",
+		}
+
+		result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm")
+
+		// Nested arrays must NOT be serialized — the .map() wrapper can't handle them.
+		// The output should be unchanged (no serialize/stringify injection).
+		if strings.Contains(result, "serializeUserResponse") || strings.Contains(result, "stringifyUserResponse") {
+			t.Fatalf("expected nested array return to be skipped (not serialized), got:\n%s", result)
+		}
+	})
+
+	t.Run("Bug45_sse_nullable_event_data_wraps_assert_and_stringify", func(t *testing.T) {
+		// Pattern: SSE event where data can be null.
+		//   yield { event: 'deleted', data: null }  // UserDto | null
+		// The SSE interceptor calls assertFn(event.data) then stringifyFn(event.data).
+		// Without fix: stringifyUserDto(null) crashes.
+		// With fix: nullable entries get wrapper lambdas that check for null first.
+		input := `"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+const common_1 = require("@nestjs/common");
+let EventController = class EventController {
+    async *stream() {
+        yield { event: "deleted", data: null };
+    }
+};
+__decorate([
+    (0, common_1.Get)('stream'),
+    __metadata("design:type", Function),
+    __metadata("design:returntype", Object)
+], EventController.prototype, "stream", null);
+exports.EventController = EventController = __decorate([
+    (0, common_1.Controller)('events')
+], EventController);`
+
+		controllers := []analyzer.ControllerInfo{{
+			Name:       "EventController",
+			SourceFile: "/src/event.controller.ts",
+			Routes: []analyzer.Route{{
+				MethodName:    "stream",
+				IsEventStream: true,
+				SSEEventVariants: []analyzer.SSEEventVariant{
+					{
+						EventName: "deleted",
+						DataType:  metadata.Metadata{Kind: metadata.KindRef, Ref: "UserDto", Nullable: true},
+					},
+					{
+						EventName: "created",
+						DataType:  metadata.Metadata{Kind: metadata.KindRef, Ref: "UserDto"},
+					},
+				},
+			}},
+		}}
+		companionMap := map[string]string{
+			"UserDto": "/dist/user.dto.UserDto.tsgonest.js",
+		}
+
+		result := rewriteController(input, "/dist/event.controller.js", controllers, companionMap, "cjs")
+
+		// The "deleted" event has nullable data → assert and stringify must be wrapped
+		if !strings.Contains(result, `_d == null ? _d : assertUserDto(_d)`) {
+			t.Fatalf("expected nullable SSE assert wrapper for 'deleted' event, got:\n%s", result)
+		}
+		if !strings.Contains(result, `_d == null ? "null" : stringifyUserDto(_d)`) {
+			t.Fatalf("expected nullable SSE stringify wrapper for 'deleted' event, got:\n%s", result)
+		}
+		// The "created" event is NOT nullable → should use bare functions
+		if !strings.Contains(result, `"created": [assertUserDto, stringifyUserDto]`) {
+			t.Fatalf("expected bare assert/stringify for non-nullable 'created' event, got:\n%s", result)
+		}
+	})
+
 	t.Run("optional_chaining_in_return_is_wrapped", func(t *testing.T) {
 		// Optional chaining ?. in the return expression must be preserved and wrapped.
 		input := `class C {

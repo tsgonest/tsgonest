@@ -90,8 +90,9 @@ func generateSerializeExpr(accessor string, meta *metadata.Metadata, registry *m
 			}
 		}
 		if allObjects && len(meta.IntersectionMembers) > 0 {
-			// Merge all properties into a single object metadata and serialize
-			merged := &metadata.Metadata{Kind: metadata.KindObject}
+			// Merge all properties into a single object metadata and serialize.
+			// Deduplicate by name (last wins, matching typia/intersection semantics).
+			var allProps []metadata.Property
 			for _, member := range meta.IntersectionMembers {
 				resolved := &member
 				if member.Kind == metadata.KindRef {
@@ -99,8 +100,19 @@ func generateSerializeExpr(accessor string, meta *metadata.Metadata, registry *m
 						resolved = r
 					}
 				}
-				merged.Properties = append(merged.Properties, resolved.Properties...)
+				allProps = append(allProps, resolved.Properties...)
 			}
+			seen := make(map[string]int)
+			for i, p := range allProps {
+				seen[p.Name] = i
+			}
+			var deduped []metadata.Property
+			for i, p := range allProps {
+				if seen[p.Name] == i {
+					deduped = append(deduped, p)
+				}
+			}
+			merged := &metadata.Metadata{Kind: metadata.KindObject, Properties: deduped}
 			return generateSerializeExpr(accessor, merged, registry, depth, ctx)
 		}
 		return fmt.Sprintf("JSON.stringify(%s)", accessor)
@@ -403,9 +415,9 @@ func generateSerializeDiscriminatedUnion(accessor string, meta *metadata.Metadat
 	}
 	sort.Strings(keys)
 
-	// Build switch expression as IIFE
+	// Build switch expression as IIFE with object guard (matches validate_is.go)
 	var parts []string
-	parts = append(parts, fmt.Sprintf("(function() { switch (%s) {", discAccessor))
+	parts = append(parts, fmt.Sprintf("(typeof %s !== \"object\" || %s === null ? JSON.stringify(%s) : (function() { switch (%s) {", accessor, accessor, accessor, discAccessor))
 
 	for _, val := range keys {
 		idx := disc.Mapping[val]
@@ -417,7 +429,7 @@ func generateSerializeDiscriminatedUnion(accessor string, meta *metadata.Metadat
 		parts = append(parts, fmt.Sprintf("case %s: return %s;", discLiteral(val, disc), memberExpr))
 	}
 
-	parts = append(parts, fmt.Sprintf("default: return JSON.stringify(%s); } }())", accessor))
+	parts = append(parts, fmt.Sprintf("default: return JSON.stringify(%s); } }()))", accessor))
 	return strings.Join(parts, " ")
 }
 

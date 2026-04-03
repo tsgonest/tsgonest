@@ -197,6 +197,15 @@ func (w *Watcher) addPending(ev Event) {
 	w.mu.Unlock()
 }
 
+// Pending returns true if there are buffered events waiting for the debounce
+// timer to fire. Callers can use this to check whether more file changes are
+// in-flight before taking action (e.g., restarting a child process).
+func (w *Watcher) Pending() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return len(w.pending) > 0
+}
+
 func (w *Watcher) matchesExtension(path string) bool {
 	ext := filepath.Ext(path)
 	for _, e := range w.extensions {
