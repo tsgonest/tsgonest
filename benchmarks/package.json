@@ -12,7 +12,7 @@
     "bench": "pnpm run build && pnpm run bench:validation && pnpm run bench:serialization"
   },
   "dependencies": {
-    "@sinclair/typebox": "^0.34.48",
+    "@sinclair/typebox": "^0.34.49",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.15.1",
     "reflect-metadata": "^0.2.2",
