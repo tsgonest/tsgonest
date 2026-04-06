@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,6 +19,20 @@ type Event struct {
 
 // DefaultPollInterval is the default polling interval for the polling fallback.
 const DefaultPollInterval = 500 * time.Millisecond
+
+// skipDirs are directory base names that should never be watched or walked.
+// These are either non-source content or hidden directories that produce
+// noise (node_modules, .git) or are too large to watch efficiently.
+var skipDirs = map[string]bool{
+	"node_modules": true,
+	".git":         true,
+	".next":        true,
+	".turbo":       true,
+	"dist":         true,
+	"build":        true,
+	"coverage":     true,
+	"__pycache__":  true,
+}
 
 // Watcher watches directories for file changes.
 // It uses fsnotify (inotify/kqueue/ReadDirectoryChangesW) for near-instant
@@ -101,6 +116,20 @@ func (w *Watcher) watchFsnotify() error {
 			if !ok {
 				return nil
 			}
+			// Ignore Chmod-only events — these fire on all platforms for
+			// non-content changes: macOS Spotlight/xattr, Windows Defender
+			// scans, Linux permission/ownership changes. Only suppress when
+			// Chmod is the sole operation; combined Write|Chmod passes through.
+			if ev.Op == fsnotify.Chmod {
+				continue
+			}
+
+			// Skip events from directories that shouldn't be watched
+			// (e.g., node_modules created inside src/ at runtime).
+			if shouldSkipPath(ev.Name) {
+				continue
+			}
+
 			// Filter by extension
 			if !w.matchesExtension(ev.Name) {
 				// New directories need to be watched for new files
@@ -126,14 +155,20 @@ func (w *Watcher) watchFsnotify() error {
 }
 
 // addRecursive walks a directory tree and adds each directory to the
-// fsnotify watcher. Returns an error if adding any directory fails
-// (typically ENOSPC on Linux when the inotify limit is hit).
+// fsnotify watcher. Skips directories in the skipDirs set and hidden
+// directories (prefixed with "."). Returns an error if adding any
+// directory fails (typically ENOSPC on Linux when the inotify limit is hit).
 func (w *Watcher) addRecursive(fsw *fsnotify.Watcher, root string) error {
 	return filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil // skip inaccessible paths
 		}
 		if info.IsDir() {
+			base := filepath.Base(path)
+			// Skip known non-source directories and hidden dirs (except the root itself)
+			if path != root && (skipDirs[base] || (strings.HasPrefix(base, ".") && base != ".")) {
+				return filepath.SkipDir
+			}
 			if addErr := fsw.Add(path); addErr != nil {
 				printWatchLimitWarning()
 				return addErr
@@ -227,6 +262,22 @@ func fsnotifyOpToString(op fsnotify.Op) string {
 	}
 }
 
+// shouldSkipPath returns true if the path contains a directory segment
+// that should be ignored (e.g., node_modules, .git).
+func shouldSkipPath(path string) bool {
+	for dir := range skipDirs {
+		// Check for /dir/ segment or /dir at the end
+		seg := string(filepath.Separator) + dir + string(filepath.Separator)
+		if strings.Contains(path, seg) {
+			return true
+		}
+		if strings.HasSuffix(path, string(filepath.Separator)+dir) {
+			return true
+		}
+	}
+	return false
+}
+
 // --- Polling fallback helpers (also used by unit tests) ---
 
 type fileInfo struct {
@@ -238,7 +289,14 @@ func (w *Watcher) buildSnapshot() map[string]fileInfo {
 	snap := make(map[string]fileInfo)
 	for _, dir := range w.dirs {
 		filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-			if err != nil || info.IsDir() {
+			if err != nil {
+				return nil
+			}
+			if info.IsDir() {
+				base := filepath.Base(path)
+				if path != dir && (skipDirs[base] || (strings.HasPrefix(base, ".") && base != ".")) {
+					return filepath.SkipDir
+				}
 				return nil
 			}
 			ext := filepath.Ext(path)

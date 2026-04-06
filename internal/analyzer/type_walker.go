@@ -58,6 +58,11 @@ type TypeWalker struct {
 	// SetRootContext before invoking Walk*. Included in warnings so users can
 	// trace which of their types consumes a generic with anonymous args.
 	currentRootContext string
+	// insideNamedType tracks whether we're currently inside a WalkNamedType call.
+	// When > 0, anonymous inner types are being inlined into a named parent schema,
+	// so "anonymous type arguments" warnings are suppressed — the parent already
+	// provides the OpenAPI schema name.
+	insideNamedType int
 }
 
 // NewTypeWalker creates a new TypeWalker.
@@ -102,6 +107,13 @@ func (w *TypeWalker) Warnings() []string {
 // The warning points at the consumer type (currentRootName) so the user
 // knows which of their types needs attention.
 func (w *TypeWalker) warnAnonymousTypeArgs(baseName string) {
+	// When inside a WalkNamedType call, the anonymous inner type is being
+	// inlined into a named parent schema (e.g., MeetingResponse). The parent
+	// provides the OpenAPI schema name, so the warning is noise — the user
+	// doesn't need to name the inner Omit/Pick/Partial separately.
+	if w.insideNamedType > 0 {
+		return
+	}
 	if w.warnedGenericNames[baseName] {
 		return
 	}
@@ -120,6 +132,22 @@ func (w *TypeWalker) warnAnonymousTypeArgs(baseName string) {
 		"%s uses %s with anonymous type arguments — the type will be inlined in OpenAPI instead of a named $ref",
 		ctx, baseName,
 	))
+}
+
+// hasNamedAlias returns true if the type has a named type alias declaration
+// (e.g., `type MeetingResponse = Omit<...> & {...}`). Used to suppress
+// anonymous type argument warnings when the parent type already provides a name.
+func (w *TypeWalker) hasNamedAlias(t *shimchecker.Type) bool {
+	alias := shimchecker.Type_alias(t)
+	if alias == nil {
+		return false
+	}
+	sym := alias.Symbol()
+	if sym == nil {
+		return false
+	}
+	name := sym.Name
+	return name != "" && name != "__type" && name != "__object" && (len(name) == 0 || name[0] != '\xfe')
 }
 
 // TotalTypesWalked returns the total number of types walked so far.
@@ -152,12 +180,14 @@ func (w *TypeWalker) WalkNamedType(name string, t *shimchecker.Type) metadata.Me
 	// to a $ref during walkIntersection/walkUnion recursion. This is separate
 	// from typeIdToName to avoid short-circuiting the initial walkObjectType call.
 	w.pendingName[t.Id()] = name
+	w.insideNamedType++
 
 	// Walk the type. Don't set visiting here — let walkObjectType,
 	// walkIntersection, and walkUnion manage their own recursion guards.
 	// Setting visiting here would cause walkIntersection to short-circuit
 	// on the first call, preventing the intersection from being analyzed.
 	m := w.WalkType(t)
+	w.insideNamedType--
 	delete(w.pendingName, t.Id())
 
 	// If the result is unnamed, promote it to a named ref so that companion
@@ -382,6 +412,13 @@ func (w *TypeWalker) walkUnion(t *shimchecker.Type) metadata.Metadata {
 	}
 	w.visiting[t.Id()] = true
 	defer delete(w.visiting, t.Id())
+
+	// If this union has a named alias, suppress anonymous type arg warnings for
+	// inner members — they get inlined into the named parent schema.
+	if w.hasNamedAlias(t) {
+		w.insideNamedType++
+		defer func() { w.insideNamedType-- }()
+	}
 
 	types := t.Types()
 	if len(types) == 0 {
@@ -793,6 +830,15 @@ func (w *TypeWalker) walkIntersection(t *shimchecker.Type) metadata.Metadata {
 	}
 	w.visiting[t.Id()] = true
 	defer delete(w.visiting, t.Id())
+
+	// If this intersection has a named alias (e.g., type MeetingResponse = Omit<...> & {...}),
+	// suppress anonymous type arg warnings for inner members — they get inlined into
+	// the named parent schema, so having their own $ref name is unnecessary.
+	namedParent := w.hasNamedAlias(t)
+	if namedParent {
+		w.insideNamedType++
+		defer func() { w.insideNamedType-- }()
+	}
 
 	types := t.Types()
 	if len(types) == 0 {

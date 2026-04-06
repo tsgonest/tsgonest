@@ -274,6 +274,11 @@ func (env *walkerEnv) walkAllNamedTypes(t *testing.T) *analyzer.TypeWalker {
 		}
 		if stmt.Kind == ast.KindInterfaceDeclaration {
 			decl := stmt.AsInterfaceDeclaration()
+			// Skip generic interfaces (matching production behavior: only concrete
+			// instantiations are walked, not generic templates with type parameters).
+			if decl.TypeParameters != nil {
+				continue
+			}
 			sym := env.checker.GetSymbolAtLocation(decl.Name())
 			if sym != nil {
 				resolvedType := env.checker.GetDeclaredTypeOfSymbol(sym)

@@ -18,15 +18,15 @@ replace (
 	github.com/microsoft/typescript-go/shim/vfs/osvfs => ./shim/vfs/osvfs
 )
 
-require golang.org/x/tools v0.42.0
+require golang.org/x/tools v0.43.0
 
 require (
 	github.com/dlclark/regexp2 v1.11.5 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.10 // indirect
 	github.com/microsoft/typescript-go v0.0.0-20260207160609-5597f4c8ecf4 // indirect
 	github.com/zeebo/xxh3 v1.1.0 // indirect
-	golang.org/x/mod v0.33.0 // indirect
-	golang.org/x/sync v0.19.0 // indirect
+	golang.org/x/mod v0.34.0 // indirect
+	golang.org/x/sync v0.20.0 // indirect
 )
 
 require (
@@ -45,6 +45,6 @@ require (
 	github.com/microsoft/typescript-go/shim/vfs v0.0.0-00010101000000-000000000000
 	github.com/microsoft/typescript-go/shim/vfs/cachedvfs v0.0.0-00010101000000-000000000000
 	github.com/microsoft/typescript-go/shim/vfs/osvfs v0.0.0-00010101000000-000000000000
-	golang.org/x/sys v0.41.0
-	golang.org/x/text v0.34.0
+	golang.org/x/sys v0.42.0
+	golang.org/x/text v0.35.0
 )

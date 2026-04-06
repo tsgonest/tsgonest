@@ -85,6 +85,7 @@ type devFlags struct {
 	envFile             string
 	preserveWatchOutput bool
 	noSourceMaps        bool
+	verbose             bool
 	passthroughArgs     []string
 	cwd                 string
 }
@@ -117,6 +118,7 @@ func runDev(args []string) int {
 	fs.StringVar(&flags.envFile, "env-file", "", "Path to .env file to load")
 	fs.BoolVar(&flags.preserveWatchOutput, "preserveWatchOutput", false, "Don't clear console between rebuilds")
 	fs.BoolVar(&flags.noSourceMaps, "no-source-maps", false, "Disable --enable-source-maps")
+	fs.BoolVar(&flags.verbose, "verbose", false, "Print changed file paths that trigger rebuilds")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: tsgonest dev [flags] [-- <runtime args>]")
@@ -130,6 +132,7 @@ func runDev(args []string) int {
 		fmt.Println("  tsgonest dev --debug")
 		fmt.Println("  tsgonest dev --debug 0.0.0.0:9229")
 		fmt.Println("  tsgonest dev --env-file .env.local")
+		fmt.Println("  tsgonest dev --verbose")
 		fmt.Println("  tsgonest dev -- --max-old-space-size=4096")
 	}
 
@@ -282,6 +285,11 @@ func runDevLoop(flags *devFlags, sigCh chan os.Signal) devLoopResult {
 		srcDir = cwd
 	}
 
+	if flags.verbose {
+		printStatus(os.Stderr, pretty, "◇", "watching directory: %s", srcDir)
+		printStatus(os.Stderr, pretty, "◇", "watching extensions: %v", []string{".ts", ".tsx", ".mts", ".cts"})
+	}
+
 	// done is closed when runDevLoop returns, so helper goroutines can exit cleanly.
 	done := make(chan struct{})
 	defer close(done)
@@ -321,6 +329,12 @@ func runDevLoop(flags *devFlags, sigCh chan os.Signal) devLoopResult {
 				}
 
 				printStatus(os.Stderr, pretty, "◆", "detected %d change(s), rebuilding...", len(events))
+
+				if flags.verbose {
+					for _, ev := range events {
+						fmt.Fprintf(os.Stderr, "  [%s] %s\n", ev.Op, ev.Path)
+					}
+				}
 
 				// Fast path: single file changed with no deletes/creates — use UpdateProgram
 				// which skips re-reading/re-parsing all other source files.
