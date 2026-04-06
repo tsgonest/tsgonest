@@ -4974,17 +4974,13 @@ type Response = {
 		t.Fatalf("anonymous: expected KindObject (inlined), got %s", anonProp.Type.Kind)
 	}
 
-	// Should have emitted a warning about the anonymous type arg
-	warnings := walker.Warnings()
-	found := false
-	for _, w := range warnings {
+	// Warning should NOT be emitted because the anonymous generic is inside
+	// a named type (Response). The parent schema provides the OpenAPI name;
+	// the Wrapper<{...}> is just an implementation detail that gets inlined.
+	for _, w := range walker.Warnings() {
 		if strings.Contains(w, "Wrapper") && strings.Contains(w, "anonymous type arguments") {
-			found = true
-			break
+			t.Errorf("unexpected warning about Wrapper — anonymous generics inside named types should not warn: %s", w)
 		}
-	}
-	if !found {
-		t.Errorf("expected a warning about Wrapper having anonymous type arguments, got warnings: %v", warnings)
 	}
 }
 
@@ -5021,17 +5017,12 @@ type Result = {
 		t.Fatalf("item: expected KindObject (inlined), got %s", itemProp.Type.Kind)
 	}
 
-	// Should have emitted a warning
-	warnings := walker.Warnings()
-	found := false
-	for _, w := range warnings {
+	// Warning should NOT be emitted because the anonymous generic is inside
+	// a named type (Result). The parent provides the OpenAPI schema name.
+	for _, w := range walker.Warnings() {
 		if strings.Contains(w, "Container") && strings.Contains(w, "anonymous type arguments") {
-			found = true
-			break
+			t.Errorf("unexpected warning about Container — anonymous generics inside named types should not warn: %s", w)
 		}
-	}
-	if !found {
-		t.Errorf("expected a warning about Container having anonymous type arguments, got warnings: %v", warnings)
 	}
 }
 
@@ -5118,17 +5109,12 @@ type Result = {
 
 	walker := env.walkAllNamedTypes(t)
 
-	// Count how many warnings mention "Wrapper"
-	wrapperCount := 0
+	// No warnings should be emitted because all Wrapper<{...}> uses are
+	// inside a named type (Result) — the parent provides the OpenAPI name.
 	for _, w := range walker.Warnings() {
 		if strings.Contains(w, "Wrapper") && strings.Contains(w, "anonymous type arguments") {
-			wrapperCount++
+			t.Errorf("unexpected warning about Wrapper — anonymous generics inside named types should not warn: %s", w)
 		}
-	}
-
-	if wrapperCount != 1 {
-		t.Errorf("expected exactly 1 deduplicated warning for Wrapper, got %d; warnings: %v",
-			wrapperCount, walker.Warnings())
 	}
 }
 
