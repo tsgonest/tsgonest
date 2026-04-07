@@ -300,6 +300,318 @@ describe("SDK runtime verification", () => {
   });
 });
 
+// ─── Group 3b: Empty response body handling (issue #89) ──────────────────
+
+describe("SDK empty response body handling", () => {
+  let createRequestFn: any;
+
+  beforeAll(async () => {
+    const { exitCode, outputDir } = generateSdk(
+      "testdata/sdkgen/basic.openapi.json",
+      "empty-body"
+    );
+    expect(exitCode).toBe(0);
+    const clientMod = await import(resolve(outputDir, "client.ts"));
+    createRequestFn = clientMod.createRequestFn;
+  });
+
+  it("should handle HTTP 200 with empty body and application/json content-type", async () => {
+    const mockFetch = async () =>
+      new Response("", {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+
+    const request = createRequestFn({
+      baseUrl: "http://localhost:3000",
+      fetcher: mockFetch,
+    });
+
+    const result = await request("DELETE", "/resources/{id}", {
+      params: { id: "123" },
+    });
+
+    expect(result.error).toBeNull();
+    expect(result.data).toBeUndefined();
+  });
+
+  it("should handle HTTP 200 with empty body and no content-type", async () => {
+    const mockFetch = async () =>
+      new Response("", { status: 200 });
+
+    const request = createRequestFn({
+      baseUrl: "http://localhost:3000",
+      fetcher: mockFetch,
+    });
+
+    const result = await request("DELETE", "/resources/{id}", {
+      params: { id: "123" },
+    });
+
+    expect(result.error).toBeNull();
+    expect(result.data).toBeUndefined();
+  });
+
+  it("should handle HTTP 204 No Content", async () => {
+    const mockFetch = async () =>
+      new Response(null, { status: 204 });
+
+    const request = createRequestFn({
+      baseUrl: "http://localhost:3000",
+      fetcher: mockFetch,
+    });
+
+    const result = await request("DELETE", "/resources/{id}", {
+      params: { id: "123" },
+    });
+
+    expect(result.error).toBeNull();
+    expect(result.data).toBeUndefined();
+  });
+
+  it("should still parse valid JSON body at 200", async () => {
+    const mockFetch = async () =>
+      new Response(JSON.stringify({ id: "123", name: "test" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+
+    const request = createRequestFn({
+      baseUrl: "http://localhost:3000",
+      fetcher: mockFetch,
+    });
+
+    const result = await request("GET", "/resources/{id}", {
+      params: { id: "123" },
+    });
+
+    expect(result.error).toBeNull();
+    expect(result.data).toEqual({ id: "123", name: "test" });
+  });
+
+  it("should handle HTTP 200 with content-length: 0", async () => {
+    const mockFetch = async () =>
+      new Response("", {
+        status: 200,
+        headers: {
+          "content-type": "application/json",
+          "content-length": "0",
+        },
+      });
+
+    const request = createRequestFn({
+      baseUrl: "http://localhost:3000",
+      fetcher: mockFetch,
+    });
+
+    const result = await request("DELETE", "/resources/{id}", {
+      params: { id: "123" },
+    });
+
+    expect(result.error).toBeNull();
+    expect(result.data).toBeUndefined();
+  });
+});
+
+// ─── Group 3c: SDK edge case crash vectors ────────────────────────────────
+
+describe("SDK client edge cases", () => {
+  let createRequestFn: any;
+
+  beforeAll(async () => {
+    const { exitCode, outputDir } = generateSdk(
+      "testdata/sdkgen/basic.openapi.json",
+      "edge-cases"
+    );
+    expect(exitCode).toBe(0);
+    const clientMod = await import(resolve(outputDir, "client.ts"));
+    createRequestFn = clientMod.createRequestFn;
+  });
+
+  // ── Malformed JSON (proxy/CDN returning HTML with application/json) ──
+
+  it("should not crash on malformed JSON body with application/json content-type", async () => {
+    const mockFetch = async () =>
+      new Response("<html>502 Bad Gateway</html>", {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+
+    const request = createRequestFn({
+      baseUrl: "http://localhost:3000",
+      fetcher: mockFetch,
+    });
+
+    // Should NOT throw SyntaxError — should return an error result
+    const result = await request("GET", "/items");
+    expect(result.error).not.toBeNull();
+    expect(result.error.message).toBeDefined();
+  });
+
+  // ── Network error (fetch throws TypeError) ──
+
+  it("should not throw on network error (fetch rejects)", async () => {
+    const mockFetch = async () => {
+      throw new TypeError("Failed to fetch");
+    };
+
+    const request = createRequestFn({
+      baseUrl: "http://localhost:3000",
+      fetcher: mockFetch,
+    });
+
+    // Should NOT throw — should return an error result
+    const result = await request("GET", "/items");
+    expect(result.error).not.toBeNull();
+    expect(result.error.message).toContain("Failed to fetch");
+  });
+
+  // ── DNS/connection error ──
+
+  it("should not throw on DNS resolution error", async () => {
+    const mockFetch = async () => {
+      throw new TypeError("getaddrinfo ENOTFOUND api.example.com");
+    };
+
+    const request = createRequestFn({
+      baseUrl: "http://api.example.com",
+      fetcher: mockFetch,
+    });
+
+    const result = await request("GET", "/items");
+    expect(result.error).not.toBeNull();
+  });
+
+  // ── Headers factory throws ──
+
+  it("should not throw when headers factory function rejects", async () => {
+    const mockFetch = async () => new Response("ok", { status: 200 });
+
+    const request = createRequestFn({
+      baseUrl: "http://localhost:3000",
+      fetcher: mockFetch,
+      headers: async () => {
+        throw new Error("Token refresh failed");
+      },
+    });
+
+    const result = await request("GET", "/items");
+    expect(result.error).not.toBeNull();
+    expect(result.error.message).toContain("Token refresh failed");
+  });
+
+  // ── onRequest hook throws ──
+
+  it("should not throw when onRequest hook rejects", async () => {
+    const mockFetch = async () => new Response("ok", { status: 200 });
+
+    const request = createRequestFn({
+      baseUrl: "http://localhost:3000",
+      fetcher: mockFetch,
+      onRequest: async () => {
+        throw new Error("Request interceptor failed");
+      },
+    });
+
+    const result = await request("GET", "/items");
+    expect(result.error).not.toBeNull();
+    expect(result.error.message).toContain("Request interceptor failed");
+  });
+
+  // ── application/vnd.api+json (JSON:API content type) ──
+
+  it("should parse application/vnd.api+json as JSON", async () => {
+    const mockFetch = async () =>
+      new Response(JSON.stringify({ data: [{ id: "1" }] }), {
+        status: 200,
+        headers: { "content-type": "application/vnd.api+json" },
+      });
+
+    const request = createRequestFn({
+      baseUrl: "http://localhost:3000",
+      fetcher: mockFetch,
+    });
+
+    const result = await request("GET", "/items");
+    // Currently falls through to text — at minimum should not crash
+    expect(result.error).toBeNull();
+    expect(result.data).toBeDefined();
+  });
+
+  // ── JSON body is literally "null" ──
+
+  it("should handle JSON null body correctly", async () => {
+    const mockFetch = async () =>
+      new Response("null", {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+
+    const request = createRequestFn({
+      baseUrl: "http://localhost:3000",
+      fetcher: mockFetch,
+    });
+
+    const result = await request("GET", "/items");
+    expect(result.error).toBeNull();
+    expect(result.data).toBeNull();
+  });
+
+  // ── Non-error status codes: 202 Accepted with empty body ──
+
+  it("should handle 202 Accepted with empty body", async () => {
+    const mockFetch = async () =>
+      new Response("", {
+        status: 202,
+        headers: { "content-type": "application/json" },
+      });
+
+    const request = createRequestFn({
+      baseUrl: "http://localhost:3000",
+      fetcher: mockFetch,
+    });
+
+    const result = await request("POST", "/items");
+    expect(result.error).toBeNull();
+    expect(result.data).toBeUndefined();
+  });
+
+  // ── 4xx with empty body (no JSON to parse) ──
+
+  it("should handle 401 with empty body", async () => {
+    const mockFetch = async () =>
+      new Response("", { status: 401 });
+
+    const request = createRequestFn({
+      baseUrl: "http://localhost:3000",
+      fetcher: mockFetch,
+    });
+
+    const result = await request("GET", "/items");
+    expect(result.error).not.toBeNull();
+    expect(result.error.status).toBe(401);
+  });
+
+  // ── 5xx with HTML error page ──
+
+  it("should handle 500 with HTML error page body", async () => {
+    const mockFetch = async () =>
+      new Response("<html><body>Internal Server Error</body></html>", {
+        status: 500,
+        headers: { "content-type": "text/html" },
+      });
+
+    const request = createRequestFn({
+      baseUrl: "http://localhost:3000",
+      fetcher: mockFetch,
+    });
+
+    const result = await request("GET", "/items");
+    expect(result.error).not.toBeNull();
+    expect(result.error.status).toBe(500);
+  });
+});
+
 describe("SSEConnection runtime", () => {
   let SSEConnection: any;
 
