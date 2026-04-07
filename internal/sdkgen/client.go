@@ -17,7 +17,7 @@ export interface RequestContext {
   url: string;
 }
 
-export type SDKResult<T> = { data: T; error: null; response: Response } | { data: null; error: SDKError; response: Response };
+export type SDKResult<T> = { data: T; error: null; response: Response } | { data: null; error: SDKError; response: Response | null };
 
 export type Fetcher = (url: string, init: RequestInit) => Promise<Response>;
 
@@ -107,6 +107,8 @@ export function createRequestFn(config: ClientConfig): RequestFn {
 
     // Build request context for hooks
     const context: RequestContext = { method, path, url: fullUrl };
+
+    try {
 
     // Resolve headers
     let baseHeaders: Record<string, string> = {};
@@ -219,12 +221,28 @@ export function createRequestFn(config: ClientConfig): RequestFn {
     // Default: parse based on content-type header
     const contentTypeHeader = response.headers.get('content-type') ?? '';
     if (contentTypeHeader.includes('application/json')) {
-      const data = await response.json() as T;
-      return { data, error: null, response };
+      const text = await response.text();
+      if (!text) {
+        return { data: undefined as T, error: null, response };
+      }
+      try {
+        const data = JSON.parse(text) as T;
+        return { data, error: null, response };
+      } catch {
+        return { data: null, error: { status: response.status, message: 'Invalid JSON response', body: text }, response };
+      }
     }
 
     const text = await response.text();
+    if (!text) {
+      return { data: undefined as T, error: null, response };
+    }
     return { data: text as T, error: null, response };
+
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { data: null, error: { status: 0, message, body: err }, response: null };
+    }
   };
 }
 `

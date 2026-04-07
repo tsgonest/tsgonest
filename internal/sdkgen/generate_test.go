@@ -446,6 +446,55 @@ func TestGenerate_DeeplyNestedFixture(t *testing.T) {
 	assertContains(t, typesContent, "string[][]", "should have string[][] for tags")
 }
 
+func TestGenerate_ClientHandlesEmptyResponseBody(t *testing.T) {
+	outputDir := t.TempDir()
+	inputPath := "../../testdata/sdkgen/basic.openapi.json"
+
+	err := Generate(inputPath, outputDir)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	clientContent := readFile(t, filepath.Join(outputDir, "client.ts"))
+
+	// The generated client should read response body as text first before JSON.parse
+	// to handle HTTP 200 with empty body gracefully (issue #89)
+	assertContains(t, clientContent, "const text = await response.text();", "client.ts should read body as text before JSON parsing")
+	assertContains(t, clientContent, "JSON.parse(text)", "client.ts should use JSON.parse(text) instead of response.json()")
+
+	// Should NOT contain response.json() in the success path (only in error path)
+	// Count occurrences: should only appear in the error handling block
+	successBlock := clientContent[strings.Index(clientContent, "// Default: parse based on content-type header"):]
+	assertNotContains(t, successBlock, "response.json()", "success path should not use response.json() directly")
+
+	// Should check for empty text before parsing
+	assertContains(t, clientContent, "if (!text)", "client.ts should check for empty body before JSON.parse")
+
+	// JSON.parse should be wrapped in try-catch for malformed JSON
+	assertContains(t, clientContent, "Invalid JSON response", "client.ts should catch malformed JSON and return error")
+}
+
+func TestGenerate_ClientCatchesNetworkErrors(t *testing.T) {
+	outputDir := t.TempDir()
+	inputPath := "../../testdata/sdkgen/basic.openapi.json"
+
+	err := Generate(inputPath, outputDir)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	clientContent := readFile(t, filepath.Join(outputDir, "client.ts"))
+
+	// Should have top-level try-catch for network errors, headers throws, etc.
+	assertContains(t, clientContent, "} catch (err) {", "client.ts should have top-level try-catch")
+	assertContains(t, clientContent, "err instanceof Error", "client.ts should extract Error.message")
+	assertContains(t, clientContent, "status: 0", "client.ts should use status 0 for non-HTTP errors")
+	assertContains(t, clientContent, "response: null", "client.ts should return null response for network errors")
+
+	// SDKResult type should allow null response on error branch
+	assertContains(t, clientContent, "response: Response | null", "SDKResult error branch should have nullable response")
+}
+
 func TestGenerate_EdgeCasesFixture(t *testing.T) {
 	outputDir := t.TempDir()
 	inputPath := "../../testdata/sdkgen/edge-cases.openapi.json"

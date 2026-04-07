@@ -315,6 +315,46 @@ func TestResolveResponse_204NoContent(t *testing.T) {
 	}
 }
 
+func TestResolveResponse_200EmptyContent(t *testing.T) {
+	// HTTP 200 with a response entry but empty content map → should be void
+	responses := map[string]*openAPIResponse{
+		"200": {
+			Description: "OK",
+			Content:     map[string]openAPIMediaType{},
+		},
+	}
+	resolver := &schemaResolver{schemas: map[string]*SchemaNode{}}
+	resolver.initFingerprints()
+
+	resp := resolveResponse(responses, resolver)
+	if !resp.isVoid {
+		t.Error("expected void for 200 with empty content")
+	}
+	if resp.status != 200 {
+		t.Errorf("expected status 200, got %d", resp.status)
+	}
+}
+
+func TestResolveResponse_200NilContent(t *testing.T) {
+	// HTTP 200 with nil content (no response body defined) → should be void
+	responses := map[string]*openAPIResponse{
+		"200": {
+			Description: "OK",
+			Content:     nil,
+		},
+	}
+	resolver := &schemaResolver{schemas: map[string]*SchemaNode{}}
+	resolver.initFingerprints()
+
+	resp := resolveResponse(responses, resolver)
+	if !resp.isVoid {
+		t.Error("expected void for 200 with nil content")
+	}
+	if resp.status != 200 {
+		t.Errorf("expected status 200, got %d", resp.status)
+	}
+}
+
 func TestResolveResponse_Multiple2xx(t *testing.T) {
 	// When both 200 and 201 exist, 200 should be picked (priority order)
 	responses := map[string]*openAPIResponse{
