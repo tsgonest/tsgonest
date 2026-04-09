@@ -68,10 +68,13 @@ export class FormDataInterceptor {
     const stream = isFastify ? req.raw : req;
 
     // Primary path: web-native FormData parsing (Node 20+)
-    // Uses Request.formData() — immune to multer/busboy stream issues on Node 24+
-    if (canParseNative() && stream && typeof stream.pipe === 'function' && !stream.readableEnded) {
-      await parseFormDataNative(req, stream);
-      return next.handle();
+    // Uses Request.formData() — immune to multer/busboy stream issues on Node 24+.
+    // No readableEnded guard: on Node 24, the stream may be marked ended before
+    // the interceptor runs (undici buffers small bodies eagerly), but the data is
+    // still available in the internal buffer or via req.rawBody.
+    if (canParseNative() && stream && typeof stream.pipe === 'function') {
+      const parsed = await parseFormDataNative(req, stream);
+      if (parsed) return next.handle();
     }
 
     // Fallback: multer (Node < 20 or web APIs unavailable)
@@ -142,10 +145,14 @@ function canParseNative(): boolean {
  * and populates req.body with fields and File instances — same result as
  * multer + mergeMulterFiles, but without busboy stream dependencies.
  *
- * This approach is immune to the stream-timing issues that affect
- * multer/busboy on certain Node.js versions (notably Node 24 with multer < 2.1).
+ * Handles ended streams (Node 24+): when the stream is already ended (undici
+ * buffers small bodies eagerly, or body-parser middleware consumed it), falls
+ * back to req.rawBody or drains the internal buffer.
+ *
+ * Returns true if parsing succeeded, false if no data was available (caller
+ * should fall through to the multer path).
  */
-async function parseFormDataNative(req: any, stream: any): Promise<void> {
+async function parseFormDataNative(req: any, stream: any): Promise<boolean> {
   const { Readable } = require('node:stream') as typeof import('node:stream');
 
   const headers = new Headers();
@@ -155,14 +162,39 @@ async function parseFormDataNative(req: any, stream: any): Promise<void> {
     else if (Array.isArray(val)) for (const v of val) headers.append(key, v);
   }
 
-  const webRequest = new Request(`http://localhost${req.url || '/'}`, {
+  // Determine the request body source.
+  // On Node 24+, the stream may be marked ended before the interceptor runs
+  // because undici eagerly buffers small request bodies. The data is still
+  // available in the stream's internal buffer or via req.rawBody.
+  let body: BodyInit;
+  const requestInit: RequestInit & Record<string, unknown> = {
     method: req.method || 'POST',
     headers,
-    body: Readable.toWeb(stream) as ReadableStream,
-    // @ts-ignore — duplex required for streaming request bodies
-    duplex: 'half',
-  });
+  };
 
+  if (!stream.readableEnded) {
+    body = Readable.toWeb(stream) as ReadableStream;
+    requestInit.duplex = 'half';
+  } else {
+    // Stream ended — try rawBody (set by body-parser verify callback), then
+    // drain any remaining data from the internal buffer.
+    const rawBody = req.rawBody || stream.rawBody;
+    if (rawBody) {
+      body = rawBody;
+    } else {
+      const chunks: Buffer[] = [];
+      let chunk: Buffer | null;
+      while ((chunk = stream.read()) !== null) {
+        chunks.push(chunk);
+      }
+      if (chunks.length === 0) return false;
+      body = Buffer.concat(chunks);
+    }
+  }
+
+  requestInit.body = body;
+
+  const webRequest = new Request(`http://localhost${req.url || '/'}`, requestInit);
   const formData = await webRequest.formData();
 
   if (!req.body) req.body = {};
@@ -182,6 +214,8 @@ async function parseFormDataNative(req: any, stream: any): Promise<void> {
       req.body[key] = value;
     }
   }
+
+  return true;
 }
 
 /**
