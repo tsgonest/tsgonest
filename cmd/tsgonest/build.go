@@ -707,7 +707,8 @@ func runBuildWithIncrAndProgram(args []string, oldIncrProgram *shimincremental.P
 					printStatus(os.Stderr, pretty, "·", "SDK (%s) up to date, skipping", label)
 					return
 				}
-				if err := sdkgen.Generate(input, output, sdkOpts); err != nil {
+				sdkWarnings, err := sdkgen.Generate(input, output, sdkOpts)
+				if err != nil {
 					sdkMu.Lock()
 					sdkErr = err
 					sdkMu.Unlock()
@@ -715,6 +716,12 @@ func runBuildWithIncrAndProgram(args []string, oldIncrProgram *shimincremental.P
 				}
 				os.WriteFile(sdkHashPath, []byte(inputHash), 0o644)
 				printStatus(os.Stderr, pretty, "✓", "generated SDK: %s → %s", label, output)
+				// Surface SDK warnings alongside other build warnings
+				if len(sdkWarnings) > 0 {
+					sdkMu.Lock()
+					allWarnings = append(allWarnings, sdkWarnings...)
+					sdkMu.Unlock()
+				}
 			}(sdkInput, sdkOutput, label)
 		}
 	}

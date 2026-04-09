@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "child_process";
 import { resolve } from "path";
-import { rmSync, existsSync } from "fs";
+import { rmSync, existsSync, writeFileSync } from "fs";
 import { runTsgonest, FIXTURES_DIR } from "./helpers";
 
 export const INTEGRATION_DIR = resolve(FIXTURES_DIR, "integration");
@@ -9,18 +9,35 @@ export const INTEGRATION_DIST = resolve(INTEGRATION_DIR, "dist");
 /**
  * Compile the integration fixture with tsgonest.
  * Returns the build result for assertions.
+ *
+ * Uses a filesystem marker (.tsgonest-e2e-built) to coordinate across parallel
+ * Vitest workers — only the first worker cleans and rebuilds. Others skip if
+ * the marker already exists (indicating a recent build in this test run).
  */
 export function buildIntegrationFixture() {
   const distDir = resolve(INTEGRATION_DIR, "dist");
+  const marker = resolve(distDir, ".tsgonest-e2e-built");
+
+  // If another worker already compiled in this run, reuse it.
+  if (existsSync(marker)) {
+    return { exitCode: 0, stdout: "(cached)", stderr: "" };
+  }
+
   if (existsSync(distDir)) {
     rmSync(distDir, { recursive: true });
   }
-  return runTsgonest([
+  const result = runTsgonest([
     "--project",
     "testdata/integration/tsconfig.json",
     "--config",
     "testdata/integration/tsgonest.config.json",
   ]);
+
+  // Write marker so parallel workers skip recompilation.
+  if (result.exitCode === 0 && existsSync(distDir)) {
+    writeFileSync(marker, new Date().toISOString());
+  }
+  return result;
 }
 
 /**

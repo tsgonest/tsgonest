@@ -11,7 +11,7 @@ func TestGenerate_BasicFixture(t *testing.T) {
 	outputDir := t.TempDir()
 	inputPath := "../../testdata/sdkgen/basic.openapi.json"
 
-	err := Generate(inputPath, outputDir)
+	_, err := Generate(inputPath, outputDir)
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestGenerate_VersionedFixture(t *testing.T) {
 	outputDir := t.TempDir()
 	inputPath := "../../testdata/sdkgen/versioned.openapi.json"
 
-	err := Generate(inputPath, outputDir)
+	_, err := Generate(inputPath, outputDir)
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
@@ -148,7 +148,7 @@ func TestGenerate_SingleVersionFixture(t *testing.T) {
 	outputDir := t.TempDir()
 	inputPath := "../../testdata/sdkgen/single-version.openapi.json"
 
-	err := Generate(inputPath, outputDir)
+	_, err := Generate(inputPath, outputDir)
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
@@ -187,7 +187,7 @@ func TestGenerate_NoExtensions(t *testing.T) {
 	outputDir := t.TempDir()
 	inputPath := "../../testdata/sdkgen/no-extensions.openapi.json"
 
-	err := Generate(inputPath, outputDir)
+	_, err := Generate(inputPath, outputDir)
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
@@ -215,7 +215,7 @@ func TestGenerate_ComplexTypes(t *testing.T) {
 	outputDir := t.TempDir()
 	inputPath := "../../testdata/sdkgen/complex-types.openapi.json"
 
-	err := Generate(inputPath, outputDir)
+	_, err := Generate(inputPath, outputDir)
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
@@ -239,7 +239,7 @@ func TestGenerate_FileUploads(t *testing.T) {
 	outputDir := t.TempDir()
 	inputPath := "../../testdata/sdkgen/file-uploads.openapi.json"
 
-	err := Generate(inputPath, outputDir)
+	_, err := Generate(inputPath, outputDir)
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
@@ -429,7 +429,7 @@ func TestGenerate_EmptyFixture(t *testing.T) {
 	outputDir := t.TempDir()
 	inputPath := "../../testdata/sdkgen/empty.openapi.json"
 
-	err := Generate(inputPath, outputDir)
+	_, err := Generate(inputPath, outputDir)
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
@@ -443,7 +443,7 @@ func TestGenerate_DeeplyNestedFixture(t *testing.T) {
 	outputDir := t.TempDir()
 	inputPath := "../../testdata/sdkgen/deeply-nested.openapi.json"
 
-	err := Generate(inputPath, outputDir)
+	_, err := Generate(inputPath, outputDir)
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
@@ -462,7 +462,7 @@ func TestGenerate_ClientHandlesEmptyResponseBody(t *testing.T) {
 	outputDir := t.TempDir()
 	inputPath := "../../testdata/sdkgen/basic.openapi.json"
 
-	err := Generate(inputPath, outputDir)
+	_, err := Generate(inputPath, outputDir)
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
@@ -490,7 +490,7 @@ func TestGenerate_ClientCatchesNetworkErrors(t *testing.T) {
 	outputDir := t.TempDir()
 	inputPath := "../../testdata/sdkgen/basic.openapi.json"
 
-	err := Generate(inputPath, outputDir)
+	_, err := Generate(inputPath, outputDir)
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
@@ -511,7 +511,7 @@ func TestGenerate_EdgeCasesFixture(t *testing.T) {
 	outputDir := t.TempDir()
 	inputPath := "../../testdata/sdkgen/edge-cases.openapi.json"
 
-	err := Generate(inputPath, outputDir)
+	_, err := Generate(inputPath, outputDir)
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
@@ -575,7 +575,7 @@ func TestGenerate_AdvancedTypes(t *testing.T) {
 	outputDir := t.TempDir()
 	inputPath := "../../testdata/sdkgen/advanced-types.openapi.json"
 
-	err := Generate(inputPath, outputDir)
+	_, err := Generate(inputPath, outputDir)
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
@@ -616,7 +616,7 @@ func TestGenerate_AdvancedTypes_TSEnums(t *testing.T) {
 	outputDir := t.TempDir()
 	inputPath := "../../testdata/sdkgen/advanced-types.openapi.json"
 
-	err := Generate(inputPath, outputDir, &GenerateOptions{TSEnums: true})
+	_, err := Generate(inputPath, outputDir, &GenerateOptions{TSEnums: true})
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}

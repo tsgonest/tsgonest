@@ -23,27 +23,25 @@ type GenerateOptions struct {
 }
 
 // Generate parses an OpenAPI spec and generates a TypeScript SDK.
-func Generate(inputPath, outputDir string, opts ...*GenerateOptions) error {
+// Returns any warnings (e.g., type collision renames) and an error if generation fails.
+func Generate(inputPath, outputDir string, opts ...*GenerateOptions) ([]string, error) {
 	var o *GenerateOptions
 	if len(opts) > 0 {
 		o = opts[0]
 	}
 	doc, err := ParseOpenAPIWithOptions(inputPath, o)
 	if err != nil {
-		return fmt.Errorf("parsing: %w", err)
+		return nil, fmt.Errorf("parsing: %w", err)
 	}
 
 	// Create output directory
 	if err := os.MkdirAll(outputDir, 0o755); err != nil {
-		return fmt.Errorf("creating output directory: %w", err)
+		return nil, fmt.Errorf("creating output directory: %w", err)
 	}
 
 	// Rename schema names that collide with TypeScript built-in types.
 	// e.g., "Record" → "Record_" to avoid shadowing Record<K,V>.
 	collisionWarnings := renameBuiltinCollisions(doc)
-	for _, w := range collisionWarnings {
-		fmt.Fprintln(os.Stderr, w)
-	}
 
 	// Remove stale controller directories that are no longer in the spec.
 	cleanStaleControllerDirs(outputDir, doc)
@@ -55,23 +53,23 @@ func Generate(inputPath, outputDir string, opts ...*GenerateOptions) error {
 	}
 	typesCode := generateSharedTypes(doc.Schemas, tsEnums)
 	if err := writeFile(filepath.Join(outputDir, "types.ts"), typesCode); err != nil {
-		return err
+		return nil, err
 	}
 
 	// Generate client infrastructure (split for tree-shaking)
 	clientCode := generateClient()
 	if err := writeFile(filepath.Join(outputDir, "client.ts"), clientCode); err != nil {
-		return err
+		return nil, err
 	}
 
 	sseCode := generateSSE()
 	if err := writeFile(filepath.Join(outputDir, "sse.ts"), sseCode); err != nil {
-		return err
+		return nil, err
 	}
 
 	formDataCode := generateFormData()
 	if err := writeFile(filepath.Join(outputDir, "form-data.ts"), formDataCode); err != nil {
-		return err
+		return nil, err
 	}
 
 	// Generate per-controller files (respecting version grouping)
@@ -79,12 +77,12 @@ func Generate(inputPath, outputDir string, opts ...*GenerateOptions) error {
 		for _, ctrl := range ver.Controllers {
 			ctrlDir := controllerOutputDir(outputDir, ver.Version, ctrl.Name)
 			if err := os.MkdirAll(ctrlDir, 0o755); err != nil {
-				return fmt.Errorf("creating controller directory: %w", err)
+				return nil, fmt.Errorf("creating controller directory: %w", err)
 			}
 
 			ctrlCode := generateController(ctrl, doc, ver.Version)
 			if err := writeFile(filepath.Join(ctrlDir, "index.ts"), ctrlCode); err != nil {
-				return err
+				return nil, err
 			}
 		}
 	}
@@ -92,13 +90,13 @@ func Generate(inputPath, outputDir string, opts ...*GenerateOptions) error {
 	// Generate index.ts
 	indexCode := generateIndex(doc.Versions)
 	if err := writeFile(filepath.Join(outputDir, "index.ts"), indexCode); err != nil {
-		return err
+		return nil, err
 	}
 
 	// Auto-format generated output if a formatter is configured in the project
 	formatOutput(outputDir)
 
-	return nil
+	return collisionWarnings, nil
 }
 
 // controllerOutputDir returns the output directory for a controller.
