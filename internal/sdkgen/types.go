@@ -78,7 +78,8 @@ type SchemaNode struct {
 	Enum []any
 
 	// Const value
-	Const any
+	Const    any
+	HasConst bool // true when "const" key is present in schema (Const may be nil for null)
 
 	// Reference
 	Ref string // resolved name (without #/components/schemas/ prefix)
@@ -86,8 +87,25 @@ type SchemaNode struct {
 	// Additional properties for Record<string, T>
 	AdditionalProperties *SchemaNode
 
-	// Nullable
+	// Nullable (OpenAPI 3.0 nullable:true or 3.1+ type:["string","null"])
 	Nullable bool
+
+	// ReadOnly property modifier
+	ReadOnly bool
+
+	// Deprecated flag for schema properties
+	Deprecated bool
+
+	// Default value for JSDoc generation
+	Default    any
+	HasDefault bool // true when "default" key is present in schema
+
+	// Tuple items (JSON Schema prefixItems)
+	PrefixItems []*SchemaNode
+
+	// Array length constraints (for tuple inference from homogeneous arrays)
+	MinItems *int
+	MaxItems *int
 
 	// Discriminator for oneOf
 	Discriminator *Discriminator

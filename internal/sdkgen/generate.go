@@ -18,6 +18,8 @@ type GenerateOptions struct {
 	// VersionPrefix is the version prefix (e.g., "v") used in URI versioning.
 	// If empty, the prefix is auto-detected from the OpenAPI x-tsgonest-version-prefix extension.
 	VersionPrefix string
+	// TSEnums emits TypeScript enum declarations instead of union type aliases for enum schemas.
+	TSEnums bool
 }
 
 // Generate parses an OpenAPI spec and generates a TypeScript SDK.
@@ -38,13 +40,20 @@ func Generate(inputPath, outputDir string, opts ...*GenerateOptions) error {
 
 	// Rename schema names that collide with TypeScript built-in types.
 	// e.g., "Record" → "Record_" to avoid shadowing Record<K,V>.
-	renameBuiltinCollisions(doc)
+	collisionWarnings := renameBuiltinCollisions(doc)
+	for _, w := range collisionWarnings {
+		fmt.Fprintln(os.Stderr, w)
+	}
 
 	// Remove stale controller directories that are no longer in the spec.
 	cleanStaleControllerDirs(outputDir, doc)
 
 	// Generate shared types
-	typesCode := generateSharedTypes(doc.Schemas)
+	tsEnums := false
+	if o != nil {
+		tsEnums = o.TSEnums
+	}
+	typesCode := generateSharedTypes(doc.Schemas, tsEnums)
 	if err := writeFile(filepath.Join(outputDir, "types.ts"), typesCode); err != nil {
 		return err
 	}

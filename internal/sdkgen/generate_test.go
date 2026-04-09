@@ -263,14 +263,14 @@ func TestGenerate_FileUploads(t *testing.T) {
 	uploadsContent := readFile(t, filepath.Join(outputDir, "uploads/index.ts"))
 
 	// --- Single file upload ---
-	assertContains(t, uploadsContent, "file: Blob", "single file field should be typed as Blob")
+	assertContains(t, uploadsContent, "file: File | Blob", "single file field should be typed as File | Blob")
 
-	// --- Array of files (Blob[]) ---
-	assertContains(t, uploadsContent, "photos: Blob[]", "array file field should be typed as Blob[]")
+	// --- Array of files ((File | Blob)[]) ---
+	assertContains(t, uploadsContent, "photos: (File | Blob)[]", "array file field should be typed as (File | Blob)[]")
 
 	// --- Multiple file fields in one request ---
-	assertContains(t, uploadsContent, "document: Blob", "document field should be Blob")
-	assertContains(t, uploadsContent, "coverImage?: Blob", "optional coverImage field should be Blob")
+	assertContains(t, uploadsContent, "document: File | Blob", "document field should be File | Blob")
+	assertContains(t, uploadsContent, "coverImage?: File | Blob", "optional coverImage field should be File | Blob")
 
 	// --- Mixed file + text fields ---
 	assertContains(t, uploadsContent, "albumName: string", "text field in multipart should be string")
@@ -281,8 +281,17 @@ func TestGenerate_FileUploads(t *testing.T) {
 	assertContains(t, uploadsContent, "from '../form-data'", "should import buildFormData from form-data.ts")
 	assertContains(t, uploadsContent, "buildFormData(options.body)", "should call buildFormData")
 
-	// --- contentType: 'multipart/form-data' in request ---
-	assertContains(t, uploadsContent, "contentType: 'multipart/form-data'", "should set multipart content type")
+	// --- FormData escape hatch: instanceof check ---
+	assertContains(t, uploadsContent, "options.body instanceof FormData", "should have FormData escape hatch")
+
+	// --- body type should include FormData union ---
+	assertContains(t, uploadsContent, "| FormData", "body type should include FormData union")
+
+	// --- upload progress option ---
+	assertContains(t, uploadsContent, "onUploadProgress?:", "should have optional onUploadProgress callback")
+
+	// --- contentType with uploadContentType fallback ---
+	assertContains(t, uploadsContent, "uploadContentType ?? 'multipart/form-data'", "should set multipart content type with uploadContentType fallback")
 
 	// --- JSDoc on upload methods ---
 	assertContains(t, uploadsContent, "Upload a user avatar", "should have uploadAvatar JSDoc")
@@ -317,8 +326,11 @@ func TestGenerate_FileUploads(t *testing.T) {
 	// --- form-data.ts should have buildFormData utility (split from client.ts) ---
 	formDataContentFU := readFile(t, filepath.Join(outputDir, "form-data.ts"))
 	assertContains(t, formDataContentFU, "export function buildFormData", "form-data.ts should export buildFormData")
+	assertContains(t, formDataContentFU, "instanceof File", "buildFormData should check File before Blob")
 	assertContains(t, formDataContentFU, "instanceof Blob", "buildFormData should handle Blob")
 	assertContains(t, formDataContentFU, "Array.isArray(value)", "buildFormData should handle arrays")
+	assertContains(t, formDataContentFU, "FormDataCompatible", "form-data.ts should export typed constraint")
+	assertContains(t, formDataContentFU, "FormDataValue", "form-data.ts should export FormDataValue type")
 }
 
 func TestControllerDirName(t *testing.T) {
@@ -557,4 +569,66 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "..."
+}
+
+func TestGenerate_AdvancedTypes(t *testing.T) {
+	outputDir := t.TempDir()
+	inputPath := "../../testdata/sdkgen/advanced-types.openapi.json"
+
+	err := Generate(inputPath, outputDir)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	typesContent := readFile(t, filepath.Join(outputDir, "types.ts"))
+
+	// --- Discriminated unions ---
+	assertContains(t, typesContent, "Omit<Dog", "should have Omit<Dog for discriminated union")
+	assertContains(t, typesContent, `"dog"`, "should have discriminator value 'dog'")
+	assertContains(t, typesContent, "Omit<Cat", "should have Omit<Cat for discriminated union")
+	assertContains(t, typesContent, `"cat"`, "should have discriminator value 'cat'")
+
+	// --- readOnly ---
+	assertContains(t, typesContent, "readonly barkVolume", "should have readonly modifier on readOnly property")
+
+	// --- default ---
+	assertContains(t, typesContent, "@default true", "should have @default JSDoc for Cat.indoor")
+
+	// --- Nullable (3.1+ type array) ---
+	assertContains(t, typesContent, "bio?: string | null", "should have nullable bio field (3.1+ type array)")
+
+	// --- Nullable (3.0 flag) ---
+	assertContains(t, typesContent, "legacyField?: string | null", "should have nullable legacyField (3.0 nullable flag)")
+
+	// --- deprecated ---
+	assertContains(t, typesContent, "@deprecated", "should have @deprecated JSDoc for oldApi")
+	assertContains(t, typesContent, "Use newApi instead", "should preserve description alongside @deprecated")
+
+	// --- Tuple (prefixItems) ---
+	assertContains(t, typesContent, "[number, number]", "should have tuple type for Coordinate")
+
+	// --- Enum (union type by default) ---
+	assertContains(t, typesContent, `"pending"`, "should have enum value 'pending'")
+	assertContains(t, typesContent, `"in-progress"`, "should have enum value 'in-progress'")
+}
+
+func TestGenerate_AdvancedTypes_TSEnums(t *testing.T) {
+	outputDir := t.TempDir()
+	inputPath := "../../testdata/sdkgen/advanced-types.openapi.json"
+
+	err := Generate(inputPath, outputDir, &GenerateOptions{TSEnums: true})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	typesContent := readFile(t, filepath.Join(outputDir, "types.ts"))
+
+	// --- TS enum ---
+	assertContains(t, typesContent, "export enum StatusEnum", "should have TS enum declaration")
+	assertContains(t, typesContent, `Pending = "pending"`, "should have Pending enum member")
+	assertContains(t, typesContent, `InProgress = "in-progress"`, "should have InProgress enum member")
+	assertContains(t, typesContent, `Completed = "completed"`, "should have Completed enum member")
+	assertContains(t, typesContent, `Archived = "archived"`, "should have Archived enum member")
+	// Non-enum types should still be interfaces
+	assertContains(t, typesContent, "export interface Dog", "Dog should still be an interface")
 }

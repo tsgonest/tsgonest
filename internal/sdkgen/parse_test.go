@@ -1208,3 +1208,114 @@ func TestResolveMethodName_Synthesis(t *testing.T) {
 		t.Errorf("expected createUser, got %q", got)
 	}
 }
+
+// --- parseSchemaNode Tests for New Fields ---
+
+func TestParseSchemaNode_Nullable30(t *testing.T) {
+	raw := json.RawMessage(`{"type": "string", "nullable": true}`)
+	node, err := parseSchemaNode(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !node.Nullable {
+		t.Error("expected Nullable=true from OpenAPI 3.0 flag")
+	}
+	if node.Type != "string" {
+		t.Errorf("expected type 'string', got %q", node.Type)
+	}
+}
+
+func TestParseSchemaNode_Nullable31TypeArray(t *testing.T) {
+	raw := json.RawMessage(`{"type": ["string", "null"]}`)
+	node, err := parseSchemaNode(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !node.Nullable {
+		t.Error("expected Nullable=true from 3.1 type array")
+	}
+	if node.Type != "string" {
+		t.Errorf("expected type 'string', got %q", node.Type)
+	}
+}
+
+func TestParseSchemaNode_ReadOnly(t *testing.T) {
+	raw := json.RawMessage(`{"type": "string", "readOnly": true}`)
+	node, err := parseSchemaNode(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !node.ReadOnly {
+		t.Error("expected ReadOnly=true")
+	}
+}
+
+func TestParseSchemaNode_Deprecated(t *testing.T) {
+	raw := json.RawMessage(`{"type": "string", "deprecated": true}`)
+	node, err := parseSchemaNode(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !node.Deprecated {
+		t.Error("expected Deprecated=true")
+	}
+}
+
+func TestParseSchemaNode_Default(t *testing.T) {
+	raw := json.RawMessage(`{"type": "string", "default": "hello"}`)
+	node, err := parseSchemaNode(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !node.HasDefault {
+		t.Error("expected HasDefault=true")
+	}
+	if node.Default != "hello" {
+		t.Errorf("expected default 'hello', got %v", node.Default)
+	}
+}
+
+func TestParseSchemaNode_DefaultNull(t *testing.T) {
+	raw := json.RawMessage(`{"type": "string", "default": null}`)
+	node, err := parseSchemaNode(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !node.HasDefault {
+		t.Error("expected HasDefault=true for null default")
+	}
+	if node.Default != nil {
+		t.Errorf("expected default nil, got %v", node.Default)
+	}
+}
+
+func TestParseSchemaNode_PrefixItems(t *testing.T) {
+	raw := json.RawMessage(`{"type": "array", "prefixItems": [{"type": "number"}, {"type": "string"}]}`)
+	node, err := parseSchemaNode(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(node.PrefixItems) != 2 {
+		t.Fatalf("expected 2 prefixItems, got %d", len(node.PrefixItems))
+	}
+	if node.PrefixItems[0].Type != "number" {
+		t.Errorf("expected prefixItems[0].type = 'number', got %q", node.PrefixItems[0].Type)
+	}
+	if node.PrefixItems[1].Type != "string" {
+		t.Errorf("expected prefixItems[1].type = 'string', got %q", node.PrefixItems[1].Type)
+	}
+}
+
+func TestParseSchemaNode_MinMaxItems(t *testing.T) {
+	raw := json.RawMessage(`{"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2}`)
+	node, err := parseSchemaNode(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if node.MinItems == nil || *node.MinItems != 2 {
+		t.Errorf("expected minItems=2, got %v", node.MinItems)
+	}
+	if node.MaxItems == nil || *node.MaxItems != 2 {
+		t.Errorf("expected maxItems=2, got %v", node.MaxItems)
+	}
+}

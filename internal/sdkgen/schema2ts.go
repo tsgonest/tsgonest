@@ -12,6 +12,23 @@ func SchemaToTS(node *SchemaNode, visited map[string]bool) string {
 		return "unknown"
 	}
 
+	result := schemaToTSCore(node, visited)
+
+	// Append nullable suffix. Skip if the composition already includes null
+	// (e.g., anyOf: [string, null]) to avoid double "| null".
+	if node.Nullable && !strings.HasSuffix(result, "| null") {
+		if strings.Contains(result, " | ") || strings.Contains(result, " & ") {
+			result = "(" + result + ") | null"
+		} else {
+			result += " | null"
+		}
+	}
+
+	return result
+}
+
+// schemaToTSCore handles the core type conversion without nullable wrapping.
+func schemaToTSCore(node *SchemaNode, visited map[string]bool) string {
 	// Handle $ref
 	if node.Ref != "" {
 		return node.Ref
@@ -23,7 +40,7 @@ func SchemaToTS(node *SchemaNode, visited map[string]bool) string {
 	}
 
 	// Handle const
-	if node.Const != nil {
+	if node.HasConst {
 		return constToTS(node.Const)
 	}
 
@@ -32,6 +49,9 @@ func SchemaToTS(node *SchemaNode, visited map[string]bool) string {
 		return compositionToTS(node.AnyOf, " | ", visited)
 	}
 	if len(node.OneOf) > 0 {
+		if node.Discriminator != nil && node.Discriminator.PropertyName != "" {
+			return discriminatedUnionToTS(node, visited)
+		}
 		return compositionToTS(node.OneOf, " | ", visited)
 	}
 	if len(node.AllOf) > 0 {
@@ -41,7 +61,7 @@ func SchemaToTS(node *SchemaNode, visited map[string]bool) string {
 	switch node.Type {
 	case "string":
 		if node.Format == "binary" {
-			return "Blob"
+			return "File | Blob"
 		}
 		return "string"
 	case "number", "integer":
@@ -51,19 +71,42 @@ func SchemaToTS(node *SchemaNode, visited map[string]bool) string {
 	case "null":
 		return "null"
 	case "array":
+		// Tuple: explicit prefixItems
+		if len(node.PrefixItems) > 0 {
+			var elements []string
+			for _, item := range node.PrefixItems {
+				elements = append(elements, SchemaToTS(item, visited))
+			}
+			if node.Items != nil {
+				rest := SchemaToTS(node.Items, visited)
+				elements = append(elements, "..."+rest+"[]")
+			}
+			return "[" + strings.Join(elements, ", ") + "]"
+		}
+		// Tuple: homogeneous array with minItems == maxItems (capped at 10)
+		if node.MinItems != nil && node.MaxItems != nil &&
+			*node.MinItems == *node.MaxItems &&
+			*node.MinItems > 0 && *node.MinItems <= 10 {
+			itemType := SchemaToTS(node.Items, visited)
+			elements := make([]string, *node.MinItems)
+			for i := range elements {
+				elements[i] = itemType
+			}
+			return "[" + strings.Join(elements, ", ") + "]"
+		}
+		// Regular array
 		itemType := SchemaToTS(node.Items, visited)
-		// If the item type is a composite that needs wrapping (but isn't already wrapped)
 		if (strings.Contains(itemType, " | ") || strings.Contains(itemType, " & ")) && !strings.HasPrefix(itemType, "(") {
 			return "(" + itemType + ")[]"
 		}
 		return itemType + "[]"
 	case "object":
+		if len(node.Properties) > 0 {
+			return objectToInlineTS(node, visited)
+		}
 		if node.AdditionalProperties != nil {
 			valType := SchemaToTS(node.AdditionalProperties, visited)
 			return "Record<string, " + valType + ">"
-		}
-		if len(node.Properties) > 0 {
-			return objectToInlineTS(node, visited)
 		}
 		return "Record<string, unknown>"
 	default:
@@ -92,6 +135,54 @@ func compositionToTS(nodes []*SchemaNode, sep string, visited map[string]bool) s
 	return result
 }
 
+// discriminatedUnionToTS generates a TypeScript discriminated union type.
+// For each oneOf variant with a known discriminator value, it emits:
+//
+//	(Omit<VariantType, 'discProp'> & { discProp: "value" })
+//
+// This ensures TypeScript's control-flow narrowing works via switch/if on the
+// discriminator property, even if the source schemas don't constrain it to a literal.
+func discriminatedUnionToTS(node *SchemaNode, visited map[string]bool) string {
+	disc := node.Discriminator
+	var parts []string
+	hasNull := false
+
+	// Build reverse mapping: $ref name → discriminator value
+	refToValue := make(map[string]string)
+	if disc.Mapping != nil {
+		for val, ref := range disc.Mapping {
+			refName := strings.TrimPrefix(ref, "#/components/schemas/")
+			refToValue[refName] = val
+		}
+	}
+
+	for _, variant := range node.OneOf {
+		if variant.Type == "null" {
+			hasNull = true
+			continue
+		}
+
+		variantTS := SchemaToTS(variant, visited)
+		discValue := refToValue[variant.Ref]
+
+		if discValue != "" {
+			parts = append(parts, fmt.Sprintf(
+				"(Omit<%s, %q> & { %s: %q })",
+				variantTS, disc.PropertyName,
+				tsPropertyKey(disc.PropertyName), discValue,
+			))
+		} else {
+			parts = append(parts, variantTS)
+		}
+	}
+
+	result := strings.Join(parts, " | ")
+	if hasNull {
+		result += " | null"
+	}
+	return result
+}
+
 func objectToInlineTS(node *SchemaNode, visited map[string]bool) string {
 	requiredSet := make(map[string]bool)
 	for _, r := range node.Required {
@@ -112,7 +203,16 @@ func objectToInlineTS(node *SchemaNode, visited map[string]bool) string {
 		if requiredSet[name] {
 			opt = ""
 		}
-		fields = append(fields, fmt.Sprintf("%s%s: %s", tsPropertyKey(name), opt, tsType))
+		readonlyMod := ""
+		if prop.ReadOnly {
+			readonlyMod = "readonly "
+		}
+		fields = append(fields, fmt.Sprintf("%s%s%s: %s", readonlyMod, tsPropertyKey(name), opt, tsType))
+	}
+
+	if node.AdditionalProperties != nil {
+		valType := SchemaToTS(node.AdditionalProperties, visited)
+		fields = append(fields, fmt.Sprintf("[key: string]: %s | undefined", valType))
 	}
 
 	return "{ " + strings.Join(fields, "; ") + " }"
@@ -173,10 +273,19 @@ func GenerateInterface(name string, node *SchemaNode, visited map[string]bool) s
 		if requiredSet[propName] {
 			opt = ""
 		}
-		if prop.Description != "" {
-			sb.WriteString(buildPropertyJSDoc(prop.Description))
+		jsdoc := buildPropertyJSDocWithMeta(prop.Description, prop.Deprecated, prop.HasDefault, prop.Default)
+		if jsdoc != "" {
+			sb.WriteString(jsdoc)
 		}
-		fmt.Fprintf(&sb, "  %s%s: %s;\n", tsPropertyKey(propName), opt, tsType)
+		readonlyMod := ""
+		if prop.ReadOnly {
+			readonlyMod = "readonly "
+		}
+		fmt.Fprintf(&sb, "  %s%s%s: %s;\n", readonlyMod, tsPropertyKey(propName), opt, tsType)
+	}
+	if node.AdditionalProperties != nil {
+		valType := SchemaToTS(node.AdditionalProperties, visited)
+		fmt.Fprintf(&sb, "  [key: string]: %s | undefined;\n", valType)
 	}
 	sb.WriteString("}\n")
 	return sb.String()
@@ -295,4 +404,46 @@ func buildPropertyJSDoc(description string) string {
 	}
 	sb.WriteString("   */\n")
 	return sb.String()
+}
+
+// buildPropertyJSDocWithMeta generates a JSDoc comment for a property,
+// including @deprecated and @default tags when present.
+func buildPropertyJSDocWithMeta(description string, deprecated bool, hasDefault bool, defaultVal any) string {
+	var parts []string
+	if description != "" {
+		parts = append(parts, description)
+	}
+	if deprecated {
+		parts = append(parts, "@deprecated")
+	}
+	if hasDefault {
+		parts = append(parts, fmt.Sprintf("@default %s", formatJSDocDefault(defaultVal)))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return buildPropertyJSDoc(strings.Join(parts, "\n"))
+}
+
+// formatJSDocDefault serializes a default value for a @default JSDoc tag.
+func formatJSDocDefault(val any) string {
+	if val == nil {
+		return "null"
+	}
+	switch v := val.(type) {
+	case string:
+		return fmt.Sprintf("%q", v)
+	case float64:
+		if v == float64(int64(v)) {
+			return fmt.Sprintf("%d", int64(v))
+		}
+		return fmt.Sprintf("%g", v)
+	case bool:
+		if v {
+			return "true"
+		}
+		return "false"
+	default:
+		return fmt.Sprintf("%v", v)
+	}
 }

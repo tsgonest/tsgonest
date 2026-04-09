@@ -164,9 +164,28 @@ func generateStandaloneFunction(ctrlName string, method SDKMethod) string {
 		}
 	}
 
-	// Handle multipart/form-data: wrap body in FormData
+	// Handle multipart/form-data: wrap body in FormData (with escape hatch for raw FormData)
 	if method.Body != nil && method.Body.ContentType == "multipart/form-data" {
-		sb.WriteString("  const formData = buildFormData(options.body);\n")
+		sb.WriteString("  const formData = options.body instanceof FormData\n")
+		sb.WriteString("    ? options.body\n")
+		sb.WriteString("    : buildFormData(options.body);\n")
+		// Upload progress tracking via ReadableStream + TransformStream
+		sb.WriteString("  let uploadBody: FormData | ReadableStream<Uint8Array> = formData;\n")
+		sb.WriteString("  let uploadContentType: string | undefined;\n")
+		sb.WriteString("  if (options.onUploadProgress) {\n")
+		sb.WriteString("    const encoder = new Request('', { method: 'POST', body: formData });\n")
+		sb.WriteString("    uploadContentType = encoder.headers.get('content-type') ?? undefined;\n")
+		sb.WriteString("    const total = Number(encoder.headers.get('content-length') ?? 0);\n")
+		sb.WriteString("    let loaded = 0;\n")
+		sb.WriteString("    const progress = new TransformStream<Uint8Array, Uint8Array>({\n")
+		sb.WriteString("      transform(chunk, controller) {\n")
+		sb.WriteString("        loaded += chunk.byteLength;\n")
+		sb.WriteString("        options.onUploadProgress!({ loaded, total, percent: total > 0 ? Math.round((loaded / total) * 100) : 0 });\n")
+		sb.WriteString("        controller.enqueue(chunk);\n")
+		sb.WriteString("      },\n")
+		sb.WriteString("    });\n")
+		sb.WriteString("    uploadBody = encoder.body!.pipeThrough(progress);\n")
+		sb.WriteString("  }\n")
 	}
 
 	// Determine if this is an SSE endpoint
@@ -207,8 +226,8 @@ func writeRequestOptions(sb *strings.Builder, method SDKMethod, indent string) {
 	}
 	if method.Body != nil {
 		if method.Body.ContentType == "multipart/form-data" {
-			sb.WriteString(indent + "  body: formData,\n")
-			sb.WriteString(indent + "  contentType: 'multipart/form-data',\n")
+			sb.WriteString(indent + "  body: uploadBody,\n")
+			sb.WriteString(indent + "  contentType: uploadContentType ?? 'multipart/form-data',\n")
 		} else {
 			sb.WriteString(indent + "  body: options.body,\n")
 			if method.Body.ContentType != "" && method.Body.ContentType != "application/json" {
@@ -283,7 +302,17 @@ func buildOptionsTypeDecl(method SDKMethod, typeName string) string {
 		if method.Body.Required {
 			opt = ""
 		}
-		sb.WriteString(fmt.Sprintf("  body%s: %s;\n", opt, method.Body.TSType))
+		if method.Body.ContentType == "multipart/form-data" {
+			sb.WriteString(fmt.Sprintf("  body%s: %s | FormData;\n", opt, method.Body.TSType))
+		} else {
+			sb.WriteString(fmt.Sprintf("  body%s: %s;\n", opt, method.Body.TSType))
+		}
+	}
+
+	// Upload progress callback for multipart endpoints
+	if method.Body != nil && method.Body.ContentType == "multipart/form-data" {
+		sb.WriteString("  /** Upload progress callback. Requires fetch with ReadableStream body support (Node.js >= 20, modern browsers). */\n")
+		sb.WriteString("  onUploadProgress?: (event: { loaded: number; total: number; percent: number }) => void;\n")
 	}
 
 	// Always include optional signal, headers, and override fields

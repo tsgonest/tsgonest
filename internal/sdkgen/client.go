@@ -223,7 +223,7 @@ export function createRequestFn(config: ClientConfig): RequestFn {
     if (contentTypeHeader.includes('application/json')) {
       const text = await response.text();
       if (!text) {
-        return { data: undefined as T, error: null, response };
+        return { data: null as T, error: null, response };
       }
       try {
         const data = JSON.parse(text) as T;
@@ -235,7 +235,7 @@ export function createRequestFn(config: ClientConfig): RequestFn {
 
     const text = await response.text();
     if (!text) {
-      return { data: undefined as T, error: null, response };
+      return { data: null as T, error: null, response };
     }
     return { data: text as T, error: null, response };
 
