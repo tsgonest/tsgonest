@@ -12,6 +12,8 @@ import (
 type serializeCtx struct {
 	// generating tracks type names currently being generated to detect recursion.
 	generating map[string]bool
+	// externalRefs is the set of type names imported from external companion files.
+	externalRefs map[string]bool
 }
 
 // generateSerializeFunction generates: export function serialize<Name>(input) { ... }

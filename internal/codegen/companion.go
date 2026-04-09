@@ -57,8 +57,9 @@ func GenerateCompanionFiles(sourceFileName string, types map[string]*metadata.Me
 		// Generate consolidated companion (.tsgonest.js)
 		jsPath := companionPath(sourceFileName, typeName)
 		jsContent := GenerateCompanionSelective(typeName, resolved, registry, includeValidation, includeSerialization, CompanionGenOptions{
-			StandardSchema:    opts.StandardSchema,
+			StandardSchema:     opts.StandardSchema,
 			ResponseSerializer: opts.ResponseSerializer,
+			SourceFile:         sourceFileName,
 		})
 		if isCJS {
 			jsContent = ConvertToCommonJS(jsContent)

@@ -205,9 +205,15 @@ func generateAssertChecksInner(e *Emitter, accessor string, pathExpr string, met
 
 	case metadata.KindRef:
 		if ctx != nil && ctx.generating[meta.Ref] {
-			// Recursive ref — call inner assert function
-			innerFn := "_assert" + meta.Ref
-			e.Line("%s(%s, %s);", innerFn, accessor, pathExpr)
+			if ctx.externalRefs[meta.Ref] {
+				// External recursive ref — call the imported exported assert function.
+				fnName := "assert" + meta.Ref
+				e.Line("%s(%s);", fnName, accessor)
+			} else {
+				// Same-companion recursive ref — call inner assert function
+				innerFn := "_assert" + meta.Ref
+				e.Line("%s(%s, %s);", innerFn, accessor, pathExpr)
+			}
 		} else if resolved, ok := registry.Types[meta.Ref]; ok {
 			if ctx != nil {
 				ctx.generating[meta.Ref] = true
