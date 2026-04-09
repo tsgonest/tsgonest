@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import "reflect-metadata";
+import { Readable } from "node:stream";
 import { FormDataBody, TSGONEST_FORM_DATA_FACTORY } from "../form-data-body";
 import { FormDataInterceptor } from "../form-data-interceptor";
 
@@ -320,5 +321,98 @@ describe("FormDataInterceptor", () => {
     const file = req.body.file as File;
     const text = await file.text();
     expect(text).toBe(content);
+  });
+
+  it("uses native web FormData parsing on Node 20+ (no multer needed)", async () => {
+    // Build a real multipart payload using web APIs (same as undici/fetch produces)
+    const formData = new FormData();
+    const file = new File(["hello world"], "test.txt", { type: "text/plain" });
+    formData.append("avatar", file, file.name);
+    formData.append("title", "My Upload");
+    formData.append("category", "42");
+
+    // Serialize via web Request to get exact content-type with boundary
+    const serializer = new Request("http://localhost/", { method: "POST", body: formData });
+    const contentType = serializer.headers.get("content-type")!;
+    const rawBody = Buffer.from(await serializer.arrayBuffer());
+
+    // Create a mock IncomingMessage-like readable stream
+    const stream = Readable.from(rawBody) as any;
+    stream.headers = { "content-type": contentType };
+    stream.method = "POST";
+    stream.url = "/upload";
+
+    const interceptor = new FormDataInterceptor();
+    const mockFactory = () => ({ any: () => () => {} }); // unused — native path takes priority
+
+    class TestController {
+      upload(@FormDataBody(mockFactory) _body: any) {}
+    }
+
+    const mockResult = { pipe: () => {} };
+    const context = {
+      getHandler: () => TestController.prototype.upload,
+      getClass: () => TestController,
+      switchToHttp: () => ({
+        getRequest: () => stream,
+        getResponse: () => ({}),
+      }),
+    };
+    const next = { handle: () => mockResult };
+
+    const result = await interceptor.intercept(context, next);
+    expect(result).toBe(mockResult);
+
+    // Verify fields were parsed
+    expect(stream.body.title).toBe("My Upload");
+    expect(stream.body.category).toBe("42");
+
+    // Verify file was parsed as web-native File
+    expect(stream.body.avatar).toBeInstanceOf(File);
+    expect(stream.body.avatar.name).toBe("test.txt");
+    expect(stream.body.avatar.type).toBe("text/plain");
+    const text = await stream.body.avatar.text();
+    expect(text).toBe("hello world");
+  });
+
+  it("native parsing handles multiple files with same field name", async () => {
+    const formData = new FormData();
+    formData.append("images", new File(["img1"], "a.png", { type: "image/png" }), "a.png");
+    formData.append("images", new File(["img2"], "b.png", { type: "image/png" }), "b.png");
+    formData.append("albumName", "Vacation");
+
+    const serializer = new Request("http://localhost/", { method: "POST", body: formData });
+    const contentType = serializer.headers.get("content-type")!;
+    const rawBody = Buffer.from(await serializer.arrayBuffer());
+
+    const stream = Readable.from(rawBody) as any;
+    stream.headers = { "content-type": contentType };
+    stream.method = "POST";
+    stream.url = "/upload";
+
+    const interceptor = new FormDataInterceptor();
+    const mockFactory = () => ({ any: () => () => {} });
+
+    class TestController {
+      upload(@FormDataBody(mockFactory) _body: any) {}
+    }
+
+    const context = {
+      getHandler: () => TestController.prototype.upload,
+      getClass: () => TestController,
+      switchToHttp: () => ({
+        getRequest: () => stream,
+        getResponse: () => ({}),
+      }),
+    };
+
+    await interceptor.intercept(context, { handle: () => ({}) });
+
+    expect(stream.body.albumName).toBe("Vacation");
+    expect(stream.body.images).toHaveLength(2);
+    expect(stream.body.images[0]).toBeInstanceOf(File);
+    expect(stream.body.images[0].name).toBe("a.png");
+    expect(stream.body.images[1]).toBeInstanceOf(File);
+    expect(stream.body.images[1].name).toBe("b.png");
   });
 });

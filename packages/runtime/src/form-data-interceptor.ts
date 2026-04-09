@@ -8,16 +8,18 @@ import { TSGONEST_FORM_DATA_FACTORY } from './form-data-body';
  *
  * - **Bun**: The BunAdapter's body parser already parsed multipart data via
  *   `Request.formData()`, producing web-native `File` instances. The interceptor
- *   detects this and skips multer entirely — zero dependencies needed.
+ *   detects this and skips processing entirely — zero dependencies needed.
  *
- * - **Fastify**: Uses the raw `IncomingMessage` stream with multer, since
- *   Fastify does not consume multipart bodies by default.
+ * - **Node 20+** (Express/Fastify): Uses the web-native `Request.formData()`
+ *   API to parse multipart data directly. This bypasses multer/busboy entirely
+ *   and is immune to stream-timing issues on Node 24+. Multer is not required.
  *
- * - **Express**: Standard multer middleware path (req, res, next).
+ * - **Node < 20** (Express/Fastify fallback): Uses multer middleware to parse
+ *   multipart data, then converts multer files to web-native `File` instances.
  *
  * Usage:
  * ```ts
- * // Express/Fastify — provide a multer factory:
+ * // Express/Fastify — provide a multer factory (used as fallback on Node < 20):
  * @Post()
  * @UseInterceptors(FormDataInterceptor)
  * upload(@FormDataBody(() => imageMulter()) body: UploadDto): void {}
@@ -42,7 +44,7 @@ export class FormDataInterceptor {
 
     const req = context.switchToHttp().getRequest();
 
-    // If body already contains File instances (Bun adapter pre-parsed), skip multer.
+    // If body already contains File instances (Bun adapter pre-parsed), skip.
     if (req.body && hasFileInstances(req.body)) {
       return next.handle();
     }
@@ -50,6 +52,29 @@ export class FormDataInterceptor {
     const { factory } = meta;
 
     // No multer factory provided (Bun-only path) — nothing to do
+    if (!factory && !canParseNative()) {
+      return next.handle();
+    }
+
+    const res = context.switchToHttp().getResponse();
+
+    // Detect Fastify: req.raw is an IncomingMessage (readable stream).
+    // Fastify does not consume multipart bodies by default, so the raw
+    // stream is still available for parsing.
+    const isFastify = req.raw && typeof req.raw.pipe === 'function'
+      && !(req.raw instanceof (globalThis as any).Request);
+
+    // The IncomingMessage stream to read from
+    const stream = isFastify ? req.raw : req;
+
+    // Primary path: web-native FormData parsing (Node 20+)
+    // Uses Request.formData() — immune to multer/busboy stream issues on Node 24+
+    if (canParseNative() && stream && typeof stream.pipe === 'function' && !stream.readableEnded) {
+      await parseFormDataNative(req, stream);
+      return next.handle();
+    }
+
+    // Fallback: multer (Node < 20 or web APIs unavailable)
     if (!factory) {
       return next.handle();
     }
@@ -60,14 +85,6 @@ export class FormDataInterceptor {
       multer = await factory();
       this.multerCache.set(handler, multer);
     }
-
-    const res = context.switchToHttp().getResponse();
-
-    // Detect Fastify: req.raw is an IncomingMessage (readable stream).
-    // Fastify does not consume multipart bodies by default, so the raw
-    // stream is still available for multer/busboy to read from.
-    const isFastify = req.raw && typeof req.raw.pipe === 'function'
-      && !(req.raw instanceof (globalThis as any).Request);
 
     if (isFastify) {
       const rawReq = req.raw;
@@ -96,6 +113,74 @@ export class FormDataInterceptor {
     }
 
     return next.handle();
+  }
+}
+
+/**
+ * Check if web-native FormData parsing is available.
+ * Requires Node 20+ with globalThis.Request and globalThis.FormData.
+ */
+let _canParseNative: boolean | undefined;
+function canParseNative(): boolean {
+  if (_canParseNative !== undefined) return _canParseNative;
+  try {
+    _canParseNative =
+      typeof globalThis.Request === 'function' &&
+      typeof globalThis.FormData === 'function' &&
+      typeof globalThis.File === 'function' &&
+      typeof require('node:stream').Readable.toWeb === 'function';
+  } catch {
+    _canParseNative = false;
+  }
+  return _canParseNative;
+}
+
+/**
+ * Parse multipart/form-data using web-native Request.formData() API.
+ *
+ * Converts the Node.js IncomingMessage to a web Request, parses FormData,
+ * and populates req.body with fields and File instances — same result as
+ * multer + mergeMulterFiles, but without busboy stream dependencies.
+ *
+ * This approach is immune to the stream-timing issues that affect
+ * multer/busboy on certain Node.js versions (notably Node 24 with multer < 2.1).
+ */
+async function parseFormDataNative(req: any, stream: any): Promise<void> {
+  const { Readable } = require('node:stream') as typeof import('node:stream');
+
+  const headers = new Headers();
+  const rawHeaders = stream.headers || req.headers;
+  for (const [key, val] of Object.entries(rawHeaders as Record<string, string | string[]>)) {
+    if (typeof val === 'string') headers.set(key, val);
+    else if (Array.isArray(val)) for (const v of val) headers.append(key, v);
+  }
+
+  const webRequest = new Request(`http://localhost${req.url || '/'}`, {
+    method: req.method || 'POST',
+    headers,
+    body: Readable.toWeb(stream) as ReadableStream,
+    // @ts-ignore — duplex required for streaming request bodies
+    duplex: 'half',
+  });
+
+  const formData = await webRequest.formData();
+
+  if (!req.body) req.body = {};
+
+  for (const [key, value] of formData.entries()) {
+    if (value instanceof File) {
+      const existing = req.body[key];
+      if (existing instanceof File) {
+        req.body[key] = [existing, value];
+      } else if (Array.isArray(existing)) {
+        existing.push(value);
+      } else {
+        req.body[key] = value;
+      }
+    } else {
+      // String field
+      req.body[key] = value;
+    }
   }
 }
 
