@@ -415,4 +415,147 @@ describe("FormDataInterceptor", () => {
     expect(stream.body.images[1]).toBeInstanceOf(File);
     expect(stream.body.images[1].name).toBe("b.png");
   });
+
+  it("parses via rawBody when stream is already ended (Node 24 body-parser scenario)", async () => {
+    // Simulate Node 24 + Express: body-parser middleware runs before the interceptor,
+    // consuming/ending the stream. The raw buffer is stored on req.rawBody via the
+    // verify callback (common NestJS pattern).
+    const formData = new FormData();
+    const file = new File(["avatar-data"], "photo.png", { type: "image/png" });
+    formData.append("avatar", file, file.name);
+    formData.append("username", "test-user");
+
+    const serializer = new Request("http://localhost/", { method: "POST", body: formData });
+    const contentType = serializer.headers.get("content-type")!;
+    const rawBody = Buffer.from(await serializer.arrayBuffer());
+
+    // Create a stream that's already ended (simulating body-parser consuming it)
+    const stream = new Readable({ read() {} }) as any;
+    stream.push(null);
+    const endPromise = new Promise<void>(resolve => stream.on("end", resolve));
+    stream.resume(); // switch to flowing mode so 'end' fires
+    await endPromise;
+    expect(stream.readableEnded).toBe(true);
+
+    stream.headers = { "content-type": contentType };
+    stream.method = "POST";
+    stream.url = "/upload";
+    stream.rawBody = rawBody; // set by bodyParser verify callback
+
+    const interceptor = new FormDataInterceptor();
+
+    class TestController {
+      upload(@FormDataBody() _body: any) {}
+    }
+
+    const context = {
+      getHandler: () => TestController.prototype.upload,
+      getClass: () => TestController,
+      switchToHttp: () => ({
+        getRequest: () => stream,
+        getResponse: () => ({}),
+      }),
+    };
+
+    await interceptor.intercept(context, { handle: () => ({}) });
+
+    expect(stream.body.username).toBe("test-user");
+    expect(stream.body.avatar).toBeInstanceOf(File);
+    expect(stream.body.avatar.name).toBe("photo.png");
+    expect(stream.body.avatar.type).toBe("image/png");
+    const text = await stream.body.avatar.text();
+    expect(text).toBe("avatar-data");
+  });
+
+  it("parses from internal buffer when stream ended but no rawBody", async () => {
+    // Simulate Node 24 where undici eagerly buffers the body and emits 'end',
+    // but no body-parser verify callback stored rawBody.
+    const formData = new FormData();
+    formData.append("name", "buffered-test");
+    formData.append("doc", new File(["doc-content"], "file.txt", { type: "text/plain" }), "file.txt");
+
+    const serializer = new Request("http://localhost/", { method: "POST", body: formData });
+    const contentType = serializer.headers.get("content-type")!;
+    const rawBody = Buffer.from(await serializer.arrayBuffer());
+
+    // Readable.from pushes all chunks into the internal buffer and ends
+    // the source — readableEnded becomes true, but read() still returns data.
+    const stream = Readable.from(rawBody) as any;
+    await new Promise(resolve => setTimeout(resolve, 10));
+
+    stream.headers = { "content-type": contentType };
+    stream.method = "POST";
+    stream.url = "/upload";
+
+    const interceptor = new FormDataInterceptor();
+
+    class TestController {
+      upload(@FormDataBody() _body: any) {}
+    }
+
+    const context = {
+      getHandler: () => TestController.prototype.upload,
+      getClass: () => TestController,
+      switchToHttp: () => ({
+        getRequest: () => stream,
+        getResponse: () => ({}),
+      }),
+    };
+
+    await interceptor.intercept(context, { handle: () => ({}) });
+
+    expect(stream.body.name).toBe("buffered-test");
+    expect(stream.body.doc).toBeInstanceOf(File);
+    expect(stream.body.doc.name).toBe("file.txt");
+  });
+
+  it("falls through to multer when stream ended and no data available", async () => {
+    // Edge case: stream ended, no rawBody, no buffered data — should fall through
+    // to multer without crashing.
+    const stream = new Readable({ read() {} }) as any;
+    stream.push(null);
+    const endPromise = new Promise<void>(resolve => stream.on("end", resolve));
+    stream.resume();
+    await endPromise;
+
+    stream.headers = { "content-type": "multipart/form-data; boundary=---test" };
+    stream.method = "POST";
+    stream.url = "/upload";
+
+    const multerFile = {
+      fieldname: "file",
+      originalname: "test.txt",
+      mimetype: "text/plain",
+      buffer: Buffer.from("multer-fallback"),
+    };
+    const mockMulter = {
+      any: () => (req: any, _res: any, cb: (err: any) => void) => {
+        req.files = [multerFile];
+        cb(null);
+      },
+    };
+    const factory = () => mockMulter;
+
+    const interceptor = new FormDataInterceptor();
+
+    class TestController {
+      upload(@FormDataBody(factory) _body: any) {}
+    }
+
+    const req = Object.assign(stream, { body: undefined, files: undefined });
+    const context = {
+      getHandler: () => TestController.prototype.upload,
+      getClass: () => TestController,
+      switchToHttp: () => ({
+        getRequest: () => req,
+        getResponse: () => ({}),
+      }),
+    };
+
+    await interceptor.intercept(context, { handle: () => ({}) });
+
+    // Multer fallback should have been used
+    expect(req.body.file).toBeInstanceOf(File);
+    expect(req.body.file.name).toBe("test.txt");
+  });
 });
