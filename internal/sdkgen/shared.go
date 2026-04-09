@@ -1,6 +1,7 @@
 package sdkgen
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 )
@@ -49,7 +50,9 @@ func safeTSName(name string) string {
 }
 
 // generateSharedTypes generates the types.ts file with all component schemas.
-func generateSharedTypes(schemas map[string]*SchemaNode) string {
+// When tsEnums is true, enum schemas are emitted as TypeScript enum declarations
+// instead of union type aliases.
+func generateSharedTypes(schemas map[string]*SchemaNode, tsEnums bool) string {
 	if len(schemas) == 0 {
 		return "// No schemas defined\nexport {};\n"
 	}
@@ -69,15 +72,92 @@ func generateSharedTypes(schemas map[string]*SchemaNode) string {
 		if i > 0 {
 			sb.WriteString("\n")
 		}
-		sb.WriteString(GenerateInterface(name, schemas[name], visited))
+		if tsEnums && len(schemas[name].Enum) > 0 {
+			sb.WriteString(generateTSEnum(name, schemas[name]))
+		} else {
+			sb.WriteString(GenerateInterface(name, schemas[name], visited))
+		}
 	}
 
 	return sb.String()
 }
 
+// generateTSEnum emits a TypeScript enum declaration for an enum schema.
+func generateTSEnum(name string, node *SchemaNode) string {
+	var sb strings.Builder
+	if node.Description != "" {
+		sb.WriteString(buildSchemaJSDoc(node.Description))
+	}
+	fmt.Fprintf(&sb, "export enum %s {\n", name)
+	for _, val := range node.Enum {
+		switch v := val.(type) {
+		case string:
+			memberName := toEnumMemberName(v)
+			fmt.Fprintf(&sb, "  %s = \"%s\",\n", memberName, escapeJSString(v))
+		case float64:
+			if v == float64(int64(v)) {
+				fmt.Fprintf(&sb, "  VALUE_%d = %d,\n", int64(v), int64(v))
+			} else {
+				fmt.Fprintf(&sb, "  VALUE_%s = %g,\n", strings.ReplaceAll(fmt.Sprintf("%g", v), ".", "_"), v)
+			}
+		case bool:
+			// Booleans in enums are unusual but handle gracefully
+			if v {
+				sb.WriteString("  TRUE = \"true\",\n")
+			} else {
+				sb.WriteString("  FALSE = \"false\",\n")
+			}
+		}
+	}
+	sb.WriteString("}\n")
+	return sb.String()
+}
+
+// toEnumMemberName converts an enum string value to a valid TypeScript identifier
+// in PascalCase. Non-alphanumeric chars become word boundaries.
+// e.g., "pending-review" → "PendingReview", "IN_PROGRESS" → "InProgress",
+// "404_NOT_FOUND" → "Value404NotFound"
+func toEnumMemberName(s string) string {
+	// Split on non-alphanumeric boundaries
+	var words []string
+	var current strings.Builder
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			current.WriteRune(r)
+		} else {
+			if current.Len() > 0 {
+				words = append(words, current.String())
+				current.Reset()
+			}
+		}
+	}
+	if current.Len() > 0 {
+		words = append(words, current.String())
+	}
+
+	if len(words) == 0 {
+		return "VALUE"
+	}
+
+	var result strings.Builder
+	for _, w := range words {
+		lower := strings.ToLower(w)
+		result.WriteString(strings.ToUpper(lower[:1]) + lower[1:])
+	}
+
+	// If starts with a digit, prefix with "Value"
+	out := result.String()
+	if len(out) > 0 && out[0] >= '0' && out[0] <= '9' {
+		out = "Value" + out
+	}
+
+	return out
+}
+
 // renameBuiltinCollisions renames schemas whose names collide with TypeScript
 // built-in types. Applied to the entire SDKDocument before code generation.
-func renameBuiltinCollisions(doc *SDKDocument) {
+// Returns warning messages for each renamed type so callers can surface them.
+func renameBuiltinCollisions(doc *SDKDocument) []string {
 	renames := make(map[string]string)
 	for name := range doc.Schemas {
 		safe := safeTSName(name)
@@ -86,7 +166,21 @@ func renameBuiltinCollisions(doc *SDKDocument) {
 		}
 	}
 	if len(renames) == 0 {
-		return
+		return nil
+	}
+
+	// Collect warnings (sorted for deterministic output)
+	var sortedNames []string
+	for name := range renames {
+		sortedNames = append(sortedNames, name)
+	}
+	sort.Strings(sortedNames)
+
+	var warnings []string
+	for _, name := range sortedNames {
+		warnings = append(warnings, fmt.Sprintf(
+			"sdk-type-collision: Schema %q collides with TypeScript built-in type — renamed to %q in generated SDK. Consider renaming the source type to avoid confusion.",
+			name, renames[name]))
 	}
 
 	// Rename schema map keys
@@ -121,6 +215,8 @@ func renameBuiltinCollisions(doc *SDKDocument) {
 			}
 		}
 	}
+
+	return warnings
 }
 
 // renameTypeString replaces schema name references in a TypeScript type string.
@@ -195,6 +291,9 @@ func renameSchemaRefs(node *SchemaNode, renames map[string]string) {
 		renameSchemaRefs(child, renames)
 	}
 	for _, child := range node.OneOf {
+		renameSchemaRefs(child, renames)
+	}
+	for _, child := range node.PrefixItems {
 		renameSchemaRefs(child, renames)
 	}
 }

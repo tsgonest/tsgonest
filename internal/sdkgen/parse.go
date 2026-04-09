@@ -798,7 +798,7 @@ func (r *schemaResolver) schemaToTS(raw json.RawMessage) string {
 		return r.compositeToTS(allOfRaw, " & ")
 	}
 
-	// Handle format: binary → Blob (file upload/download)
+	// Handle format: binary → File | Blob (file upload)
 	var formatStr string
 	if f, ok := node["format"]; ok {
 		json.Unmarshal(f, &formatStr)
@@ -807,7 +807,7 @@ func (r *schemaResolver) schemaToTS(raw json.RawMessage) string {
 	switch typeStr {
 	case "string":
 		if formatStr == "binary" {
-			return "Blob"
+			return "File | Blob"
 		}
 		return "string"
 	case "number", "integer":
@@ -968,7 +968,22 @@ func parseSchemaNode(raw json.RawMessage) (*SchemaNode, error) {
 	}
 
 	if v, ok := m["type"]; ok {
-		json.Unmarshal(v, &node.Type)
+		// Try string first (common case), then array (OpenAPI 3.1+ nullable)
+		var typeStr string
+		if json.Unmarshal(v, &typeStr) == nil {
+			node.Type = typeStr
+		} else {
+			var typeArr []string
+			if json.Unmarshal(v, &typeArr) == nil {
+				for _, t := range typeArr {
+					if t == "null" {
+						node.Nullable = true
+					} else {
+						node.Type = t
+					}
+				}
+			}
+		}
 	}
 	if v, ok := m["format"]; ok {
 		json.Unmarshal(v, &node.Format)
@@ -981,6 +996,7 @@ func parseSchemaNode(raw json.RawMessage) (*SchemaNode, error) {
 		json.Unmarshal(v, &node.Enum)
 	}
 	if v, ok := m["const"]; ok {
+		node.HasConst = true
 		json.Unmarshal(v, &node.Const)
 	}
 
@@ -1034,6 +1050,39 @@ func parseSchemaNode(raw json.RawMessage) (*SchemaNode, error) {
 		var disc Discriminator
 		json.Unmarshal(v, &disc)
 		node.Discriminator = &disc
+	}
+
+	// OpenAPI 3.0 nullable flag
+	if v, ok := m["nullable"]; ok {
+		json.Unmarshal(v, &node.Nullable)
+	}
+
+	if v, ok := m["readOnly"]; ok {
+		json.Unmarshal(v, &node.ReadOnly)
+	}
+
+	if v, ok := m["deprecated"]; ok {
+		json.Unmarshal(v, &node.Deprecated)
+	}
+
+	if v, ok := m["default"]; ok {
+		node.HasDefault = true
+		json.Unmarshal(v, &node.Default)
+	}
+
+	if v, ok := m["prefixItems"]; ok {
+		node.PrefixItems = parseSchemaArray(v)
+	}
+
+	if v, ok := m["minItems"]; ok {
+		var n int
+		json.Unmarshal(v, &n)
+		node.MinItems = &n
+	}
+	if v, ok := m["maxItems"]; ok {
+		var n int
+		json.Unmarshal(v, &n)
+		node.MaxItems = &n
 	}
 
 	return node, nil

@@ -413,6 +413,210 @@ func TestRenameBuiltinCollisions_GenericUsagePreserved(t *testing.T) {
 	}
 }
 
+// --- renameBuiltinCollisions Warning Tests ---
+
+func TestRenameBuiltinCollisions_ReturnsWarnings(t *testing.T) {
+	doc := &SDKDocument{
+		Schemas: map[string]*SchemaNode{
+			"Record": {Type: "object", Properties: map[string]*SchemaNode{
+				"key": {Type: "string"},
+			}},
+			"Date": {Type: "object", Properties: map[string]*SchemaNode{
+				"value": {Type: "string"},
+			}},
+			"Order": {Type: "object", Properties: map[string]*SchemaNode{
+				"id": {Type: "string"},
+			}},
+		},
+		Versions: []VersionGroup{},
+	}
+
+	warnings := renameBuiltinCollisions(doc)
+
+	// Should return warnings for Record and Date (not Order)
+	if len(warnings) != 2 {
+		t.Errorf("expected 2 warnings, got %d: %v", len(warnings), warnings)
+	}
+
+	// Check that warnings mention the renamed types
+	hasRecord := false
+	hasDate := false
+	for _, w := range warnings {
+		if contains(w, "Record") && contains(w, `"Record_"`) {
+			hasRecord = true
+		}
+		if contains(w, "Date") && contains(w, `"Date_"`) {
+			hasDate = true
+		}
+	}
+	if !hasRecord {
+		t.Errorf("expected warning about Record → Record_ rename, got: %v", warnings)
+	}
+	if !hasDate {
+		t.Errorf("expected warning about Date → Date_ rename, got: %v", warnings)
+	}
+}
+
+func TestRenameBuiltinCollisions_NoWarningsWhenNoCollisions(t *testing.T) {
+	doc := &SDKDocument{
+		Schemas: map[string]*SchemaNode{
+			"Order":          {Type: "object"},
+			"CreateOrderDto": {Type: "object"},
+		},
+		Versions: []VersionGroup{},
+	}
+
+	warnings := renameBuiltinCollisions(doc)
+	if len(warnings) != 0 {
+		t.Errorf("expected no warnings, got %d: %v", len(warnings), warnings)
+	}
+}
+
+// --- TS Enum Tests ---
+
+func TestGenerateTSEnum_StringValues(t *testing.T) {
+	node := &SchemaNode{
+		Type: "string",
+		Enum: []any{"active", "inactive", "archived"},
+	}
+	got := generateTSEnum("Status", node)
+	if !contains(got, "export enum Status {") {
+		t.Errorf("expected enum declaration, got:\n%s", got)
+	}
+	if !contains(got, `Active = "active"`) {
+		t.Errorf("expected Active member, got:\n%s", got)
+	}
+	if !contains(got, `Inactive = "inactive"`) {
+		t.Errorf("expected Inactive member, got:\n%s", got)
+	}
+	if !contains(got, `Archived = "archived"`) {
+		t.Errorf("expected Archived member, got:\n%s", got)
+	}
+}
+
+func TestGenerateTSEnum_NumericValues(t *testing.T) {
+	node := &SchemaNode{
+		Type: "integer",
+		Enum: []any{float64(0), float64(1), float64(2)},
+	}
+	got := generateTSEnum("Priority", node)
+	if !contains(got, "export enum Priority {") {
+		t.Errorf("expected enum declaration, got:\n%s", got)
+	}
+	if !contains(got, "VALUE_0 = 0") {
+		t.Errorf("expected VALUE_0 member, got:\n%s", got)
+	}
+}
+
+func TestGenerateTSEnum_KebabCase(t *testing.T) {
+	node := &SchemaNode{
+		Type: "string",
+		Enum: []any{"pending-review", "in-progress"},
+	}
+	got := generateTSEnum("TaskStatus", node)
+	if !contains(got, `PendingReview = "pending-review"`) {
+		t.Errorf("expected PendingReview member, got:\n%s", got)
+	}
+	if !contains(got, `InProgress = "in-progress"`) {
+		t.Errorf("expected InProgress member, got:\n%s", got)
+	}
+}
+
+func TestGenerateTSEnum_WithDescription(t *testing.T) {
+	node := &SchemaNode{
+		Type:        "string",
+		Enum:        []any{"a", "b"},
+		Description: "Letter enum",
+	}
+	got := generateTSEnum("Letter", node)
+	if !contains(got, "/** Letter enum */") {
+		t.Errorf("expected JSDoc, got:\n%s", got)
+	}
+}
+
+func TestToEnumMemberName(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"active", "Active"},
+		{"ACTIVE", "Active"},
+		{"pending-review", "PendingReview"},
+		{"IN_PROGRESS", "InProgress"},
+		{"404_NOT_FOUND", "Value404NotFound"},
+		{"hello world", "HelloWorld"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := toEnumMemberName(tt.input)
+			if got != tt.want {
+				t.Errorf("toEnumMemberName(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+// --- PrefixItems in renameSchemaRefs ---
+
+func TestRenameSchemaRefs_PrefixItems(t *testing.T) {
+	node := &SchemaNode{
+		Type: "array",
+		PrefixItems: []*SchemaNode{
+			{Ref: "Array"},
+			{Type: "string"},
+		},
+	}
+	renames := map[string]string{"Array": "Array_"}
+	renameSchemaRefs(node, renames)
+	if node.PrefixItems[0].Ref != "Array_" {
+		t.Errorf("expected PrefixItems[0].$ref = 'Array_', got %q", node.PrefixItems[0].Ref)
+	}
+}
+
+// --- generateSharedTypes with tsEnums ---
+
+func TestGenerateSharedTypes_WithTSEnums(t *testing.T) {
+	schemas := map[string]*SchemaNode{
+		"Status": {
+			Type: "string",
+			Enum: []any{"active", "inactive"},
+		},
+		"User": {
+			Type: "object",
+			Properties: map[string]*SchemaNode{
+				"id": {Type: "string"},
+			},
+			Required: []string{"id"},
+		},
+	}
+	got := generateSharedTypes(schemas, true)
+	// Status should be an enum
+	if !contains(got, "export enum Status") {
+		t.Errorf("expected 'export enum Status', got:\n%s", got)
+	}
+	// User should still be an interface
+	if !contains(got, "export interface User") {
+		t.Errorf("expected 'export interface User', got:\n%s", got)
+	}
+}
+
+func TestGenerateSharedTypes_WithoutTSEnums(t *testing.T) {
+	schemas := map[string]*SchemaNode{
+		"Status": {
+			Type: "string",
+			Enum: []any{"active", "inactive"},
+		},
+	}
+	got := generateSharedTypes(schemas, false)
+	// Should be a type alias, not an enum
+	if !contains(got, "export type Status =") {
+		t.Errorf("expected 'export type Status =', got:\n%s", got)
+	}
+	if contains(got, "export enum Status") {
+		t.Errorf("should NOT contain 'export enum Status', got:\n%s", got)
+	}
+}
+
 // --- Fingerprint Tests ---
 
 func TestSchemaFingerprint_IncludesPropertyTypes(t *testing.T) {
