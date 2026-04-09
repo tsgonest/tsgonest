@@ -17,7 +17,7 @@ func SchemaToTS(node *SchemaNode, visited map[string]bool) string {
 	// Append nullable suffix. Skip if the composition already includes null
 	// (e.g., anyOf: [string, null]) to avoid double "| null".
 	if node.Nullable && !strings.HasSuffix(result, "| null") {
-		if strings.Contains(result, " | ") || strings.Contains(result, " & ") {
+		if (strings.Contains(result, " | ") || strings.Contains(result, " & ")) && !strings.HasPrefix(result, "(") {
 			result = "(" + result + ") | null"
 		} else {
 			result += " | null"

@@ -119,7 +119,8 @@ type OpenAPIOutputConfig struct {
 
 // SDKOutputConfig specifies per-output SDK generation settings.
 type SDKOutputConfig struct {
-	Output string `json:"output"` // SDK output directory for this OpenAPI output
+	Output  string `json:"output"`            // SDK output directory for this OpenAPI output
+	TSEnums bool   `json:"tsEnums,omitempty"` // Emit TypeScript enum declarations instead of union types
 }
 
 // OpenAPITag represents a tag with an optional description in the OpenAPI document.
