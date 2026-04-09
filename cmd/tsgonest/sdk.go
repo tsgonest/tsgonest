@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
+	"github.com/tsgonest/tsgonest/internal/compiler"
 	"github.com/tsgonest/tsgonest/internal/sdkgen"
 )
 
@@ -87,11 +89,44 @@ func runSDK(args []string) int {
 	for _, t := range targets {
 		opts := *sdkOpts // copy shared options
 		opts.TSEnums = t.tsEnums
-		if err := sdkgen.Generate(t.input, t.output, &opts); err != nil {
+		warnings, err := sdkgen.Generate(t.input, t.output, &opts)
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			return 1
 		}
 		fmt.Printf("SDK generated at %s (from %s)\n", t.output, t.label)
+		if len(warnings) > 0 {
+			printSDKWarnings(warnings)
+		}
 	}
 	return 0
+}
+
+// printSDKWarnings formats SDK warnings using the same style as build.go diagnostics.
+func printSDKWarnings(warnings []string) {
+	yellow := ""
+	dim := ""
+	bold := ""
+	reset := ""
+	if compiler.IsPrettyOutput() {
+		yellow = "\u001b[93m"
+		dim = "\u001b[2m"
+		bold = "\u001b[1m"
+		reset = "\u001b[0m"
+	}
+
+	fmt.Fprintln(os.Stderr)
+	fmt.Fprintf(os.Stderr, "%s%s▲ %d sdk warning(s)%s\n", bold, yellow, len(warnings), reset)
+	fmt.Fprintln(os.Stderr)
+	for _, msg := range warnings {
+		// Warnings have format: "sdk-type-collision: Schema "X" collides ... renamed to "Y" ..."
+		// Split on first ": " to get the tag and description
+		var tag, desc string
+		if t, d, ok := strings.Cut(msg, ": "); ok {
+			tag, desc = t, d
+		} else {
+			tag = msg
+		}
+		fmt.Fprintf(os.Stderr, "  %s●%s %s%s%s\n    %s%s%s\n\n", yellow, reset, bold, tag, reset, dim, desc, reset)
+	}
 }
