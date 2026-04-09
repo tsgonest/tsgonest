@@ -20,6 +20,7 @@ type BuildInfoFileInfo = incremental.BuildInfoFileInfo
 type BuildInfoFilePendingEmit = incremental.BuildInfoFilePendingEmit
 type BuildInfoReader = incremental.BuildInfoReader
 type BuildInfoReferenceMapEntry = incremental.BuildInfoReferenceMapEntry
+type BuildInfoRepopulateInfo = incremental.BuildInfoRepopulateInfo
 type BuildInfoResolvedRoot = incremental.BuildInfoResolvedRoot
 type BuildInfoRoot = incremental.BuildInfoRoot
 type BuildInfoRootInfoReader = incremental.BuildInfoRootInfoReader
