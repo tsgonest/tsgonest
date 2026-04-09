@@ -222,11 +222,17 @@ type IndexSignature struct {
 // TypeRegistry tracks named types to support $ref and prevent infinite recursion.
 type TypeRegistry struct {
 	Types map[string]*Metadata
+	// SourceFiles maps type names to the source file they were defined in.
+	// Used by codegen to compute import paths for cross-companion references.
+	SourceFiles map[string]string
 }
 
 // NewTypeRegistry creates an empty type registry.
 func NewTypeRegistry() *TypeRegistry {
-	return &TypeRegistry{Types: make(map[string]*Metadata)}
+	return &TypeRegistry{
+		Types:       make(map[string]*Metadata),
+		SourceFiles: make(map[string]string),
+	}
 }
 
 // Register adds a named type to the registry.
@@ -234,8 +240,19 @@ func (r *TypeRegistry) Register(name string, m *Metadata) {
 	r.Types[name] = m
 }
 
+// RegisterWithSource adds a named type to the registry and records the source file it came from.
+func (r *TypeRegistry) RegisterWithSource(name string, m *Metadata, sourceFile string) {
+	r.Types[name] = m
+	r.SourceFiles[name] = sourceFile
+}
+
 // Has checks if a named type is already registered.
 func (r *TypeRegistry) Has(name string) bool {
 	_, ok := r.Types[name]
 	return ok
+}
+
+// SourceFile returns the source file a type was registered from, or "" if unknown.
+func (r *TypeRegistry) SourceFile(name string) string {
+	return r.SourceFiles[name]
 }

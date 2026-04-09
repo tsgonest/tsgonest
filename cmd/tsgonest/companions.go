@@ -256,6 +256,15 @@ func generateCompanionsInMemory(program *shimcompiler.Program, cfg *config.Confi
 		}
 		typesByFile[sf.FileName()] = fileTypeNames
 
+		// Record source file → output base mapping in the registry for each type.
+		// This is used by codegen to compute import paths for cross-companion refs.
+		{
+			reg := walker.Registry()
+			for name := range types {
+				reg.SourceFiles[name] = outputBase
+			}
+		}
+
 		fileInfos = append(fileInfos, fileTypeInfo{
 			sourceName: sf.FileName(),
 			outputBase: outputBase,
@@ -282,6 +291,10 @@ func generateCompanionsInMemory(program *shimcompiler.Program, cfg *config.Confi
 		reg := walker.Registry()
 		for _, it := range inlineTypes {
 			reg.Register(it.typeName, it.meta)
+			// Record source file mapping for cross-companion import resolution
+			if outputBase, ok := sourceToOutput[it.sourceFile]; ok {
+				reg.SourceFiles[it.typeName] = outputBase
+			}
 			// Apply coercion if needed (FormData inline types always need it)
 			if coercionTypes[it.typeName] {
 				analyzer.AutoEnableCoercion(it.meta)

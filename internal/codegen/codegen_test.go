@@ -3558,3 +3558,304 @@ func TestAssert_MaxItems_WithCustomError(t *testing.T) {
 	assertContains(t, assertFn, ".length > 5")
 	assertContains(t, assertFn, "Too many files (max 5)")
 }
+
+// --- Cross-companion recursive ref import tests ---
+// These tests verify that when a companion file for TypeA references a recursive
+// TypeB from a different source file, the generated code includes proper import
+// statements for TypeB's companion functions.
+
+// buildRecursiveType creates a self-referencing type with a "children" field
+// that references itself (e.g., a tree node with nested children).
+func buildRecursiveType(name string) *metadata.Metadata {
+	return &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Name: name,
+		Properties: []metadata.Property{
+			{Name: "id", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+			{Name: "value", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+			{Name: "children", Type: metadata.Metadata{
+				Kind:        metadata.KindArray,
+				ElementType: &metadata.Metadata{Kind: metadata.KindRef, Ref: name},
+				Optional:    true,
+			}, Required: false},
+		},
+	}
+}
+
+func TestCrossCompanion_IsFunction_ImportsExternalRecursiveRef(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+
+	// TreeNode: recursive type from a different module
+	treeNode := buildRecursiveType("TreeNode")
+	reg.RegisterWithSource("TreeNode", treeNode, "shared/tree.dto.ts")
+
+	// ContainerDto: references the external recursive type
+	container := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Name: "ContainerDto",
+		Properties: []metadata.Property{
+			{Name: "root", Type: metadata.Metadata{
+				Kind: metadata.KindRef, Ref: "TreeNode",
+				Nullable: true,
+			}, Required: true},
+		},
+	}
+
+	code := GenerateCompanionSelective("ContainerDto", container, reg, true, false)
+
+	// Should import isTreeNode from the external companion file
+	assertContains(t, code, "isTreeNode")
+	assertContains(t, code, "import")
+	assertContains(t, code, "TreeNode.tsgonest.js")
+}
+
+func TestCrossCompanion_SerializeFunction_ImportsExternalRecursiveRef(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+
+	treeNode := buildRecursiveType("TreeNode")
+	reg.RegisterWithSource("TreeNode", treeNode, "shared/tree.dto.ts")
+
+	container := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Name: "ContainerDto",
+		Properties: []metadata.Property{
+			{Name: "root", Type: metadata.Metadata{
+				Kind: metadata.KindRef, Ref: "TreeNode",
+				Nullable: true,
+			}, Required: true},
+		},
+	}
+
+	code := GenerateCompanionSelective("ContainerDto", container, reg, false, true)
+
+	// Should import serializeTreeNode from external companion
+	assertContains(t, code, "serializeTreeNode")
+	assertContains(t, code, "import")
+	assertContains(t, code, "TreeNode.tsgonest.js")
+}
+
+func TestCrossCompanion_ValidateFunction_ImportsExternalRecursiveRef(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+
+	treeNode := buildRecursiveType("TreeNode")
+	reg.RegisterWithSource("TreeNode", treeNode, "shared/tree.dto.ts")
+
+	container := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Name: "ContainerDto",
+		Properties: []metadata.Property{
+			{Name: "root", Type: metadata.Metadata{
+				Kind: metadata.KindRef, Ref: "TreeNode",
+				Nullable: true,
+			}, Required: true},
+		},
+	}
+
+	code := GenerateCompanionSelective("ContainerDto", container, reg, true, false)
+
+	// Should import validateTreeNode from external companion
+	assertContains(t, code, "validateTreeNode")
+	assertContains(t, code, "TreeNode.tsgonest.js")
+}
+
+func TestCrossCompanion_MultipleExternalRecursiveRefs(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+
+	// Two recursive types from different modules
+	commentNode := buildRecursiveType("CommentNode")
+	reg.RegisterWithSource("CommentNode", commentNode, "forum/comment.dto.ts")
+
+	categoryNode := buildRecursiveType("CategoryNode")
+	reg.RegisterWithSource("CategoryNode", categoryNode, "catalog/category.dto.ts")
+
+	// AggregateDto references both recursive types
+	aggregate := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Name: "AggregateDto",
+		Properties: []metadata.Property{
+			{Name: "latestComment", Type: metadata.Metadata{
+				Kind: metadata.KindRef, Ref: "CommentNode",
+				Nullable: true,
+			}, Required: true},
+			{Name: "rootCategory", Type: metadata.Metadata{
+				Kind: metadata.KindRef, Ref: "CategoryNode",
+				Nullable: true,
+			}, Required: true},
+		},
+	}
+
+	code := GenerateCompanionSelective("AggregateDto", aggregate, reg, true, true)
+
+	// Should import from both external companion files
+	assertContains(t, code, "comment.dto.CommentNode.tsgonest.js")
+	assertContains(t, code, "category.dto.CategoryNode.tsgonest.js")
+	// Should have is/serialize/validate imports for both
+	assertContains(t, code, "isCommentNode")
+	assertContains(t, code, "serializeCommentNode")
+	assertContains(t, code, "isCategoryNode")
+	assertContains(t, code, "serializeCategoryNode")
+}
+
+func TestCrossCompanion_SameTypeRecursion_NoExternalImport(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+
+	// Self-recursive type — should NOT generate external imports
+	treeNode := buildRecursiveType("TreeNode")
+	reg.RegisterWithSource("TreeNode", treeNode, "shared/tree.dto.ts")
+
+	code := GenerateCompanionSelective("TreeNode", treeNode, reg, true, true)
+
+	// Should have the recursive function calls
+	assertContains(t, code, "isTreeNode(")
+	assertContains(t, code, "serializeTreeNode(")
+	// Should NOT have external import for itself
+	assertNotContains(t, code, "TreeNode.tsgonest.js")
+}
+
+func TestCrossCompanion_NonRecursiveRef_NoExternalImport(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+
+	// Non-recursive external type — its checks get fully inlined
+	address := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Name: "Address",
+		Properties: []metadata.Property{
+			{Name: "street", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+			{Name: "city", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+		},
+	}
+	reg.RegisterWithSource("Address", address, "shared/address.dto.ts")
+
+	orderDto := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Name: "OrderDto",
+		Properties: []metadata.Property{
+			{Name: "label", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"}, Required: true},
+			{Name: "address", Type: metadata.Metadata{Kind: metadata.KindRef, Ref: "Address"}, Required: true},
+		},
+	}
+
+	code := GenerateCompanionSelective("OrderDto", orderDto, reg, true, true)
+
+	// Non-recursive ref is fully inlined — no external import needed
+	assertNotContains(t, code, "Address.tsgonest.js")
+	assertNotContains(t, code, "isAddress(")
+	// But Address fields should be inlined
+	assertContains(t, code, "input.address.street")
+	assertContains(t, code, "input.address.city")
+}
+
+func TestCrossCompanion_CJS_ImportsAsRequire(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+
+	treeNode := buildRecursiveType("TreeNode")
+	reg.RegisterWithSource("TreeNode", treeNode, "shared/tree.dto.ts")
+
+	container := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Name: "ContainerDto",
+		Properties: []metadata.Property{
+			{Name: "root", Type: metadata.Metadata{
+				Kind: metadata.KindRef, Ref: "TreeNode",
+				Nullable: true,
+			}, Required: true},
+		},
+	}
+
+	code := GenerateCompanionSelective("ContainerDto", container, reg, true, true)
+	cjsCode := ConvertToCommonJS(code)
+
+	// CJS format should use require() instead of import
+	assertContains(t, cjsCode, "require(")
+	assertContains(t, cjsCode, "TreeNode.tsgonest.js")
+}
+
+func TestCrossCompanion_WrappedInGeneric_ImportsExternalRecursiveRef(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+
+	// Recursive type from another module
+	treeNode := buildRecursiveType("TreeNode")
+	reg.RegisterWithSource("TreeNode", treeNode, "shared/tree.dto.ts")
+
+	// A paginated response wrapping a type that references the external recursive
+	// type — verifies imports are emitted even when nested inside generics.
+	paginatedDto := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Name: "PaginatedContainerDto",
+		Properties: []metadata.Property{
+			{Name: "total", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "number"}, Required: true},
+			{Name: "items", Type: metadata.Metadata{
+				Kind: metadata.KindArray,
+				ElementType: &metadata.Metadata{
+					Kind: metadata.KindObject,
+					Properties: []metadata.Property{
+						{Name: "root", Type: metadata.Metadata{
+							Kind: metadata.KindRef, Ref: "TreeNode",
+							Nullable: true,
+						}, Required: true},
+					},
+				},
+			}, Required: true},
+		},
+	}
+
+	code := GenerateCompanionSelective("PaginatedContainerDto", paginatedDto, reg, true, true)
+
+	// Even deeply nested, the external recursive ref should be imported
+	assertContains(t, code, "isTreeNode")
+	assertContains(t, code, "serializeTreeNode")
+	assertContains(t, code, "TreeNode.tsgonest.js")
+}
+
+func TestCrossCompanion_RelativeImportPath_CrossDirectory(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+
+	// Recursive type in a different directory subtree
+	treeNode := buildRecursiveType("TreeNode")
+	reg.RegisterWithSource("TreeNode", treeNode, "shared/tree.dto")
+
+	container := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Name: "ContainerDto",
+		Properties: []metadata.Property{
+			{Name: "root", Type: metadata.Metadata{
+				Kind: metadata.KindRef, Ref: "TreeNode",
+				Nullable: true,
+			}, Required: true},
+		},
+	}
+
+	// Pass SourceFile so relative paths are computed correctly
+	code := GenerateCompanionSelective("ContainerDto", container, reg, true, true, CompanionGenOptions{
+		SourceFile: "features/container.dto",
+	})
+
+	// The import path should be relative from features/ to shared/
+	assertContains(t, code, "../shared/tree.dto.TreeNode.tsgonest.js")
+}
+
+func TestCrossCompanion_RelativeImportPath_SameDirectory(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+
+	// Both types in the same directory but different files
+	treeNode := buildRecursiveType("TreeNode")
+	reg.RegisterWithSource("TreeNode", treeNode, "dto/tree.dto")
+
+	container := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Name: "ContainerDto",
+		Properties: []metadata.Property{
+			{Name: "root", Type: metadata.Metadata{
+				Kind: metadata.KindRef, Ref: "TreeNode",
+				Nullable: true,
+			}, Required: true},
+		},
+	}
+
+	code := GenerateCompanionSelective("ContainerDto", container, reg, true, true, CompanionGenOptions{
+		SourceFile: "dto/container.dto",
+	})
+
+	// Same directory — should use ./ prefix
+	assertContains(t, code, "./tree.dto.TreeNode.tsgonest.js")
+}
