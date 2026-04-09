@@ -42,7 +42,11 @@ func runSDK(args []string) int {
 	}
 
 	// Collect outputs to generate
-	var targets []struct{ input, output, label string }
+	type sdkTarget struct {
+		input, output, label string
+		tsEnums              bool
+	}
+	var targets []sdkTarget
 
 	for _, oc := range cfg.OpenAPIOutputs {
 		if oc.SDK == nil || oc.SDK.Output == "" || oc.Output == "" {
@@ -67,7 +71,7 @@ func runSDK(args []string) int {
 		if oc.Name != "" {
 			label = oc.Name
 		}
-		targets = append(targets, struct{ input, output, label string }{sdkInput, sdkOutput, label})
+		targets = append(targets, sdkTarget{sdkInput, sdkOutput, label, oc.SDK.TSEnums})
 	}
 
 	if *nameFilter != "" && len(targets) == 0 {
@@ -81,7 +85,9 @@ func runSDK(args []string) int {
 	}
 
 	for _, t := range targets {
-		if err := sdkgen.Generate(t.input, t.output, sdkOpts); err != nil {
+		opts := *sdkOpts // copy shared options
+		opts.TSEnums = t.tsEnums
+		if err := sdkgen.Generate(t.input, t.output, &opts); err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			return 1
 		}

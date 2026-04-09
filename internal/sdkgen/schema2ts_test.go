@@ -687,8 +687,8 @@ func TestSchemaToTS_Nullable_Union(t *testing.T) {
 		Nullable: true,
 	}
 	got := SchemaToTS(node, nil)
-	if got != "((string | number)) | null" {
-		t.Errorf("expected '((string | number)) | null', got %q", got)
+	if got != "(string | number) | null" {
+		t.Errorf("expected '(string | number) | null', got %q", got)
 	}
 }
 

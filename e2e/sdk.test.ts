@@ -332,7 +332,7 @@ describe("SDK empty response body handling", () => {
     });
 
     expect(result.error).toBeNull();
-    expect(result.data).toBeUndefined();
+    expect(result.data).toBeNull();
   });
 
   it("should handle HTTP 200 with empty body and no content-type", async () => {
@@ -349,7 +349,7 @@ describe("SDK empty response body handling", () => {
     });
 
     expect(result.error).toBeNull();
-    expect(result.data).toBeUndefined();
+    expect(result.data).toBeNull();
   });
 
   it("should handle HTTP 204 No Content", async () => {
@@ -409,7 +409,7 @@ describe("SDK empty response body handling", () => {
     });
 
     expect(result.error).toBeNull();
-    expect(result.data).toBeUndefined();
+    expect(result.data).toBeNull();
   });
 });
 
@@ -573,7 +573,7 @@ describe("SDK client edge cases", () => {
 
     const result = await request("POST", "/items");
     expect(result.error).toBeNull();
-    expect(result.data).toBeUndefined();
+    expect(result.data).toBeNull();
   });
 
   // ── 4xx with empty body (no JSON to parse) ──
@@ -790,10 +790,11 @@ describe("buildFormData runtime", () => {
     expect(fd.get("email")).toBeNull();
   });
 
-  it("should handle nested objects as JSON blobs", () => {
-    const fd = buildFormData({ meta: { key: "value" } });
-    const blob = fd.get("meta");
-    expect(blob).toBeInstanceOf(Blob);
+  it("should silently drop nested objects (no JSON blob fallback)", () => {
+    const fd = buildFormData({ meta: { key: "value" } as any });
+    // Nested objects are no longer serialized as JSON blobs — they are silently
+    // dropped by appendValue since they don't match any supported type.
+    expect(fd.get("meta")).toBeNull();
   });
 });
 

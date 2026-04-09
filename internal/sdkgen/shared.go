@@ -83,38 +83,61 @@ func generateSharedTypes(schemas map[string]*SchemaNode, tsEnums bool) string {
 }
 
 // generateTSEnum emits a TypeScript enum declaration for an enum schema.
+// Handles duplicate member names by appending numeric suffixes.
 func generateTSEnum(name string, node *SchemaNode) string {
 	var sb strings.Builder
 	if node.Description != "" {
 		sb.WriteString(buildSchemaJSDoc(node.Description))
 	}
 	fmt.Fprintf(&sb, "export enum %s {\n", name)
+
+	usedNames := make(map[string]int)
+
 	for _, val := range node.Enum {
 		switch v := val.(type) {
 		case string:
 			memberName := toEnumMemberName(v)
+			memberName = deduplicateEnumMember(memberName, usedNames)
 			fmt.Fprintf(&sb, "  %s = \"%s\",\n", memberName, escapeJSString(v))
 		case float64:
+			var memberName string
 			if v == float64(int64(v)) {
-				fmt.Fprintf(&sb, "  VALUE_%d = %d,\n", int64(v), int64(v))
+				memberName = fmt.Sprintf("VALUE_%d", int64(v))
 			} else {
-				fmt.Fprintf(&sb, "  VALUE_%s = %g,\n", strings.ReplaceAll(fmt.Sprintf("%g", v), ".", "_"), v)
+				memberName = fmt.Sprintf("VALUE_%s", strings.ReplaceAll(fmt.Sprintf("%g", v), ".", "_"))
 			}
+			memberName = deduplicateEnumMember(memberName, usedNames)
+			fmt.Fprintf(&sb, "  %s = %g,\n", memberName, v)
 		case bool:
-			// Booleans in enums are unusual but handle gracefully
+			var memberName string
 			if v {
-				sb.WriteString("  TRUE = \"true\",\n")
+				memberName = "TRUE"
 			} else {
-				sb.WriteString("  FALSE = \"false\",\n")
+				memberName = "FALSE"
 			}
+			memberName = deduplicateEnumMember(memberName, usedNames)
+			fmt.Fprintf(&sb, "  %s = \"%t\",\n", memberName, v)
 		}
 	}
 	sb.WriteString("}\n")
 	return sb.String()
 }
 
+// deduplicateEnumMember ensures unique member names by appending a numeric suffix on collision.
+func deduplicateEnumMember(name string, used map[string]int) string {
+	if _, exists := used[name]; !exists {
+		used[name] = 1
+		return name
+	}
+	used[name]++
+	unique := fmt.Sprintf("%s%d", name, used[name])
+	used[unique] = 1
+	return unique
+}
+
 // toEnumMemberName converts an enum string value to a valid TypeScript identifier
-// in PascalCase. Non-alphanumeric chars become word boundaries.
+// in PascalCase. Only non-alphanumeric chars are treated as word boundaries —
+// camelCase-internal boundaries are not split (e.g., "XMLParser" → "Xmlparser").
 // e.g., "pending-review" → "PendingReview", "IN_PROGRESS" → "InProgress",
 // "404_NOT_FOUND" → "Value404NotFound"
 func toEnumMemberName(s string) string {

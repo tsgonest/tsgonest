@@ -643,7 +643,11 @@ func propFingerprint(node *SchemaNode) string {
 		return "allOf"
 	}
 	if len(node.Enum) > 0 {
-		return "enum"
+		var vals []string
+		for _, v := range node.Enum {
+			vals = append(vals, fmt.Sprintf("%v", v))
+		}
+		return "enum(" + strings.Join(vals, "|") + ")"
 	}
 	return "?"
 }

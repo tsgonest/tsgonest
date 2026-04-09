@@ -522,6 +522,27 @@ func TestGenerateTSEnum_KebabCase(t *testing.T) {
 	}
 }
 
+func TestGenerateTSEnum_DuplicateMemberNames(t *testing.T) {
+	// "pending_review" and "PENDING-REVIEW" both PascalCase to "PendingReview"
+	node := &SchemaNode{
+		Type: "string",
+		Enum: []any{"pending_review", "PENDING-REVIEW", "pending review"},
+	}
+	got := generateTSEnum("Status", node)
+	// First occurrence keeps the name
+	if !contains(got, `PendingReview = "pending_review"`) {
+		t.Errorf("expected first PendingReview member, got:\n%s", got)
+	}
+	// Second gets a suffix
+	if !contains(got, `PendingReview2 = "PENDING-REVIEW"`) {
+		t.Errorf("expected PendingReview2 for duplicate, got:\n%s", got)
+	}
+	// Third gets a suffix
+	if !contains(got, `PendingReview3 = "pending review"`) {
+		t.Errorf("expected PendingReview3 for second duplicate, got:\n%s", got)
+	}
+}
+
 func TestGenerateTSEnum_WithDescription(t *testing.T) {
 	node := &SchemaNode{
 		Type:        "string",

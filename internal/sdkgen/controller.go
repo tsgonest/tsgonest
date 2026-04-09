@@ -184,7 +184,9 @@ func generateStandaloneFunction(ctrlName string, method SDKMethod) string {
 		sb.WriteString("        controller.enqueue(chunk);\n")
 		sb.WriteString("      },\n")
 		sb.WriteString("    });\n")
-		sb.WriteString("    uploadBody = encoder.body!.pipeThrough(progress);\n")
+		sb.WriteString("    if (encoder.body) {\n")
+		sb.WriteString("      uploadBody = encoder.body.pipeThrough(progress);\n")
+		sb.WriteString("    }\n")
 		sb.WriteString("  }\n")
 	}
 
