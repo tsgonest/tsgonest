@@ -632,3 +632,33 @@ func TestGenerate_AdvancedTypes_TSEnums(t *testing.T) {
 	// Non-enum types should still be interfaces
 	assertContains(t, typesContent, "export interface Dog", "Dog should still be an interface")
 }
+
+func TestBuildFormData_InterfaceCompatibleConstraint(t *testing.T) {
+	// In TypeScript, interfaces lack an implicit index signature, so they don't
+	// satisfy Record<string, ...>. Since the SDK generator emits DTO types as
+	// interfaces, buildFormData's constraint must use a per-property mapped type
+	// ({ [K in keyof T]: ... }) instead of Record<string, ...>.
+	outputDir := t.TempDir()
+	inputPath := "../../testdata/sdkgen/file-uploads.openapi.json"
+
+	_, err := Generate(inputPath, outputDir)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	formDataContent := readFile(t, filepath.Join(outputDir, "form-data.ts"))
+
+	// The constraint should use a mapped type that checks per-property
+	assertContains(t, formDataContent, "[K in keyof T]",
+		"buildFormData constraint should use mapped type for interface compatibility")
+
+	// Must NOT use the Record-based constraint that breaks interfaces
+	assertNotContains(t, formDataContent, "extends FormDataCompatible",
+		"buildFormData should not use Record-based constraint (breaks interface types)")
+
+	// FormDataValue and FormDataCompatible should still be exported for consumers
+	assertContains(t, formDataContent, "export type FormDataValue",
+		"FormDataValue should still be exported")
+	assertContains(t, formDataContent, "export type FormDataCompatible",
+		"FormDataCompatible should still be exported for backwards compatibility")
+}

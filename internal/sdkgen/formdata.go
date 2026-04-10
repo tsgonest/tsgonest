@@ -8,7 +8,7 @@ func generateFormData() string {
 export type FormDataValue = string | number | boolean | File | Blob | Date | null | undefined;
 export type FormDataCompatible = Record<string, FormDataValue | FormDataValue[]>;
 
-export function buildFormData<T extends FormDataCompatible>(data: T): FormData {
+export function buildFormData<T extends { [K in keyof T]: FormDataValue | FormDataValue[] }>(data: T): FormData {
   const formData = new FormData();
 
   function appendValue(key: string, value: unknown) {
