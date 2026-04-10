@@ -43,6 +43,33 @@ describe("FormDataBody", () => {
 
     expect(meta.parameterIndex).toBe(1);
   });
+
+  it("composes @Body() so NestJS injects req.body into the parameter", () => {
+    // NestJS's @Body() decorator writes to ROUTE_ARGS_METADATA on the class
+    // constructor with a `body:<index>` key. Without this metadata, NestJS
+    // has no way to know the parameter should receive req.body, and it will
+    // be undefined at runtime — even if FormDataInterceptor populated req.body.
+    const factory = () => ({ any: () => {} });
+
+    class TestController {
+      upload(
+        _userId: string,
+        @FormDataBody(factory) body: any,
+      ) {}
+    }
+
+    const ROUTE_ARGS_METADATA = "__routeArguments__";
+    const args = Reflect.getMetadata(
+      ROUTE_ARGS_METADATA,
+      TestController,
+      "upload",
+    );
+
+    expect(args).toBeDefined();
+    // NestJS uses paramtype 3 (RouteParamtypes.BODY) keyed as "3:<index>"
+    expect(args["3:1"]).toBeDefined();
+    expect(args["3:1"].index).toBe(1);
+  });
 });
 
 describe("FormDataInterceptor", () => {
