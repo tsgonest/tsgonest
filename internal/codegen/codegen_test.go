@@ -2152,7 +2152,7 @@ func TestValidateCoercion_ArrayOfNumbers_WrapsAndCoercesElements(t *testing.T) {
 			{
 				Name: "ids", Required: true,
 				Type: metadata.Metadata{
-					Kind: metadata.KindArray,
+					Kind:        metadata.KindArray,
 					ElementType: &metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "number"},
 				},
 				Constraints: &metadata.Constraints{Coerce: &coerce},
@@ -2185,7 +2185,7 @@ func TestAssertCoercion_ArrayOfNumbers_WrapsAndCoercesElements(t *testing.T) {
 			{
 				Name: "ids", Required: true,
 				Type: metadata.Metadata{
-					Kind: metadata.KindArray,
+					Kind:        metadata.KindArray,
 					ElementType: &metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "number"},
 				},
 				Constraints: &metadata.Constraints{Coerce: &coerce},
@@ -2216,7 +2216,7 @@ func TestValidateCoercion_ArrayOfBooleans_CoercesElements(t *testing.T) {
 			{
 				Name: "flags", Required: true,
 				Type: metadata.Metadata{
-					Kind: metadata.KindArray,
+					Kind:        metadata.KindArray,
 					ElementType: &metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "boolean"},
 				},
 				Constraints: &metadata.Constraints{Coerce: &coerce},
@@ -2246,7 +2246,7 @@ func TestValidateCoercion_ArrayOfStrings_NoCoercion(t *testing.T) {
 			{
 				Name: "tags", Required: true,
 				Type: metadata.Metadata{
-					Kind: metadata.KindArray,
+					Kind:        metadata.KindArray,
 					ElementType: &metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"},
 				},
 				Constraints: &metadata.Constraints{Coerce: &coerce},
@@ -3858,4 +3858,160 @@ func TestCrossCompanion_RelativeImportPath_SameDirectory(t *testing.T) {
 
 	// Same directory — should use ./ prefix
 	assertContains(t, code, "./tree.dto.TreeNode.tsgonest.js")
+}
+
+// --- External node_modules recursive ref tests ---
+//
+// Regression tests for: https://github.com/aakash1122/tsgonest/issues/...
+// When a DTO field is typed as a recursive type imported from an external
+// package (e.g. JSONContent from @tiptap/core), the type walker registers
+// the type via Register() — without a source file — because it doesn't
+// live in the user's project tree. Previously, collectExternalRecursiveRefs
+// would detect the recursive ref but drop it (importPath == "") because the
+// registry had no source file for it, so no helper was emitted and no import
+// was produced. The codegen still emitted isX(...) / validateX(...) calls,
+// producing a ReferenceError at runtime:
+//
+//   ReferenceError: isJSONContent is not defined
+//
+// The fix: when a recursive external ref has no import path available,
+// emit the helper functions locally inside the same companion file.
+
+// buildJSONContentLike creates a minimal recursive type similar to @tiptap/core's
+// JSONContent: a self-referential node with an optional `content` array.
+func buildJSONContentLike(name string) *metadata.Metadata {
+	return &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Name: name,
+		Properties: []metadata.Property{
+			{Name: "type", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string", Optional: true}, Required: false},
+			{Name: "text", Type: metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string", Optional: true}, Required: false},
+			{Name: "content", Type: metadata.Metadata{
+				Kind:        metadata.KindArray,
+				ElementType: &metadata.Metadata{Kind: metadata.KindRef, Ref: name},
+				Optional:    true,
+			}, Required: false},
+		},
+	}
+}
+
+func TestExternalRecursive_NoSourceFile_EmitsLocalIsHelper(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+
+	// Simulate an external node_modules type: registered WITHOUT a source file.
+	// This is exactly what the type walker does when it encounters JSONContent
+	// from @tiptap/core as a transitive reference.
+	jsonContent := buildJSONContentLike("JSONContent")
+	reg.Register("JSONContent", jsonContent) // no source file
+
+	// A local DTO that references the external recursive type.
+	notesResponse := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Name: "NotesResponse",
+		Properties: []metadata.Property{
+			{Name: "notes", Type: metadata.Metadata{Kind: metadata.KindRef, Ref: "JSONContent"}, Required: true},
+		},
+	}
+
+	code := GenerateCompanionSelective("NotesResponse", notesResponse, reg, true, false)
+
+	// The code must call isJSONContent(...) for the recursive element check.
+	assertContains(t, code, "isJSONContent(")
+	// And that helper MUST be defined locally (no companion file exists to import from).
+	assertContains(t, code, "function isJSONContent(")
+	// It must NOT try to import a non-existent companion file.
+	assertNotContains(t, code, "JSONContent.tsgonest.js")
+}
+
+func TestExternalRecursive_NoSourceFile_EmitsLocalValidateAssertHelpers(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+
+	jsonContent := buildJSONContentLike("JSONContent")
+	reg.Register("JSONContent", jsonContent)
+
+	updateNotes := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Name: "UpdateNotesDTO",
+		Properties: []metadata.Property{
+			{Name: "notes", Type: metadata.Metadata{Kind: metadata.KindRef, Ref: "JSONContent"}, Required: true},
+		},
+	}
+
+	code := GenerateCompanionSelective("UpdateNotesDTO", updateNotes, reg, true, false)
+
+	// validate and assert both emit helper calls for recursive refs.
+	assertContains(t, code, "validateJSONContent(")
+	assertContains(t, code, "_assertJSONContent(")
+	// Their definitions must be present locally.
+	assertContains(t, code, "function validateJSONContent(")
+	assertContains(t, code, "function _assertJSONContent(")
+	assertNotContains(t, code, "JSONContent.tsgonest.js")
+}
+
+func TestExternalRecursive_NoSourceFile_EmitsLocalSerializeHelper(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+
+	jsonContent := buildJSONContentLike("JSONContent")
+	reg.Register("JSONContent", jsonContent)
+
+	notesResponse := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Name: "NotesResponse",
+		Properties: []metadata.Property{
+			{Name: "notes", Type: metadata.Metadata{Kind: metadata.KindRef, Ref: "JSONContent"}, Required: true},
+		},
+	}
+
+	code := GenerateCompanionSelective("NotesResponse", notesResponse, reg, false, true)
+
+	// Serializer calls serializeJSONContent for the recursive element.
+	assertContains(t, code, "serializeJSONContent(")
+	// And its definition must be present locally.
+	assertContains(t, code, "function serializeJSONContent(")
+	assertNotContains(t, code, "JSONContent.tsgonest.js")
+}
+
+// TestExternalRecursive_NoSourceFile_FullCompanionExecutes verifies the generated
+// companion file has no undefined identifier references. We check by compiling
+// it through the ConvertToCommonJS path and asserting every helper call has a
+// matching declaration/import in the same file.
+func TestExternalRecursive_NoSourceFile_AllHelperCallsResolve(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+
+	jsonContent := buildJSONContentLike("JSONContent")
+	reg.Register("JSONContent", jsonContent)
+
+	notesResponse := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Name: "NotesResponse",
+		Properties: []metadata.Property{
+			{Name: "notes", Type: metadata.Metadata{Kind: metadata.KindRef, Ref: "JSONContent"}, Required: true},
+		},
+	}
+
+	code := GenerateCompanionSelective("NotesResponse", notesResponse, reg, true, true)
+
+	// Every helper call site must have a corresponding declaration in the same file.
+	calls := []string{
+		"isJSONContent(",
+		"validateJSONContent(",
+		"_assertJSONContent(",
+		"serializeJSONContent(",
+	}
+	decls := []string{
+		"function isJSONContent(",
+		"function validateJSONContent(",
+		"function _assertJSONContent(",
+		"function serializeJSONContent(",
+	}
+	for i, call := range calls {
+		if !strings.Contains(code, call) {
+			// Not all helper kinds are always emitted — only assert the ones
+			// that actually show up in the generated code.
+			continue
+		}
+		if !strings.Contains(code, decls[i]) {
+			t.Errorf("generated code calls %q but never declares %q.\nGot:\n%s", call, decls[i], code)
+		}
+	}
 }

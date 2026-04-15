@@ -1,0 +1,9 @@
+{
+  "controllers": {
+    "include": ["src/**/*.controller.ts"]
+  },
+  "transforms": {
+    "validation": true,
+    "serialization": true
+  }
+}
