@@ -1,34 +1,13 @@
 {
   "ExtraMethods": {
     "Checker": [
-      "getIndexTypeOfType",
-      "getPropertyNameForKnownSymbolName",
-      "isArrayOrTupleType",
       "isArrayType",
-      "getWidenedType",
       "isReadonlySymbol"
     ]
   },
   "ExtraFields": {
     "Type": [
       "alias"
-    ],
-    "TupleType": [
-      "combinedFlags"
-    ],
-    "Signature": [
-      "resolvedTypePredicate"
-    ],
-    "Checker": [
-      "globalRegExpType"
-    ],
-    "InterfaceType": [
-      "thisType"
-    ],
-    "MappedType": [
-      "typeParameter",
-      "constraintType",
-      "templateType"
     ]
   }
 }
