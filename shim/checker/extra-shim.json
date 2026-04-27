@@ -1,13 +1,11 @@
 {
   "ExtraMethods": {
     "Checker": [
-      "getApparentType",
       "getIndexTypeOfType",
       "getPropertyNameForKnownSymbolName",
       "isArrayOrTupleType",
       "isArrayType",
       "getWidenedType",
-      "isTypeAssignableTo",
       "isReadonlySymbol"
     ]
   },

@@ -273,10 +273,10 @@ func (m *OrderedMap[K, V]) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
 		// TODO: reconsider
 		return nil
 	}
-	if token.Kind() != '{' { // jsontext.ObjectStart.Kind()
+	if token.Kind() != '{' { // json.ObjectStart.Kind()
 		return errors.New("cannot unmarshal non-object JSON value into Map")
 	}
-	for dec.PeekKind() != '}' { // jsontext.ObjectEnd.Kind()
+	for dec.PeekKind() != '}' { // json.ObjectEnd.Kind()
 		var key K
 		var value V
 		if err := json.UnmarshalDecode(dec, &key); err != nil {

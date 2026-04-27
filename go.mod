@@ -18,20 +18,19 @@ replace (
 	github.com/microsoft/typescript-go/shim/vfs/osvfs => ./shim/vfs/osvfs
 )
 
-require golang.org/x/tools v0.43.0
+require golang.org/x/tools v0.44.0
 
 require (
-	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.10 // indirect
 	github.com/zeebo/xxh3 v1.1.0 // indirect
-	golang.org/x/mod v0.34.0 // indirect
+	golang.org/x/mod v0.35.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
 )
 
 require (
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/go-json-experiment/json v0.0.0-20260214004413-d219187c3433
-	github.com/microsoft/typescript-go v0.0.0-20260408193441-2a5e1cf9fe22
+	github.com/microsoft/typescript-go v0.0.0-20260424234512-515d036f927a
 	github.com/microsoft/typescript-go/shim/ast v0.0.0-00010101000000-000000000000
 	github.com/microsoft/typescript-go/shim/bundled v0.0.0-00010101000000-000000000000
 	github.com/microsoft/typescript-go/shim/checker v0.0.0-00010101000000-000000000000
@@ -45,7 +44,6 @@ require (
 	github.com/microsoft/typescript-go/shim/vfs v0.0.0-00010101000000-000000000000
 	github.com/microsoft/typescript-go/shim/vfs/cachedvfs v0.0.0-00010101000000-000000000000
 	github.com/microsoft/typescript-go/shim/vfs/osvfs v0.0.0-00010101000000-000000000000
-	golang.org/x/sys v0.42.0
-	golang.org/x/text v0.35.0
-	gotest.tools/v3 v3.5.2
+	golang.org/x/sys v0.43.0
+	golang.org/x/text v0.36.0
 )

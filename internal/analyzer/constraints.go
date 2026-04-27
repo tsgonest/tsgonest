@@ -72,7 +72,7 @@ func (w *TypeWalker) extractJSDocConstraints(node *ast.Node) *metadata.Constrain
 	}
 
 	for _, tagNode := range jsdoc.Tags.Nodes {
-		// Custom tags (@minimum, @maxLength, etc.) are KindJSDocTag (unknown tags)
+		// Custom tags (@minimum, @maxLength, etc.) are KindJSDocUnknownTag
 		// We need to safely get the tag name and comment.
 		tagName, comment := extractJSDocTagInfo(tagNode)
 		if tagName == "" {
@@ -272,15 +272,15 @@ func (w *TypeWalker) extractJSDocConstraints(node *ast.Node) *metadata.Constrain
 }
 
 // extractJSDocTagInfo safely extracts the tag name and comment from a JSDoc tag node.
-// Custom tags (like @minimum, @maxLength) are KindJSDocTag (unknown tags), while
+// Custom tags (like @minimum, @maxLength) are KindJSDocUnknownTag, while
 // known tags (like @param, @returns) have specific kinds.
 func extractJSDocTagInfo(tagNode *ast.Node) (tagName string, comment string) {
 	if tagNode == nil {
 		return "", ""
 	}
 
-	// For unknown/custom tags (KindJSDocTag), use AsJSDocUnknownTag
-	if tagNode.Kind == ast.KindJSDocTag {
+	// For unknown/custom tags (KindJSDocUnknownTag), use AsJSDocUnknownTag
+	if tagNode.Kind == ast.KindJSDocUnknownTag {
 		unknownTag := tagNode.AsJSDocUnknownTag()
 		if unknownTag == nil || unknownTag.TagName == nil {
 			return "", ""

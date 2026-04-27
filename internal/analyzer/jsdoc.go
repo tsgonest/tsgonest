@@ -106,7 +106,7 @@ func extractMethodJSDoc(node *ast.Node) (summary string, description string, dep
 
 	for _, tagNode := range jsdoc.Tags.Nodes {
 		// Handle @throws tags specially — TS 6.0+ parses @throws as KindJSDocThrowsTag
-		// instead of KindJSDocTag. TS interprets {400} as a type expression, so we
+		// instead of KindJSDocUnknownTag. TS interprets {400} as a type expression, so we
 		// reconstruct the "{statusCode} TypeName" format for parseThrowsTag.
 		if tagNode.Kind == ast.KindJSDocThrowsTag {
 			throwsTag := tagNode.AsJSDocThrowsTag()
@@ -137,7 +137,7 @@ func extractMethodJSDoc(node *ast.Node) (summary string, description string, dep
 			continue
 		}
 
-		// Handle @param tags specially — they use KindJSDocParameterTag, not KindJSDocTag
+		// Handle @param tags specially — they use KindJSDocParameterTag, not KindJSDocUnknownTag
 		if tagNode.Kind == ast.KindJSDocParameterTag {
 			paramTag := tagNode.AsJSDocParameterOrPropertyTag()
 			if paramTag != nil && paramTag.Name() != nil {
