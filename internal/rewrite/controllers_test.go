@@ -41,7 +41,7 @@ func TestRewriteController_BodyValidation(t *testing.T) {
 		"CreateUserDto": "/dist/user.dto.CreateUserDto.tsgonest.js",
 	}
 
-	result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm")
+	result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm", nil)
 
 	if !strings.Contains(result, "assertCreateUserDto(body)") {
 		t.Errorf("expected assert call injection, got:\n%s", result)
@@ -97,7 +97,7 @@ func TestRewriteController_MultipleRoutes(t *testing.T) {
 		"UpdateUserDto": "/dist/user.dto.UpdateUserDto.tsgonest.js",
 	}
 
-	result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm")
+	result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm", nil)
 
 	if !strings.Contains(result, "assertCreateUserDto(body)") {
 		t.Errorf("expected assertCreateUserDto, got:\n%s", result)
@@ -130,7 +130,7 @@ func TestRewriteController_NoBody(t *testing.T) {
 
 	companionMap := map[string]string{}
 
-	result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm")
+	result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm", nil)
 
 	// Should be unchanged since there are no body params
 	if result != input {
@@ -170,7 +170,7 @@ func TestRewriteController_RawResponse(t *testing.T) {
 		"DownloadDto": "/dist/dto.DownloadDto.tsgonest.js",
 	}
 
-	result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm")
+	result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm", nil)
 
 	// Raw response routes should be skipped
 	if result != input {
@@ -215,7 +215,7 @@ func TestRewriteController_ReturnTransform(t *testing.T) {
 		"UserResponse": "/dist/user.dto.UserResponse.tsgonest.js",
 	}
 
-	result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm")
+	result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm", nil)
 
 	if !strings.Contains(result, "stringifyUserResponse(await this.service.findAll())") {
 		t.Errorf("expected return stringify wrapping, got:\n%s", result)
@@ -253,7 +253,7 @@ func TestRewriteController_ArrayReturn(t *testing.T) {
 		"UserResponse": "/dist/user.dto.UserResponse.tsgonest.js",
 	}
 
-	result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm")
+	result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm", nil)
 
 	if !strings.Contains(result, `"[" + (await this.service.findAll()).map((_i) => serializeUserResponse(_i)).join(",") + "]"`) {
 		t.Errorf("expected array return serialize, got:\n%s", result)
@@ -283,7 +283,7 @@ func TestRewriteController_VoidReturn(t *testing.T) {
 
 	companionMap := map[string]string{}
 
-	result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm")
+	result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm", nil)
 
 	// Void return should be unchanged
 	if result != input {
@@ -324,7 +324,7 @@ func TestRewriteController_BodyAndReturn(t *testing.T) {
 		"UserResponse":  "/dist/user.dto.UserResponse.tsgonest.js",
 	}
 
-	result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm")
+	result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm", nil)
 
 	if !strings.Contains(result, "assertCreateUserDto(body)") {
 		t.Errorf("expected body validation, got:\n%s", result)
@@ -358,7 +358,7 @@ func TestRewriteController_NoReturnCompanion(t *testing.T) {
 	// No companion for SomeExternalType
 	companionMap := map[string]string{}
 
-	result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm")
+	result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm", nil)
 
 	// Should be unchanged — no companion available for return type
 	if result != input {
@@ -444,7 +444,7 @@ func TestRewriteController_WholeObjectQuery(t *testing.T) {
 		"PaginationQuery": "/dist/pagination.dto.PaginationQuery.tsgonest.js",
 	}
 
-	result := rewriteController(input, "/dist/order.controller.js", controllers, companionMap, "esm")
+	result := rewriteController(input, "/dist/order.controller.js", controllers, companionMap, "esm", nil)
 
 	if !strings.Contains(result, "assertPaginationQuery(query)") {
 		t.Errorf("expected assert call for @Query() injection, got:\n%s", result)
@@ -484,7 +484,7 @@ func TestRewriteController_ScalarParamCoercion(t *testing.T) {
 
 	companionMap := map[string]string{}
 
-	result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm")
+	result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm", nil)
 
 	if !strings.Contains(result, "id = +id") {
 		t.Errorf("expected number coercion for @Param('id'), got:\n%s", result)
@@ -527,7 +527,7 @@ func TestRewriteController_StringParamNoCoercion(t *testing.T) {
 
 	companionMap := map[string]string{}
 
-	result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm")
+	result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm", nil)
 
 	// String-typed scalar param should have no injection
 	if result != input {
@@ -579,7 +579,7 @@ func TestRewriteController_MixedBodyQueryParam(t *testing.T) {
 		"OrderOptions":   "/dist/order.dto.OrderOptions.tsgonest.js",
 	}
 
-	result := rewriteController(input, "/dist/order.controller.js", controllers, companionMap, "esm")
+	result := rewriteController(input, "/dist/order.controller.js", controllers, companionMap, "esm", nil)
 
 	if !strings.Contains(result, "assertCreateOrderDto(body)") {
 		t.Errorf("expected body validation, got:\n%s", result)
@@ -624,7 +624,7 @@ func TestRewriteController_WholeObjectParam(t *testing.T) {
 		"RouteParams": "/dist/route.dto.RouteParams.tsgonest.js",
 	}
 
-	result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm")
+	result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm", nil)
 
 	if !strings.Contains(result, "assertRouteParams(params)") {
 		t.Errorf("expected assert call for whole-object @Param(), got:\n%s", result)
@@ -661,7 +661,7 @@ func TestRewriteController_BooleanParamCoercion(t *testing.T) {
 
 	companionMap := map[string]string{}
 
-	result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm")
+	result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm", nil)
 
 	if !strings.Contains(result, `=== "true"`) {
 		t.Errorf("expected boolean coercion for @Query('active'), got:\n%s", result)
@@ -714,7 +714,7 @@ class UserEventController {
 		"DeletePayload": "/dist/dto.DeletePayload.tsgonest.js",
 	}
 
-	result := rewriteController(input, "/dist/event.controller.js", controllers, companionMap, "esm")
+	result := rewriteController(input, "/dist/event.controller.js", controllers, companionMap, "esm", nil)
 
 	// Should inject Reflect.defineMetadata after the method-level __decorate
 	if !strings.Contains(result, `Reflect.defineMetadata("__tsgonest_sse_transforms__"`) {
@@ -799,7 +799,7 @@ class GenericController {
 		"UserDto": "/dist/dto.UserDto.tsgonest.js",
 	}
 
-	result := rewriteController(input, "/dist/generic.controller.js", controllers, companionMap, "esm")
+	result := rewriteController(input, "/dist/generic.controller.js", controllers, companionMap, "esm", nil)
 
 	// Should use "*" as the wildcard key
 	if !strings.Contains(result, `"*"`) {
@@ -840,7 +840,7 @@ func TestRewriteController_SSENoReturnWrapping(t *testing.T) {
 		"UserDto": "/dist/dto.UserDto.tsgonest.js",
 	}
 
-	result := rewriteController(input, "/dist/event.controller.js", controllers, companionMap, "esm")
+	result := rewriteController(input, "/dist/event.controller.js", controllers, companionMap, "esm", nil)
 
 	// Should NOT contain stringify wrapping of return
 	if strings.Contains(result, "stringifyUserDto(await") {
@@ -896,7 +896,7 @@ class MixedController {
 		"StatusDto":      "/dist/dto.StatusDto.tsgonest.js",
 	}
 
-	result := rewriteController(input, "/dist/mixed.controller.js", controllers, companionMap, "esm")
+	result := rewriteController(input, "/dist/mixed.controller.js", controllers, companionMap, "esm", nil)
 
 	// Should have return wrapping for getHealth
 	if !strings.Contains(result, "stringifyHealthResponse(await") {
@@ -958,7 +958,7 @@ class NotificationEventsController {
 	// Empty companion map — NotificationSSEEvent is a union type with no companion
 	companionMap := map[string]string{}
 
-	result := rewriteController(input, "/dist/notification.controller.js", controllers, companionMap, "esm")
+	result := rewriteController(input, "/dist/notification.controller.js", controllers, companionMap, "esm", nil)
 
 	// Must inject TsgonestSseInterceptor import
 	if !strings.Contains(result, "TsgonestSseInterceptor") {
@@ -995,10 +995,10 @@ class ChatEventsController {
 			SourceFile: "/src/chat.controller.ts",
 			Routes: []analyzer.Route{
 				{
-					OperationID: "Chat_streamChat",
-					MethodName:  "streamChat",
-					Method:      "GET",
-					IsSSE:       true,
+					OperationID:   "Chat_streamChat",
+					MethodName:    "streamChat",
+					Method:        "GET",
+					IsSSE:         true,
 					IsEventStream: true,
 					// No SSEEventVariants — data is Record<string, unknown>
 					SSEEventVariants: nil,
@@ -1009,7 +1009,7 @@ class ChatEventsController {
 
 	companionMap := map[string]string{}
 
-	result := rewriteController(input, "/dist/chat.controller.js", controllers, companionMap, "esm")
+	result := rewriteController(input, "/dist/chat.controller.js", controllers, companionMap, "esm", nil)
 
 	// Must inject TsgonestSseInterceptor import
 	if !strings.Contains(result, "TsgonestSseInterceptor") {
@@ -1064,7 +1064,7 @@ class MixedEventController {
 		"TypedDto": "/dist/dto.TypedDto.tsgonest.js",
 	}
 
-	result := rewriteController(input, "/dist/mixed-event.controller.js", controllers, companionMap, "esm")
+	result := rewriteController(input, "/dist/mixed-event.controller.js", controllers, companionMap, "esm", nil)
 
 	// Must inject TsgonestSseInterceptor regardless
 	if !strings.Contains(result, "TsgonestSseInterceptor") {
@@ -1140,7 +1140,7 @@ class OAuthController {
 
 	companionMap := map[string]string{}
 
-	result := rewriteController(input, "/dist/controllers.js", controllers, companionMap, "esm")
+	result := rewriteController(input, "/dist/controllers.js", controllers, companionMap, "esm", nil)
 
 	// Both controllers should get the interceptor
 	// Count occurrences of UseInterceptors(TsgonestSseInterceptor)
@@ -1195,7 +1195,7 @@ func TestRewriteController_FormDataBodyValidation(t *testing.T) {
 		"UploadDto": "/dist/upload.dto.UploadDto.tsgonest.js",
 	}
 
-	result := rewriteController(input, "/dist/upload.controller.js", controllers, companionMap, "esm")
+	result := rewriteController(input, "/dist/upload.controller.js", controllers, companionMap, "esm", nil)
 
 	if !strings.Contains(result, "assertUploadDto(body)") {
 		t.Errorf("expected assert call injection for @FormDataBody(), got:\n%s", result)
@@ -1247,7 +1247,7 @@ func TestRewriteController_FormDataBody_InlineTypeWithSyntheticName(t *testing.T
 		"__UploadController_upload_Body": "/dist/upload.controller.__UploadController_upload_Body.tsgonest.js",
 	}
 
-	result := rewriteController(input, "/dist/upload.controller.js", controllers, companionMap, "esm")
+	result := rewriteController(input, "/dist/upload.controller.js", controllers, companionMap, "esm", nil)
 
 	if !strings.Contains(result, "assert__UploadController_upload_Body(body)") {
 		t.Errorf("expected assert call for inline FormData body with synthetic name, got:\n%s", result)
@@ -1291,7 +1291,7 @@ func TestRewriteController_FormDataBodyWithCompanionImport(t *testing.T) {
 		"UploadDto": "/dist/upload.dto.UploadDto.tsgonest.js",
 	}
 
-	result := rewriteController(input, "/dist/upload.controller.js", controllers, companionMap, "esm")
+	result := rewriteController(input, "/dist/upload.controller.js", controllers, companionMap, "esm", nil)
 
 	if !strings.Contains(result, `import { assertUploadDto } from "./upload.dto.UploadDto.tsgonest.js"`) {
 		t.Errorf("expected companion import for FormData body type, got:\n%s", result)
@@ -1339,7 +1339,7 @@ func TestRewriteController_StringReturn(t *testing.T) {
 		"ForgotPasswordDto": "/dist/auth.dto.ForgotPasswordDto.tsgonest.js",
 	}
 
-	result := rewriteController(input, "/dist/auth.controller.js", controllers, companionMap, "esm")
+	result := rewriteController(input, "/dist/auth.controller.js", controllers, companionMap, "esm", nil)
 
 	// The return value must be JSON-stringified — a raw string like:
 	//   If an account exists, a reset link has been sent.
@@ -1374,7 +1374,7 @@ func TestRewriteController_StringReturnOnly(t *testing.T) {
 
 	companionMap := map[string]string{}
 
-	result := rewriteController(input, "/dist/health.controller.js", controllers, companionMap, "esm")
+	result := rewriteController(input, "/dist/health.controller.js", controllers, companionMap, "esm", nil)
 
 	// Must wrap return with JSON encoding for string
 	if !strings.Contains(result, "JSON.stringify(") && !strings.Contains(result, "__s(") {
@@ -1407,7 +1407,7 @@ func TestRewriteController_NumberReturn(t *testing.T) {
 
 	companionMap := map[string]string{}
 
-	result := rewriteController(input, "/dist/stats.controller.js", controllers, companionMap, "esm")
+	result := rewriteController(input, "/dist/stats.controller.js", controllers, companionMap, "esm", nil)
 
 	// Number returns should be serialized (e.g., "" + value or Number.isFinite check)
 	if !strings.Contains(result, "Number.isFinite") && !strings.Contains(result, "JSON.stringify") {
@@ -1439,7 +1439,7 @@ func TestRewriteController_BooleanReturn(t *testing.T) {
 
 	companionMap := map[string]string{}
 
-	result := rewriteController(input, "/dist/feature.controller.js", controllers, companionMap, "esm")
+	result := rewriteController(input, "/dist/feature.controller.js", controllers, companionMap, "esm", nil)
 
 	// Boolean should be serialized
 	if !strings.Contains(result, `"true"`) && !strings.Contains(result, `"false"`) && !strings.Contains(result, "JSON.stringify") {
@@ -1471,7 +1471,7 @@ func TestRewriteController_NullableStringReturn(t *testing.T) {
 
 	companionMap := map[string]string{}
 
-	result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm")
+	result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm", nil)
 
 	// Must wrap — nullable string needs null check + JSON encoding
 	if !strings.Contains(result, "null") || result == input {
@@ -1584,7 +1584,7 @@ func TestRewriteController_OverlappingEditsDoNotPanic(t *testing.T) {
 	}
 
 	// This must not panic — it should gracefully handle any edge cases
-	result := rewriteController(input, "/dist/test.controller.js", controllers, companionMap, "cjs")
+	result := rewriteController(input, "/dist/test.controller.js", controllers, companionMap, "cjs", nil)
 
 	// Basic validation: body assertion should be injected for at least one method
 	if !strings.Contains(result, "assertDtoA(body)") && !strings.Contains(result, "assertDtoB(body)") {
@@ -1689,7 +1689,7 @@ class UserController {
 		"UserResponse": "/dist/user.dto.UserResponse.tsgonest.js",
 	}
 
-	result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "cjs")
+	result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "cjs", nil)
 
 	// Must inject the interceptor import
 	if !strings.Contains(result, "TsgonestSerializeInterceptor") {
@@ -1737,7 +1737,7 @@ class HealthController {
 
 	companionMap := map[string]string{}
 
-	result := rewriteController(input, "/dist/health.controller.js", controllers, companionMap, "cjs")
+	result := rewriteController(input, "/dist/health.controller.js", controllers, companionMap, "cjs", nil)
 
 	// Must inject the interceptor even for primitive returns
 	if !strings.Contains(result, "UseInterceptors)(TsgonestSerializeInterceptor)") {
@@ -1790,7 +1790,7 @@ class UserController {
 		"CreateUserDto": "/dist/user.dto.CreateUserDto.tsgonest.js",
 	}
 
-	result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "cjs")
+	result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "cjs", nil)
 
 	// Body validation should still be injected
 	if !strings.Contains(result, "assertCreateUserDto(body)") {
@@ -1845,7 +1845,7 @@ func TestRewriteController_BodyNotFirstParam_Destructured(t *testing.T) {
 		"UpdateDTO": "/dist/dto.UpdateDTO.tsgonest.js",
 	}
 
-	result := rewriteController(input, "/dist/prompt.controller.js", controllers, companionMap, "esm")
+	result := rewriteController(input, "/dist/prompt.controller.js", controllers, companionMap, "esm", nil)
 
 	// Must NOT assert the wrong parameter
 	if strings.Contains(result, "companyID = assertUpdateDTO(companyID)") {
@@ -1902,7 +1902,7 @@ func TestRewriteController_BodyNotFirstParam_DestructuredWithDefaults(t *testing
 		"SomeDto": "/dist/dto.SomeDto.tsgonest.js",
 	}
 
-	result := rewriteController(input, "/dist/my.controller.js", controllers, companionMap, "esm")
+	result := rewriteController(input, "/dist/my.controller.js", controllers, companionMap, "esm", nil)
 
 	// Must NOT assert the wrong parameter
 	if strings.Contains(result, "id = assertSomeDto(id)") {
@@ -1959,7 +1959,7 @@ func TestRewriteController_BodyNotFirstParam_SimpleLocalName(t *testing.T) {
 		"UpdateDTO": "/dist/dto.UpdateDTO.tsgonest.js",
 	}
 
-	result := rewriteController(input, "/dist/item.controller.js", controllers, companionMap, "esm")
+	result := rewriteController(input, "/dist/item.controller.js", controllers, companionMap, "esm", nil)
 
 	// LocalName is present → no destructured rewrite needed, simple assertion
 	if !strings.Contains(result, "body = assertUpdateDTO(body)") {
@@ -2007,7 +2007,7 @@ func TestRewriteController_BodyThirdParam_Destructured(t *testing.T) {
 		"MemberDto": "/dist/dto.MemberDto.tsgonest.js",
 	}
 
-	result := rewriteController(input, "/dist/team.controller.js", controllers, companionMap, "esm")
+	result := rewriteController(input, "/dist/team.controller.js", controllers, companionMap, "esm", nil)
 
 	// Must assert the body, not orgId or teamId
 	if strings.Contains(result, "orgId = assertMemberDto") || strings.Contains(result, "teamId = assertMemberDto") {

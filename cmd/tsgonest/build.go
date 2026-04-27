@@ -504,6 +504,21 @@ func runBuildWithIncrAndProgram(args []string, oldIncrProgram *shimincremental.P
 		reportDiag(d)
 	}
 
+	// Drain rewrite diagnostics (controller class/method not located in emit).
+	// Errors are load-bearing — silent miss = unvalidated input hits handlers
+	// (issue #114). Warnings are recoverable degradations on individual methods.
+	var rewriteErrors []rewrite.RewriteDiagnostic
+	var rewriteWarnings []string
+	if rewriteCtx != nil {
+		for _, d := range rewriteCtx.Diagnostics() {
+			if d.IsError() {
+				rewriteErrors = append(rewriteErrors, d)
+			} else {
+				rewriteWarnings = append(rewriteWarnings, d.Format())
+			}
+		}
+	}
+
 	// Error summary (pretty mode only)
 	if pretty {
 		compiler.WriteErrorSummary(os.Stderr, allDiagnostics, cwd)
@@ -532,6 +547,21 @@ func runBuildWithIncrAndProgram(args []string, oldIncrProgram *shimincremental.P
 	// ── Early exit on diagnostic errors ──────────────────────────────────
 	// Path aliases were already resolved in the WriteFile callback.
 	if hasErrors {
+		timing.Total = time.Since(buildStart)
+		timing.Print()
+		return 1
+	}
+
+	// Rewrite errors fail the whole build. These mean the analyzer recognized
+	// a controller but the rewriter couldn't locate its class in emitted JS,
+	// so validation/serialization injection was skipped — not safe to ship.
+	if len(rewriteErrors) > 0 {
+		fmt.Fprintln(os.Stderr)
+		fmt.Fprintf(os.Stderr, "✗ %d controller rewrite error(s) — these are load-bearing injections that were skipped:\n", len(rewriteErrors))
+		for _, e := range rewriteErrors {
+			fmt.Fprintf(os.Stderr, "  %s\n", e.Format())
+		}
+		fmt.Fprintln(os.Stderr)
 		timing.Total = time.Since(buildStart)
 		timing.Print()
 		return 1
@@ -626,6 +656,7 @@ func runBuildWithIncrAndProgram(args []string, oldIncrProgram *shimincremental.P
 	if sharedWalker != nil {
 		allWarnings = append(allWarnings, sharedWalker.Warnings()...)
 	}
+	allWarnings = append(allWarnings, rewriteWarnings...)
 
 	// Generate OpenAPI documents (using pre-analyzed controllers)
 	openapiStart := time.Now()

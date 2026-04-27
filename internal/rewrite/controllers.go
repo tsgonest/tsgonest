@@ -42,7 +42,17 @@ type prioritizedEdit struct {
 // For @EventStream routes: injects Reflect.defineMetadata with per-event assert/stringify.
 //
 // Uses AST-based position extraction (LocateJS) and bulk edits for a single-pass rewrite.
-func rewriteController(text string, outputFile string, controllers []analyzer.ControllerInfo, companionMap map[string]string, moduleFormat string) string {
+//
+// report is called for each rewrite the function intended to apply but couldn't
+// (controller class missing from emit, method missing on located class, etc.).
+// Pass nil to discard diagnostics — tests use nil, production threads diagnostics
+// back to RewriteContext via MakeWriteFile.
+func rewriteController(text string, outputFile string, controllers []analyzer.ControllerInfo, companionMap map[string]string, moduleFormat string, report func(RewriteDiagnostic)) string {
+	emit := func(d RewriteDiagnostic) {
+		if report != nil {
+			report(d)
+		}
+	}
 	// ── Phase 1: Collect transform specifications (unchanged metadata logic) ──
 
 	type bodyValidation struct {
@@ -54,12 +64,12 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 		isDestructured bool // true if the JS param is a destructured pattern
 	}
 	type returnTransform struct {
-		className        string
-		methodName       string
-		typeName         string
-		isArray          bool
-		nullable         bool
-		elementNullable  bool
+		className       string
+		methodName      string
+		typeName        string
+		isArray         bool
+		nullable        bool
+		elementNullable bool
 	}
 	type primitiveReturnTransform struct {
 		className  string
@@ -250,9 +260,50 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 		return text
 	}
 
+	// Track which controllers had at least one piece of injection work, so we
+	// only error on classes whose absence actually drops a load-bearing
+	// rewrite (vs. a controller that happened to need nothing).
+	controllersWithWork := make(map[string]bool)
+	for _, v := range validations {
+		controllersWithWork[v.className] = true
+	}
+	for _, sc := range scalarCoercions {
+		controllersWithWork[sc.className] = true
+	}
+	for _, tr := range transforms {
+		controllersWithWork[tr.className] = true
+	}
+	for _, pt := range primitiveTransforms {
+		controllersWithWork[pt.className] = true
+	}
+	for _, st := range sseTransforms {
+		controllersWithWork[st.className] = true
+	}
+	for name := range controllersWithEventStream {
+		controllersWithWork[name] = true
+	}
+
 	// ── Phase 2: Parse JS and extract AST locations ──
 
 	locs := LocateJS(text)
+
+	// Class-not-located is the catastrophic miss (issue #114): a controller
+	// the analyzer recognized has zero injections applied because we couldn't
+	// find its class in the emitted JS. Silent no-op = unvalidated input
+	// reaches handlers, so this must fail the build.
+	for _, ctrl := range controllers {
+		if !controllersWithWork[ctrl.Name] {
+			continue
+		}
+		if _, ok := locs.Classes[ctrl.Name]; !ok {
+			emit(RewriteDiagnostic{
+				Severity:   DiagnosticError,
+				OutputFile: outputFile,
+				Class:      ctrl.Name,
+				Reason:     "controller class not found in emitted JS — validation/serialization injection was skipped (likely an unrecognized tsgo emit shape)",
+			})
+		}
+	}
 
 	// Build method lookup: className → methodName → *MethodLoc
 	// Keyed by class name so same-named methods in different controllers
@@ -272,6 +323,23 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 		return nil
 	}
 
+	// warnMethodMissing emits a warning when a method-level rewrite couldn't
+	// be applied. Suppressed if the class itself wasn't located — that case
+	// already produced a class-level error and per-method warnings would just
+	// be noise on top of it.
+	warnMethodMissing := func(className, methodName, kind string) {
+		if _, classFound := classMethodLookup[className]; !classFound {
+			return
+		}
+		emit(RewriteDiagnostic{
+			Severity:   DiagnosticWarning,
+			OutputFile: outputFile,
+			Class:      className,
+			Method:     methodName,
+			Reason:     kind + " rewrite skipped — method not found on located class (unrecognized tsgo emit shape: getter/setter, computed name, accessor, etc.)",
+		})
+	}
+
 	// ── Phase 3: Build prioritized edits ──
 
 	var edits []prioritizedEdit
@@ -280,6 +348,7 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 	for _, v := range validations {
 		ml := lookupMethod(v.className, v.methodName)
 		if ml == nil {
+			warnMethodMissing(v.className, v.methodName, "body/query/param validation")
 			continue
 		}
 		assertFunc := companionFuncName("assert", v.typeName)
@@ -321,6 +390,7 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 	for _, sc := range scalarCoercions {
 		ml := lookupMethod(sc.className, sc.methodName)
 		if ml == nil {
+			warnMethodMissing(sc.className, sc.methodName, "query/param scalar coercion")
 			continue
 		}
 		var coercionCode string
@@ -346,6 +416,7 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 	for _, tr := range transforms {
 		ml := lookupMethod(tr.className, tr.methodName)
 		if ml == nil {
+			warnMethodMissing(tr.className, tr.methodName, "return-value DTO transform")
 			continue
 		}
 		isAsync := ml.IsAsync
@@ -388,6 +459,7 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 	for _, pt := range primitiveTransforms {
 		ml := lookupMethod(pt.className, pt.methodName)
 		if ml == nil {
+			warnMethodMissing(pt.className, pt.methodName, "return-value primitive transform")
 			continue
 		}
 		isAsync := ml.IsAsync
@@ -532,6 +604,7 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 	for _, st := range sseTransforms {
 		dc := findMethodLevelDecorate(locs, st.className, st.methodName)
 		if dc == nil {
+			warnMethodMissing(st.className, st.methodName, "SSE event-stream metadata")
 			continue
 		}
 		var entries []string
