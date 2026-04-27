@@ -229,8 +229,8 @@ func TestBuildCompanionMap_BackslashPaths(t *testing.T) {
 func TestBuildOutputToSourceMap_MixedSlashes(t *testing.T) {
 	// Paths may already be mixed (some forward, some back)
 	sourceToOutput := map[string]string{
-		"D:/project/src/a.ts":       `D:\project\dist\a.ts`,
-		`D:\project\src\b.ts`:       "D:/project/dist/b.ts",
+		"D:/project/src/a.ts": `D:\project\dist\a.ts`,
+		`D:\project\src\b.ts`: "D:/project/dist/b.ts",
 	}
 
 	result := BuildOutputToSourceMap(sourceToOutput)

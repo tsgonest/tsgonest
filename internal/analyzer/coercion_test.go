@@ -76,7 +76,7 @@ func TestAutoEnableCoercion_NoCoerceOnArrayOfStrings(t *testing.T) {
 
 func TestAutoEnableCoercion_ArrayElementCoercion(t *testing.T) {
 	m := &metadata.Metadata{
-		Kind: metadata.KindArray,
+		Kind:        metadata.KindArray,
 		ElementType: &metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "number"},
 	}
 

@@ -329,8 +329,8 @@ func generateCompanionsInMemory(program *shimcompiler.Program, cfg *config.Confi
 	codegenStart := time.Now()
 	registry := walker.Registry()
 	companionOpts := codegen.CompanionOptions{
-		ModuleFormat:      moduleFormat,
-		StandardSchema:    cfg.Transforms.StandardSchema,
+		ModuleFormat:       moduleFormat,
+		StandardSchema:     cfg.Transforms.StandardSchema,
 		ResponseSerializer: cfg.Transforms.ResponseSerializer,
 	}
 

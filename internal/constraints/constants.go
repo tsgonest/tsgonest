@@ -9,10 +9,10 @@ type FieldName string
 
 const (
 	// String constraints
-	FieldFormat    FieldName = "format"
-	FieldMinLength FieldName = "minLength"
-	FieldMaxLength FieldName = "maxLength"
-	FieldPattern   FieldName = "pattern"
+	FieldFormat     FieldName = "format"
+	FieldMinLength  FieldName = "minLength"
+	FieldMaxLength  FieldName = "maxLength"
+	FieldPattern    FieldName = "pattern"
 	FieldStartsWith FieldName = "startsWith"
 	FieldEndsWith   FieldName = "endsWith"
 	FieldIncludes   FieldName = "includes"

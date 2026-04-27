@@ -16,8 +16,8 @@ type CompanionFile struct {
 
 // CompanionOptions controls optional features in companion file generation.
 type CompanionOptions struct {
-	ModuleFormat      string // "cjs" or "esm" (default: "esm")
-	StandardSchema    bool   // Generate Standard Schema v1 wrappers (default: false)
+	ModuleFormat       string // "cjs" or "esm" (default: "esm")
+	StandardSchema     bool   // Generate Standard Schema v1 wrappers (default: false)
 	ResponseSerializer string // "guard" (default), "safe", or "none" — controls type checking in stringify
 }
 

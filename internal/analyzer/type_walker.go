@@ -968,7 +968,7 @@ func mergeProperties(allProps []metadata.Property) []metadata.Property {
 // walkObjectType handles object types (interfaces, arrays, tuples, native types).
 func (w *TypeWalker) walkObjectType(t *shimchecker.Type) metadata.Metadata {
 	// Check for array first
-	if shimchecker.Checker_isArrayType(w.checker,t) {
+	if shimchecker.Checker_isArrayType(w.checker, t) {
 		typeArgs := w.checker.GetTypeArguments(t)
 		if len(typeArgs) > 0 {
 			elem := w.WalkType(typeArgs[0])
@@ -986,7 +986,7 @@ func (w *TypeWalker) walkObjectType(t *shimchecker.Type) metadata.Metadata {
 	if objFlags&shimchecker.ObjectFlagsClassOrInterface != 0 {
 		baseTypes := w.checker.GetBaseTypes(t)
 		for _, base := range baseTypes {
-			if shimchecker.Checker_isArrayType(w.checker,base) {
+			if shimchecker.Checker_isArrayType(w.checker, base) {
 				typeArgs := w.checker.GetTypeArguments(base)
 				if len(typeArgs) > 0 {
 					elem := w.WalkType(typeArgs[0])
@@ -1558,7 +1558,7 @@ func (w *TypeWalker) deriveTypeArgName(t *shimchecker.Type) (string, bool) {
 		}
 
 		// Arrays: derive from element type
-		if shimchecker.Checker_isArrayType(w.checker,t) {
+		if shimchecker.Checker_isArrayType(w.checker, t) {
 			elemArgs := w.checker.GetTypeArguments(t)
 			if len(elemArgs) > 0 {
 				if elemName, ok := w.deriveTypeArgName(elemArgs[0]); ok {
