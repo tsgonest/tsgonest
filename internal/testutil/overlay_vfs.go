@@ -123,6 +123,13 @@ func (o *OverlayVFS) WriteFile(path string, data string) error {
 	return o.fs.WriteFile(path, data)
 }
 
+func (o *OverlayVFS) AppendFile(path string, data string) error {
+	if _, ok := o.VirtualFiles[path]; ok {
+		panic("cannot append to overlay virtual file")
+	}
+	return o.fs.AppendFile(path, data)
+}
+
 func (o *OverlayVFS) Remove(path string) error {
 	if _, ok := o.VirtualFiles[path]; ok {
 		panic("cannot remove overlay virtual file")
