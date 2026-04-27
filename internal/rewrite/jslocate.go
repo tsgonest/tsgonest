@@ -96,8 +96,15 @@ func extractClassDecl(text string, node *ast.Node, locs *JSLocations) {
 	extractClassMembers(text, className, node.Members(), locs)
 }
 
-// extractClassFromVarStmt handles: let ClassName = class ClassName { ... }
-// This is the pattern tsgo emits for class declarations.
+// extractClassFromVarStmt handles class-as-initializer patterns tsgo emits:
+//
+//	let X = class X { ... }                    // simple form
+//	let X = X_1 = class X { ... }              // chained form, used when the class
+//	                                           // body references X (e.g.
+//	                                           // `new Logger(X.name)` field initializer)
+//	                                           // — tsgo binds X_1 first so the body
+//	                                           // can read it before the outer let
+//	                                           // is initialized.
 func extractClassFromVarStmt(text string, stmt *ast.Node, locs *JSLocations) {
 	vs := stmt.AsVariableStatement()
 	if vs.DeclarationList == nil {
@@ -112,7 +119,8 @@ func extractClassFromVarStmt(text string, stmt *ast.Node, locs *JSLocations) {
 			continue
 		}
 		vd := decl.AsVariableDeclaration()
-		if vd.Initializer == nil || vd.Initializer.Kind != ast.KindClassExpression {
+		classExpr := unwrapClassExpression(vd.Initializer)
+		if classExpr == nil {
 			continue
 		}
 		// Use the variable name as the class name (matches __decorate references)
@@ -124,8 +132,28 @@ func extractClassFromVarStmt(text string, stmt *ast.Node, locs *JSLocations) {
 		if className == "" {
 			continue
 		}
-		extractClassMembers(text, className, vd.Initializer.Members(), locs)
+		extractClassMembers(text, className, classExpr.Members(), locs)
 	}
+}
+
+// unwrapClassExpression walks down nested simple-assignment BinaryExpression
+// initializers to find a ClassExpression. Returns the ClassExpression node, or
+// nil if the chain ends in something else.
+func unwrapClassExpression(node *ast.Node) *ast.Node {
+	for node != nil {
+		if node.Kind == ast.KindClassExpression {
+			return node
+		}
+		if node.Kind != ast.KindBinaryExpression {
+			return nil
+		}
+		bin := node.AsBinaryExpression()
+		if bin.OperatorToken == nil || bin.OperatorToken.Kind != ast.KindEqualsToken {
+			return nil
+		}
+		node = bin.Right
+	}
+	return nil
 }
 
 // extractClassMembers extracts methods from a class's member list.

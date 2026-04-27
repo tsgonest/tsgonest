@@ -238,7 +238,7 @@ func TestBugRegressions_Rewrite(t *testing.T) {
 			}},
 		}}
 
-		got := rewriteController(input, "/dist/user.controller.js", controllers, map[string]string{}, "esm")
+		got := rewriteController(input, "/dist/user.controller.js", controllers, map[string]string{}, "esm", nil)
 		if !strings.Contains(got, "throw new __e") {
 			t.Fatalf("expected invalid boolean value guard to throw validation error, got:\n%s", got)
 		}
@@ -264,7 +264,7 @@ func TestBugRegressions_Rewrite(t *testing.T) {
 			}},
 		}}
 
-		got := rewriteController(input, "/dist/user.controller.js", controllers, map[string]string{}, "esm")
+		got := rewriteController(input, "/dist/user.controller.js", controllers, map[string]string{}, "esm", nil)
 		if !strings.Contains(got, `=== ""`) {
 			t.Fatalf("expected empty-string guard before numeric coercion, got:\n%s", got)
 		}
@@ -316,7 +316,7 @@ exports.AuthController = AuthController = __decorate([
 			"LoginResponse": "/dist/dto/auth.dto.LoginResponse.tsgonest.js",
 		}
 
-		result := rewriteController(input, "/dist/auth.controller.js", controllers, companionMap, "cjs")
+		result := rewriteController(input, "/dist/auth.controller.js", controllers, companionMap, "cjs", nil)
 
 		if !strings.Contains(result, "UseInterceptors)(TsgonestSerializeInterceptor)") {
 			t.Fatalf("expected interceptor injection for CJS chained assignment, got:\n%s", result)
@@ -358,7 +358,7 @@ UserController = __decorate([
 			"UserResponse": "/dist/user.dto.UserResponse.tsgonest.js",
 		}
 
-		result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "cjs")
+		result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "cjs", nil)
 
 		// "use strict" must remain the very first statement
 		if !strings.HasPrefix(result, `"use strict";`) {
@@ -399,7 +399,7 @@ UserController = __decorate([
 			"UserResponse": "/dist/user.dto.UserResponse.tsgonest.js",
 		}
 
-		result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm")
+		result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm", nil)
 
 		// Import should be at the very beginning (no "use strict" to skip past)
 		if !strings.HasPrefix(result, `import {`) {
@@ -499,7 +499,7 @@ exports.RefundsController = RefundsController = __decorate([
 		}
 
 		// Should not panic. Each controller's findAll must be wrapped with its own DTO.
-		result := rewriteController(input, "/dist/payments.controller.js", controllers, companionMap, "cjs")
+		result := rewriteController(input, "/dist/payments.controller.js", controllers, companionMap, "cjs", nil)
 		if !strings.Contains(result, "stringifyPaymentDto") {
 			t.Errorf("expected PaymentDto stringify in result, got:\n%s", result)
 		}
@@ -565,7 +565,7 @@ exports.RefundsController = RefundsController = __decorate([
 			"CreateRefundInput":  "/dist/refund.dto.CreateRefundInput.tsgonest.js",
 		}
 
-		result := rewriteController(input, "/dist/payments.controller.js", controllers, companionMap, "cjs")
+		result := rewriteController(input, "/dist/payments.controller.js", controllers, companionMap, "cjs", nil)
 		// Use service-call positions as anchors: paymentsService precedes refundsService in
 		// the file. assertCreatePaymentInput must appear before paymentsService (i.e. injected
 		// at the start of PaymentsController.create). assertCreateRefundInput must appear after
@@ -628,7 +628,7 @@ exports.RefundsController = RefundsController = __decorate([
 		}
 
 		// Should not panic. Each controller's getStatus must be wrapped independently.
-		result := rewriteController(input, "/dist/payments.controller.js", controllers, map[string]string{}, "cjs")
+		result := rewriteController(input, "/dist/payments.controller.js", controllers, map[string]string{}, "cjs", nil)
 		if strings.Count(result, "JSON.stringify") != 2 {
 			t.Errorf("expected two JSON.stringify wrappings (one per controller), got:\n%s", result)
 		}
@@ -687,7 +687,7 @@ exports.WebhooksController = WebhooksController = __decorate([
 			"WebhookPayload": "/dist/webhook.dto.WebhookPayload.tsgonest.js",
 		}
 
-		result := rewriteController(input, "/dist/payments.controller.js", controllers, companionMap, "cjs")
+		result := rewriteController(input, "/dist/payments.controller.js", controllers, companionMap, "cjs", nil)
 		// TsgonestSerializeInterceptor must appear only once — in PaymentsController's
 		// __decorate. WebhooksController has no return transforms and must not get it.
 		count := strings.Count(result, "UseInterceptors)(TsgonestSerializeInterceptor)")
@@ -782,7 +782,7 @@ ControllerB = __decorate([
 			"UserResponse": "/dist/user.dto.UserResponse.tsgonest.js",
 		}
 
-		result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm")
+		result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm", nil)
 
 		if !strings.Contains(result, "stringifyUserResponse") {
 			t.Fatalf("expected stringifyUserResponse in result, got:\n%s", result)
@@ -816,7 +816,7 @@ ControllerB = __decorate([
 			"UserResponse": "/dist/user.dto.UserResponse.tsgonest.js",
 		}
 
-		result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm")
+		result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm", nil)
 
 		if !strings.Contains(result, "stringifyUserResponse(await") {
 			t.Fatalf("expected direct stringifyUserResponse(await ...) for non-nullable return, got:\n%s", result)
@@ -854,7 +854,7 @@ ControllerB = __decorate([
 			"UserResponse": "/dist/user.dto.UserResponse.tsgonest.js",
 		}
 
-		result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm")
+		result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm", nil)
 
 		// Must handle null before calling .map()
 		if !strings.Contains(result, `== null`) && !strings.Contains(result, `=== null`) {
@@ -887,7 +887,7 @@ ControllerB = __decorate([
 			"UserResponse": "/dist/user.dto.UserResponse.tsgonest.js",
 		}
 
-		result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm")
+		result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm", nil)
 
 		// Must insert async
 		if !strings.Contains(result, "async getDefault") {
@@ -922,7 +922,7 @@ ControllerB = __decorate([
 			"UserResponse": "/dist/user.dto.UserResponse.tsgonest.js",
 		}
 
-		result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm")
+		result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm", nil)
 
 		if !strings.Contains(result, "stringifyUserResponse") {
 			t.Fatalf("expected stringifyUserResponse in result, got:\n%s", result)
@@ -953,7 +953,7 @@ ControllerB = __decorate([
 			"UserResponse": "/dist/user.dto.UserResponse.tsgonest.js",
 		}
 
-		result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm")
+		result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm", nil)
 
 		// Must guard against both null and undefined
 		if !strings.Contains(result, `== null`) && !strings.Contains(result, `=== null`) {
@@ -993,7 +993,7 @@ ControllerB = __decorate([
 			"UserResponse": "/dist/user.dto.UserResponse.tsgonest.js",
 		}
 
-		result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm")
+		result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm", nil)
 
 		// Both return paths must have the null guard wrapper
 		nullCheckCount := strings.Count(result, `== null`)
@@ -1028,7 +1028,7 @@ exports.UserController = UserController = __decorate([
 			"UserResponse": "/dist/user.dto.UserResponse.tsgonest.js",
 		}
 
-		result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "cjs")
+		result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "cjs", nil)
 
 		if !strings.Contains(result, "stringifyUserResponse") {
 			t.Fatalf("expected stringifyUserResponse in CJS result, got:\n%s", result)
@@ -1075,7 +1075,7 @@ exports.UserController = UserController = __decorate([
 			"UserResponse": "/dist/user.dto.UserResponse.tsgonest.js",
 		}
 
-		result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm")
+		result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm", nil)
 
 		// getById: must have null guard
 		getByIdIdx := strings.Index(result, "getById")
@@ -1128,7 +1128,7 @@ exports.UserController = UserController = __decorate([
 			"UserResponse": "/dist/user.dto.UserResponse.tsgonest.js",
 		}
 
-		result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm")
+		result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm", nil)
 
 		// The .map() callback must have a null guard for each element
 		if !strings.Contains(result, `== null`) {
@@ -1170,7 +1170,7 @@ exports.UserController = UserController = __decorate([
 			"UserResponse": "/dist/user.dto.UserResponse.tsgonest.js",
 		}
 
-		result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm")
+		result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm", nil)
 
 		// Non-nullable elements: .map(_v => serializeUserResponse(_v)) without null guard
 		if strings.Contains(result, `== null`) {
@@ -1207,7 +1207,7 @@ exports.UserController = UserController = __decorate([
 			"UserResponse": "/dist/user.dto.UserResponse.tsgonest.js",
 		}
 
-		result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm")
+		result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm", nil)
 
 		// Must guard the array-level null AND element-level null
 		nullChecks := strings.Count(result, `== null`)
@@ -1373,7 +1373,7 @@ exports.UserController = UserController = __decorate([
 			"UserResponse": "/dist/user.dto.UserResponse.tsgonest.js",
 		}
 
-		result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm")
+		result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm", nil)
 
 		// Nested arrays must NOT be serialized — the .map() wrapper can't handle them.
 		// The output should be unchanged (no serialize/stringify injection).
@@ -1427,7 +1427,7 @@ exports.EventController = EventController = __decorate([
 			"UserDto": "/dist/user.dto.UserDto.tsgonest.js",
 		}
 
-		result := rewriteController(input, "/dist/event.controller.js", controllers, companionMap, "cjs")
+		result := rewriteController(input, "/dist/event.controller.js", controllers, companionMap, "cjs", nil)
 
 		// The "deleted" event has nullable data → assert and stringify must be wrapped
 		if !strings.Contains(result, `_d == null ? _d : assertUserDto(_d)`) {

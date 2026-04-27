@@ -5,11 +5,59 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	shimcompiler "github.com/microsoft/typescript-go/shim/compiler"
 	"github.com/tsgonest/tsgonest/internal/analyzer"
 	"github.com/tsgonest/tsgonest/internal/pathalias"
 )
+
+// DiagnosticSeverity classifies a rewrite diagnostic.
+//
+// Error means the rewriter was supposed to inject something load-bearing
+// (validation, serialization) but couldn't locate the target. Silent no-op
+// here = unvalidated input hitting handlers, so the build must fail.
+//
+// Warning means a recoverable degradation: the file still works correctly
+// without the missed injection (e.g. a single method couldn't be located,
+// other methods still got their injections).
+type DiagnosticSeverity int
+
+const (
+	DiagnosticWarning DiagnosticSeverity = iota
+	DiagnosticError
+)
+
+// RewriteDiagnostic is a single message produced by the rewriter when it
+// couldn't apply an intended injection.
+type RewriteDiagnostic struct {
+	Severity   DiagnosticSeverity
+	OutputFile string // emit-time JS path (where the rewrite was attempted)
+	Class      string // controller class name
+	Method     string // route method name; empty for class-level diagnostics
+	Reason     string // human-readable explanation
+}
+
+// IsError returns true if the diagnostic should fail the build.
+func (d RewriteDiagnostic) IsError() bool {
+	return d.Severity == DiagnosticError
+}
+
+// Format returns a single-line human-readable form.
+func (d RewriteDiagnostic) Format() string {
+	prefix := "warning"
+	if d.Severity == DiagnosticError {
+		prefix = "error"
+	}
+	target := d.Class
+	if d.Method != "" {
+		target = d.Class + "." + d.Method
+	}
+	if target == "" {
+		return fmt.Sprintf("%s: %s — %s", prefix, d.OutputFile, d.Reason)
+	}
+	return fmt.Sprintf("%s: %s (%s) — %s", prefix, d.OutputFile, target, d.Reason)
+}
 
 // normalizeSlashes converts all backslashes to forward slashes regardless of OS.
 // filepath.ToSlash only converts os.PathSeparator (no-op on Linux for '\').
@@ -50,6 +98,40 @@ type RewriteContext struct {
 	// HelpersPath is the absolute path to the _tsgonest_helpers.js file.
 	// Used for inline scalar coercion imports in controllers.
 	HelpersPath string
+
+	// diagMu guards diagnostics. WriteFile callbacks may run concurrently
+	// across goroutines during emit, so appends must be synchronized.
+	diagMu      sync.Mutex
+	diagnostics []RewriteDiagnostic
+}
+
+// addDiagnostic appends a diagnostic in a thread-safe way.
+func (ctx *RewriteContext) addDiagnostic(d RewriteDiagnostic) {
+	ctx.diagMu.Lock()
+	ctx.diagnostics = append(ctx.diagnostics, d)
+	ctx.diagMu.Unlock()
+}
+
+// Diagnostics returns a copy of all diagnostics collected during emit.
+// Safe to call after emit completes.
+func (ctx *RewriteContext) Diagnostics() []RewriteDiagnostic {
+	ctx.diagMu.Lock()
+	defer ctx.diagMu.Unlock()
+	out := make([]RewriteDiagnostic, len(ctx.diagnostics))
+	copy(out, ctx.diagnostics)
+	return out
+}
+
+// HasErrors returns true if any collected diagnostic has error severity.
+func (ctx *RewriteContext) HasErrors() bool {
+	ctx.diagMu.Lock()
+	defer ctx.diagMu.Unlock()
+	for _, d := range ctx.diagnostics {
+		if d.Severity == DiagnosticError {
+			return true
+		}
+	}
+	return false
 }
 
 // MakeWriteFile returns a WriteFile callback that applies all rewrites during emit.
@@ -89,7 +171,7 @@ func (ctx *RewriteContext) MakeWriteFile() shimcompiler.WriteFile {
 								os.Exit(1)
 							}
 						}()
-						text = rewriteController(text, fileName, matchingControllers, ctx.CompanionMap, ctx.ModuleFormat)
+						text = rewriteController(text, fileName, matchingControllers, ctx.CompanionMap, ctx.ModuleFormat, ctx.addDiagnostic)
 					}()
 				}
 			}

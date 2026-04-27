@@ -329,6 +329,28 @@ func TestLocateJS_ClassLevelDecorate_ChainedAssignment(t *testing.T) {
 	}
 }
 
+func TestLocateJS_SelfReferencingClass(t *testing.T) {
+	// tsgo emits `let X = X_1 = class X { ... }` when the class body references
+	// the class itself (e.g. `new Logger(X.name)` instance field initializer).
+	// The locator must walk through the chained assignment to find the inner
+	// ClassExpression — see issue #114.
+	input := `var FooController_1;
+let FooController = FooController_1 = class FooController {
+    logger = new Logger(FooController_1.name);
+    async listThings(companyId, query) {
+        return this.svc.list(companyId, query);
+    }
+};`
+	locs := LocateJS(input)
+	cls, ok := locs.Classes["FooController"]
+	if !ok {
+		t.Fatal("expected to find class FooController via chained-assignment initializer")
+	}
+	if _, ok := cls.Methods["listThings"]; !ok {
+		t.Fatal("expected to find method listThings on chained-assigned class")
+	}
+}
+
 func TestLocateJS_MultipleParams(t *testing.T) {
 	input := `class Foo {
     bar(a, b, c) {
