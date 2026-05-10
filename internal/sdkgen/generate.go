@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"unicode"
 )
@@ -149,6 +151,22 @@ type formatterInfo struct {
 	rootDir string // directory where the config file lives (for running npx)
 }
 
+// runNpx builds an *exec.Cmd that invokes npx with the given arguments.
+// On Windows, npx is npx.cmd and must be executed through cmd.exe /C so the
+// shell resolves .cmd shims correctly. Forward slashes are required for glob
+// arguments because prettier's glob engine treats backslashes as escape chars.
+func runNpx(args ...string) *exec.Cmd {
+	return runNpxForGOOS(runtime.GOOS, args...)
+}
+
+// runNpxForGOOS is the testable core of runNpx; goos mirrors runtime.GOOS.
+func runNpxForGOOS(goos string, args ...string) *exec.Cmd {
+	if goos == "windows" {
+		return exec.Command("cmd.exe", append([]string{"/C", "npx"}, args...)...)
+	}
+	return exec.Command("npx", args...)
+}
+
 // formatOutput detects a project formatter and runs it on the output directory.
 // Supported: prettier, biome, oxfmt. Errors are non-fatal (warnings only).
 // The formatter is invoked from the directory where its config was found,
@@ -159,18 +177,23 @@ func formatOutput(outputDir string) {
 		return
 	}
 	var cmd *exec.Cmd
+	// Use path.Join (not filepath.Join) so the glob always uses forward slashes —
+	// prettier's glob engine treats backslashes as escape characters on Windows.
+	globPattern := path.Join(filepath.ToSlash(outputDir), "**/*.ts")
 	switch f.name {
 	case "prettier":
-		cmd = exec.Command("npx", "prettier", "--write", filepath.Join(outputDir, "**/*.ts"))
+		cmd = runNpx("prettier", "--write", globPattern)
 	case "biome":
-		cmd = exec.Command("npx", "@biomejs/biome", "format", "--write", outputDir)
+		cmd = runNpx("@biomejs/biome", "format", "--write", outputDir)
 	case "oxfmt":
-		cmd = exec.Command("npx", "oxfmt", "--write", outputDir)
+		cmd = runNpx("oxfmt", "--write", outputDir)
 	default:
 		return
 	}
 	cmd.Dir = f.rootDir
-	cmd.Run()
+	if out, err := cmd.CombinedOutput(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: formatter failed: %v\n%s", err, out)
+	}
 }
 
 // detectFormatter walks up from outputDir looking for formatter config files.

@@ -24,11 +24,11 @@ import (
 // later at line ~295). The rebuild goroutine is not joined. If it's mid-build
 // when runDevLoop returns:
 //
-//   1. close(done) fires — does NOT unblock the goroutine; it's running a build.
-//   2. proc.Stop() fires — kills the current child.
-//   3. Rebuild goroutine completes — sees no `<-done` arm yet (it hasn't reached
-//      the next select). Calls proc.Restart() → proc.Start() → orphan child.
-//   4. runDevLoop returns. The orphan child outlives the dev loop.
+//  1. close(done) fires — does NOT unblock the goroutine; it's running a build.
+//  2. proc.Stop() fires — kills the current child.
+//  3. Rebuild goroutine completes — sees no `<-done` arm yet (it hasn't reached
+//     the next select). Calls proc.Restart() → proc.Start() → orphan child.
+//  4. runDevLoop returns. The orphan child outlives the dev loop.
 //
 // Fix: track the rebuild goroutine with sync.WaitGroup and Wait() before the
 // proc.Stop() defer runs. Or set an atomic "shutting down" flag that the
@@ -85,7 +85,7 @@ func TestDevLoop_ManualRestartCanDoubleRestart_KnownIssue(t *testing.T) {
 
 // dev.go:~243 has:
 //
-//   proc = runner.New("sh", []string{"-c", flags.execCmd}, cwd)
+//	proc = runner.New("sh", []string{"-c", flags.execCmd}, cwd)
 //
 // `sh` is not on PATH on default Windows installs (only with Git Bash / WSL).
 // Windows users running `tsgonest dev --exec "node ./scripts/run.js"` get

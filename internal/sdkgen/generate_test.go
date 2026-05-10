@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"path"
 )
 
 func TestGenerate_BasicFixture(t *testing.T) {
@@ -661,4 +663,50 @@ func TestBuildFormData_InterfaceCompatibleConstraint(t *testing.T) {
 		"FormDataValue should still be exported")
 	assertContains(t, formDataContent, "export type FormDataCompatible",
 		"FormDataCompatible should still be exported for backwards compatibility")
+}
+
+func TestRunNpxForGOOS_NonWindows(t *testing.T) {
+	for _, goos := range []string{"linux", "darwin"} {
+		cmd := runNpxForGOOS(goos, "prettier", "--write", "out/**/*.ts")
+		if cmd.Path == "" {
+			t.Fatalf("goos=%s: cmd.Path is empty", goos)
+		}
+		// Args[0] is the executable path resolved by exec.LookPath; check raw args via Args.
+		if len(cmd.Args) < 1 || !strings.HasSuffix(cmd.Args[0], "npx") {
+			t.Errorf("goos=%s: expected executable to be npx, got %v", goos, cmd.Args)
+		}
+		if cmd.Args[1] != "prettier" {
+			t.Errorf("goos=%s: expected first arg to be 'prettier', got %q", goos, cmd.Args[1])
+		}
+	}
+}
+
+func TestRunNpxForGOOS_Windows(t *testing.T) {
+	cmd := runNpxForGOOS("windows", "prettier", "--write", "out/**/*.ts")
+	if cmd.Path == "" {
+		t.Fatal("windows: cmd.Path is empty")
+	}
+	// On a non-Windows host, cmd.exe won't be found — check Args directly.
+	if !strings.Contains(cmd.Args[0], "cmd") {
+		t.Errorf("windows: expected cmd.exe as executable, got %q", cmd.Args[0])
+	}
+	if len(cmd.Args) < 4 || cmd.Args[1] != "/C" || cmd.Args[2] != "npx" {
+		t.Errorf("windows: expected [cmd.exe /C npx ...], got %v", cmd.Args)
+	}
+	if cmd.Args[3] != "prettier" {
+		t.Errorf("windows: expected 'prettier' as first npx arg, got %q", cmd.Args[3])
+	}
+}
+
+func TestRunNpxGlobArgUsesForwardSlashes(t *testing.T) {
+	// No matter what the OS path separator is, the glob passed to prettier must
+	// use forward slashes so prettier's glob engine interprets it correctly.
+	outputDir := filepath.Join("C:", "Users", "ci", "project", "sdk")
+	globPattern := path.Join(filepath.ToSlash(outputDir), "**/*.ts")
+	if strings.Contains(globPattern, `\`) {
+		t.Errorf("glob pattern contains backslashes: %q", globPattern)
+	}
+	if !strings.HasSuffix(globPattern, "**/*.ts") {
+		t.Errorf("glob pattern does not end with **/*.ts: %q", globPattern)
+	}
 }
