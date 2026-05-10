@@ -909,3 +909,37 @@ func TestCleanDir_DangerousPath(t *testing.T) {
 		}
 	}
 }
+
+// --- sweepBuildCacheTmp tests ---
+
+func TestRunBuild_SweepsTmpOrphans(t *testing.T) {
+	dir := t.TempDir()
+
+	orphan1 := filepath.Join(dir, ".tsgonest-cache.tmp")
+	orphan2 := filepath.Join(dir, ".tsgonest-cache.tmp.123")
+	keeper := filepath.Join(dir, ".tsgonest-cache")
+
+	for _, p := range []string{orphan1, orphan2, keeper} {
+		if err := os.WriteFile(p, []byte("x"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	sweepBuildCacheTmp(dir)
+
+	if _, err := os.Stat(orphan1); !os.IsNotExist(err) {
+		t.Error(".tsgonest-cache.tmp should be removed by sweep")
+	}
+	if _, err := os.Stat(orphan2); !os.IsNotExist(err) {
+		t.Error(".tsgonest-cache.tmp.123 should be removed by sweep")
+	}
+	if _, err := os.Stat(keeper); os.IsNotExist(err) {
+		t.Error(".tsgonest-cache (no .tmp suffix) should NOT be removed by sweep")
+	}
+}
+
+func TestRunBuild_SweepEmptyDir(t *testing.T) {
+	// Should not panic or error on an empty or nonexistent outDir
+	sweepBuildCacheTmp(t.TempDir())
+	sweepBuildCacheTmp("")
+}

@@ -19,7 +19,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
+
+// renameFn and removeFn are package-level vars so tests can inject fakes.
+var renameFn = os.Rename
+var removeFn = os.Remove
 
 // SchemaVersion is bumped when the cache format or analysis output format changes.
 // A mismatch forces a full rebuild, ensuring binary upgrades don't produce stale outputs.
@@ -76,6 +81,24 @@ func Load(path string) *Cache {
 	return &c
 }
 
+// renameWithRetry attempts os.Rename up to 5 times with exponential backoff.
+// Windows AV / file-indexer / OneDrive typically hold handles for 50–200 ms,
+// so a total budget of ~900 ms is sufficient without meaningfully slowing builds.
+func renameWithRetry(tmp, path string) error {
+	var lastErr error
+	for _, delay := range []time.Duration{0, 50 * time.Millisecond, 100 * time.Millisecond, 250 * time.Millisecond, 500 * time.Millisecond} {
+		if delay > 0 {
+			time.Sleep(delay)
+		}
+		if err := renameFn(tmp, path); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+	}
+	return lastErr
+}
+
 // Save writes the cache to disk atomically (write to temp, rename).
 // Returns an error if the write fails, but callers may choose to log and continue
 // (a failed cache save just means the next build won't benefit from caching).
@@ -97,9 +120,9 @@ func Save(path string, cache *Cache) error {
 		return fmt.Errorf("writing cache temp file: %w", err)
 	}
 
-	if err := os.Rename(tmp, path); err != nil {
-		// Clean up temp file on rename failure
-		os.Remove(tmp)
+	if err := renameWithRetry(tmp, path); err != nil {
+		_ = removeFn(tmp)  // best-effort: clean up the orphaned temp file
+		_ = removeFn(path) // ensure stale cache doesn't satisfy IsValid on the next build
 		return fmt.Errorf("renaming cache file: %w", err)
 	}
 

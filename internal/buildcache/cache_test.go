@@ -1,6 +1,7 @@
 package buildcache
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -304,6 +305,91 @@ func TestSaveCreatesDirectory(t *testing.T) {
 	loaded := Load(nestedPath)
 	if loaded == nil {
 		t.Fatal("failed to load from nested directory")
+	}
+}
+
+func TestSave_RenameSuccess(t *testing.T) {
+	dir := t.TempDir()
+	cachePath := filepath.Join(dir, ".tsgonest-cache")
+
+	c := New("hash", nil)
+	if err := Save(cachePath, c); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+
+	if _, err := os.Stat(cachePath); err != nil {
+		t.Error("cache file should exist after successful save")
+	}
+	if _, err := os.Stat(cachePath + ".tmp"); !os.IsNotExist(err) {
+		t.Error("tmp file should not exist after successful save")
+	}
+}
+
+func TestSave_RenameRetriesOnTransientFailure(t *testing.T) {
+	dir := t.TempDir()
+	cachePath := filepath.Join(dir, ".tsgonest-cache")
+
+	calls := 0
+	orig := renameFn
+	t.Cleanup(func() { renameFn = orig })
+	renameFn = func(src, dst string) error {
+		calls++
+		if calls <= 2 {
+			return errors.New("transient: access denied")
+		}
+		return os.Rename(src, dst)
+	}
+
+	c := New("hash", nil)
+	if err := Save(cachePath, c); err != nil {
+		t.Fatalf("Save should succeed after retries, got: %v", err)
+	}
+	if calls < 3 {
+		t.Errorf("expected at least 3 rename calls (2 failures + 1 success), got %d", calls)
+	}
+	if _, err := os.Stat(cachePath + ".tmp"); !os.IsNotExist(err) {
+		t.Error("tmp file should not exist after eventual success")
+	}
+}
+
+func TestSave_RenameFailureRemovesStaleCache(t *testing.T) {
+	dir := t.TempDir()
+	cachePath := filepath.Join(dir, ".tsgonest-cache")
+
+	// Pre-create a stale cache file on disk.
+	if err := os.WriteFile(cachePath, []byte(`{"v":1,"configHash":"old"}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	orig := renameFn
+	t.Cleanup(func() { renameFn = orig })
+	renameFn = func(_, _ string) error { return errors.New("access denied") }
+
+	c := New("new-hash", nil)
+	err := Save(cachePath, c)
+	if err == nil {
+		t.Fatal("Save should return error when rename always fails")
+	}
+
+	// Stale cache must be gone so the next build runs post-processing.
+	if _, statErr := os.Stat(cachePath); !os.IsNotExist(statErr) {
+		t.Error("stale cache file should be removed after permanent rename failure")
+	}
+}
+
+func TestSave_RenameFailureRemovesTmp(t *testing.T) {
+	dir := t.TempDir()
+	cachePath := filepath.Join(dir, ".tsgonest-cache")
+
+	orig := renameFn
+	t.Cleanup(func() { renameFn = orig })
+	renameFn = func(_, _ string) error { return errors.New("access denied") }
+
+	c := New("hash", nil)
+	_ = Save(cachePath, c)
+
+	if _, err := os.Stat(cachePath + ".tmp"); !os.IsNotExist(err) {
+		t.Error("tmp file should be best-effort removed after permanent rename failure")
 	}
 }
 

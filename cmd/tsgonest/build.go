@@ -124,6 +124,25 @@ func runBuildWithIncr(args []string, oldIncrProgram *shimincremental.Program, ou
 	return runBuildWithIncrAndProgram(args, oldIncrProgram, outIncrProgram, nil)
 }
 
+// sweepBuildCacheTmp removes any orphaned .tsgonest-cache.tmp files left by a
+// previous build that was interrupted before the atomic rename completed.
+// This is cheap and idempotent; errors are silently ignored.
+func sweepBuildCacheTmp(outDir string) {
+	if outDir == "" {
+		return
+	}
+	// Match both ".tsgonest-cache.tmp" and numbered variants like ".tsgonest-cache.tmp.123".
+	for _, pattern := range []string{
+		filepath.Join(outDir, ".tsgonest-cache.tmp"),
+		filepath.Join(outDir, ".tsgonest-cache.tmp.*"),
+	} {
+		matches, _ := filepath.Glob(pattern)
+		for _, m := range matches {
+			_ = os.Remove(m)
+		}
+	}
+}
+
 // runBuildWithIncrAndProgram is the core build pipeline. When prebuiltProgram is
 // non-nil (from UpdateProgram fast path), it skips CreateProgramFromConfig —
 // avoiding re-reading and re-parsing all source files.
@@ -208,6 +227,9 @@ func runBuildWithIncrAndProgram(args []string, oldIncrProgram *shimincremental.P
 		resolvedTsconfigPath = filepath.Join(cwd, resolvedTsconfigPath)
 	}
 	postCachePath := buildcache.CachePath(opts.OutDir, resolvedTsconfigPath)
+
+	// Sweep orphaned .tmp files before any build logic touches the cache.
+	sweepBuildCacheTmp(opts.OutDir)
 
 	// Clean output directory if requested (using parsed OutDir, no re-parsing needed)
 	if clean && opts.OutDir != "" {
