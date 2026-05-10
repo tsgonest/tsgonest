@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -483,6 +484,151 @@ func TestRunner_StartReturnsRealErrorWhenRetryFails(t *testing.T) {
 	}
 	if attempts != 1 {
 		t.Errorf("non-breakaway failures should NOT trigger the retry; attempts=%d", attempts)
+	}
+}
+
+// --- resumeProcessThreads unit tests (#153) ---
+//
+// These exercise the open/resume aggregation logic via the package-level
+// openThreadFn / resumeFn seams without spawning a real suspended process.
+
+func withResumeSeams(t *testing.T, openFn func(uint32) (windows.Handle, error), resFn func(windows.Handle) (uint32, error)) {
+	t.Helper()
+	prevOpen, prevRes := openThreadFn, resumeFn
+	openThreadFn = openFn
+	resumeFn = resFn
+	t.Cleanup(func() {
+		openThreadFn = prevOpen
+		resumeFn = prevRes
+	})
+}
+
+func TestResumeProcessThreads_AllSucceed(t *testing.T) {
+	openCalls := atomic.Int32{}
+	resumeCalls := atomic.Int32{}
+	withResumeSeams(t,
+		func(tid uint32) (windows.Handle, error) {
+			openCalls.Add(1)
+			return windows.Handle(uintptr(tid)), nil
+		},
+		func(h windows.Handle) (uint32, error) {
+			resumeCalls.Add(1)
+			return 1, nil
+		},
+	)
+
+	if err := resumeThreadIDs(1234, []uint32{10, 20, 30}); err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if got := openCalls.Load(); got != 3 {
+		t.Errorf("expected 3 open calls, got %d", got)
+	}
+	if got := resumeCalls.Load(); got != 3 {
+		t.Errorf("expected 3 resume calls, got %d", got)
+	}
+}
+
+func TestResumeProcessThreads_AllFail(t *testing.T) {
+	sentinel := errors.New("simulated ResumeThread failure")
+	withResumeSeams(t,
+		func(tid uint32) (windows.Handle, error) {
+			return windows.Handle(uintptr(tid)), nil
+		},
+		func(h windows.Handle) (uint32, error) {
+			return 0, sentinel
+		},
+	)
+
+	err := resumeThreadIDs(4321, []uint32{10, 20, 30})
+	if err == nil {
+		t.Fatal("expected error when all resumes fail, got nil")
+	}
+	if !errors.Is(err, sentinel) {
+		t.Errorf("expected wrapped sentinel error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "failed to resume any thread") {
+		t.Errorf("expected 'failed to resume any thread' in error, got %v", err)
+	}
+}
+
+func TestResumeProcessThreads_PartialSuccess(t *testing.T) {
+	sentinel := errors.New("simulated first-thread failure")
+	var resumeCount atomic.Int32
+	withResumeSeams(t,
+		func(tid uint32) (windows.Handle, error) {
+			return windows.Handle(uintptr(tid)), nil
+		},
+		func(h windows.Handle) (uint32, error) {
+			n := resumeCount.Add(1)
+			if n == 1 {
+				return 0, sentinel
+			}
+			return 1, nil
+		},
+	)
+
+	stderrBack := os.Stderr
+	rPipe, wPipe, _ := os.Pipe()
+	os.Stderr = wPipe
+	t.Cleanup(func() { os.Stderr = stderrBack })
+
+	err := resumeThreadIDs(99, []uint32{1, 2, 3})
+
+	wPipe.Close()
+	buf := make([]byte, 4096)
+	n, _ := rPipe.Read(buf)
+	logged := string(buf[:n])
+
+	if err != nil {
+		t.Fatalf("expected nil error on partial success, got %v", err)
+	}
+	if !strings.Contains(logged, "resumed 2/3 threads for pid 99") {
+		t.Errorf("expected partial-success warning on stderr, got %q", logged)
+	}
+}
+
+func TestResumeProcessThreads_NoThreads(t *testing.T) {
+	withResumeSeams(t,
+		func(tid uint32) (windows.Handle, error) {
+			t.Fatalf("openThreadFn should not be called when tids is empty")
+			return 0, nil
+		},
+		func(h windows.Handle) (uint32, error) {
+			t.Fatalf("resumeFn should not be called when tids is empty")
+			return 0, nil
+		},
+	)
+
+	err := resumeThreadIDs(7, nil)
+	if err == nil {
+		t.Fatal("expected error when no threads are found, got nil")
+	}
+	if !strings.Contains(err.Error(), "no threads found for pid 7") {
+		t.Errorf("expected 'no threads found for pid 7', got %v", err)
+	}
+}
+
+func TestResumeProcessThreads_OpenFailsAll(t *testing.T) {
+	sentinel := errors.New("OpenThread denied")
+	withResumeSeams(t,
+		func(tid uint32) (windows.Handle, error) {
+			return 0, sentinel
+		},
+		func(h windows.Handle) (uint32, error) {
+			t.Fatalf("resumeFn should not be called when all opens fail")
+			return 0, nil
+		},
+	)
+
+	err := resumeThreadIDs(11, []uint32{1, 2})
+	if err == nil {
+		t.Fatal("expected error when every OpenThread fails, got nil")
+	}
+	if !errors.Is(err, sentinel) {
+		t.Errorf("expected wrapped sentinel, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "no threads opened for pid 11") {
+		t.Errorf("expected 'no threads opened' in error, got %v", err)
 	}
 }
 

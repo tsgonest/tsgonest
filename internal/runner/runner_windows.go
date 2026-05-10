@@ -5,6 +5,7 @@ package runner
 import (
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"syscall"
 	"time"
@@ -23,6 +24,37 @@ const createSuspended = 0x00000004
 
 // startProcess is overridable in tests to exercise the breakaway-denied retry path.
 var startProcess = func(cmd *exec.Cmd) error { return cmd.Start() }
+
+var (
+	modKernel32      = windows.NewLazySystemDLL("kernel32.dll")
+	procResumeThread = modKernel32.NewProc("ResumeThread")
+)
+
+// openThreadFn and resumeFn are package-level seams so unit tests can
+// inject deterministic open/resume behavior without spawning a real
+// suspended Windows process. Production code uses the real syscalls.
+var (
+	openThreadFn = openThreadForResume
+	resumeFn     = resumeThreadChecked
+)
+
+func openThreadForResume(tid uint32) (windows.Handle, error) {
+	return windows.OpenThread(windows.THREAD_SUSPEND_RESUME, false, tid)
+}
+
+// resumeThreadChecked invokes ResumeThread and treats the documented
+// failure return (-1 / 0xFFFFFFFF) as an error even if the wrapper does
+// not surface one. Returns the previous suspend count on success.
+func resumeThreadChecked(h windows.Handle) (uint32, error) {
+	r1, _, e1 := procResumeThread.Call(uintptr(h))
+	if uint32(r1) == 0xFFFFFFFF {
+		if e1 != nil && e1 != syscall.Errno(0) {
+			return 0, e1
+		}
+		return 0, fmt.Errorf("ResumeThread failed (handle %v)", h)
+	}
+	return uint32(r1), nil
+}
 
 // Start starts the child process inside a Windows Job Object.
 // The process is created suspended, assigned to the Job Object, then resumed.
@@ -220,34 +252,76 @@ func isBreakawayDenied(err error) bool {
 	return err != nil && errors.Is(err, syscall.ERROR_ACCESS_DENIED)
 }
 
-// resumeProcessThreads enumerates and resumes all threads of a suspended process.
-// Returns an error if no threads were found or resumed for the target PID.
+// resumeProcessThreads enumerates the threads owned by pid and resumes each.
+// It distinguishes "no threads found" (snapshot or filter empty), "all resumes
+// failed" (every ResumeThread returned -1), and partial success (some resumed,
+// some failed — likely benign because the main thread usually succeeds first).
 func resumeProcessThreads(pid int) error {
+	tids, err := snapshotThreadIDsForPID(uint32(pid))
+	if err != nil {
+		return err
+	}
+	return resumeThreadIDs(pid, tids)
+}
+
+func snapshotThreadIDsForPID(pid uint32) ([]uint32, error) {
 	snapshot, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPTHREAD, 0)
 	if err != nil {
-		return fmt.Errorf("creating thread snapshot: %w", err)
+		return nil, fmt.Errorf("creating thread snapshot: %w", err)
 	}
 	defer windows.CloseHandle(snapshot)
 
 	var te windows.ThreadEntry32
 	te.Size = uint32(unsafe.Sizeof(te))
 
-	resumed := 0
+	var tids []uint32
 	err = windows.Thread32First(snapshot, &te)
 	for err == nil {
-		if te.OwnerProcessID == uint32(pid) {
-			th, thErr := windows.OpenThread(windows.THREAD_SUSPEND_RESUME, false, te.ThreadID)
-			if thErr == nil {
-				windows.ResumeThread(th)
-				windows.CloseHandle(th)
-				resumed++
-			}
+		if te.OwnerProcessID == pid {
+			tids = append(tids, te.ThreadID)
 		}
 		err = windows.Thread32Next(snapshot, &te)
 	}
+	return tids, nil
+}
 
-	if resumed == 0 {
+func resumeThreadIDs(pid int, tids []uint32) error {
+	opened := 0
+	resumed := 0
+	var firstErr error
+
+	for _, tid := range tids {
+		h, openErr := openThreadFn(tid)
+		if openErr != nil {
+			if firstErr == nil {
+				firstErr = openErr
+			}
+			continue
+		}
+		opened++
+		_, resumeErr := resumeFn(h)
+		windows.CloseHandle(h)
+		if resumeErr != nil {
+			if firstErr == nil {
+				firstErr = resumeErr
+			}
+			continue
+		}
+		resumed++
+	}
+
+	if opened == 0 {
+		if firstErr != nil {
+			return fmt.Errorf("no threads opened for pid %d: %w", pid, firstErr)
+		}
 		return fmt.Errorf("no threads found for pid %d", pid)
+	}
+	if resumed == 0 {
+		return fmt.Errorf("failed to resume any thread for pid %d: %w", pid, firstErr)
+	}
+	if resumed < opened {
+		fmt.Fprintf(os.Stderr, "tsgonest: resumed %d/%d threads for pid %d (first failure: %v)\n",
+			resumed, opened, pid, firstErr)
 	}
 	return nil
 }
