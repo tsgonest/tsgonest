@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"sync/atomic"
 )
 
 // Runner manages a child Node.js process.
@@ -24,6 +25,13 @@ type Runner struct {
 	done      chan struct{}
 	stopped   bool    // set by Stop(); prevents Start() after explicit shutdown
 	jobHandle uintptr // Windows Job Object handle; unused on other platforms
+
+	// alive is read by Running() without holding r.mu. The stdlib mutates
+	// cmd.ProcessState from inside cmd.Wait() without our lock, so reading
+	// ProcessState from Running() races with the Wait goroutine. Track liveness
+	// explicitly: set true after a successful cmd.Start(), cleared by the Wait
+	// goroutine on exit.
+	alive atomic.Bool
 }
 
 // New creates a new process runner.
@@ -86,10 +94,5 @@ func (r *Runner) Wait() {
 
 // Running returns true if the child process is running.
 func (r *Runner) Running() bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.cmd == nil || r.cmd.Process == nil {
-		return false
-	}
-	return r.cmd.ProcessState == nil || !r.cmd.ProcessState.Exited()
+	return r.alive.Load()
 }

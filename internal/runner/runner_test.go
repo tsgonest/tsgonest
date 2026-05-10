@@ -4,6 +4,8 @@ package runner
 
 import (
 	"runtime"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -106,26 +108,58 @@ func TestRunner_DisableStdin_DefaultFalse(t *testing.T) {
 	}
 }
 
-// TestRunner_Running_DataRace_KnownIssue documents that Running() reads
-// r.cmd.ProcessState while the Wait goroutine spawned by Start() writes to it
-// (via cmd.Wait()). r.mu protects r.cmd the pointer, but not the internal
-// fields of *exec.Cmd — the stdlib mutates ProcessState from the goroutine
-// without acquiring r.mu. `go test -race` flags this.
-//
-// Reproduction:
-//
-//	go test -race -run TestRunner_Restart ./internal/runner/
-//
-// The existing TestRunner_Restart triggers it because it calls Restart() then
-// Running() back-to-back; the Wait goroutine on the previous cmd is still
-// finalizing ProcessState while the test reads it.
-//
-// Fix: Running() should not touch r.cmd.ProcessState. Either track an
-// atomic.Bool set/unset by Start/Wait, or check `select { case <-r.done:
-// return false; default: return true }` while holding r.mu only for r.done
-// access. Marked KNOWN ISSUE G in the audit.
-func TestRunner_Running_DataRace_KnownIssue(t *testing.T) {
-	t.Skip("KNOWN ISSUE G: Running() reads cmd.ProcessState concurrently with cmd.Wait(); see runner.go:94. Reproduce with `go test -race -run TestRunner_Restart`.")
+// TestRunner_Running_DataRace stress-tests Running() against Restart() to
+// guarantee the lock-free atomic-based liveness flag stays race-free under
+// `go test -race`. The previous implementation read r.cmd.ProcessState from
+// Running() while the Wait goroutine wrote it via cmd.Wait(); this test would
+// have flagged that race. Run with: go test -race ./internal/runner/.
+func TestRunner_Running_DataRace(t *testing.T) {
+	r := New("sleep", []string{"10"}, "")
+	if err := r.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer r.Stop()
+
+	var (
+		stop    atomic.Bool
+		wg      sync.WaitGroup
+		reads   atomic.Int64
+		restart atomic.Int64
+	)
+
+	for range 4 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for !stop.Load() {
+				_ = r.Running()
+				reads.Add(1)
+			}
+		}()
+	}
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		deadline := time.Now().Add(500 * time.Millisecond)
+		for time.Now().Before(deadline) {
+			if err := r.Restart(); err != nil {
+				t.Errorf("Restart failed: %v", err)
+				return
+			}
+			restart.Add(1)
+		}
+		stop.Store(true)
+	}()
+
+	wg.Wait()
+
+	if restart.Load() < 2 {
+		t.Fatalf("expected at least 2 Restart() cycles to exercise the race window, got %d", restart.Load())
+	}
+	if reads.Load() < 1000 {
+		t.Fatalf("expected at least 1000 Running() reads to exercise the race window, got %d", reads.Load())
+	}
 }
 
 // TestRunner_GoroutineCountStableAcrossManyRestarts verifies that the cmd.Wait
