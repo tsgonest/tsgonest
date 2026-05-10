@@ -149,6 +149,23 @@ git -C typescript-go am ../patches/0001-your-change.patch
 
 Patches in `patches/` are applied automatically during `git submodule update`.
 
+## Windows contributors
+
+The repo ships a `.gitattributes` that forces LF line endings for all text
+files. This prevents `core.autocrlf=true` (the Windows Git default) from
+converting `patches/*.patch` to CRLF, which would corrupt them and break
+`just init`.
+
+If you cloned the repo before `.gitattributes` was added (or you already have
+CRLF in your working tree), run this once to renormalize every file:
+
+```bash
+git add --renormalize .
+git commit -m "chore: renormalize line endings" # if there are changes
+```
+
+No special Git configuration is required — just keep the default settings.
+
 ## Adding shim methods
 
 tsgonest accesses unexported tsgo functions via a shim layer. To expose a new
