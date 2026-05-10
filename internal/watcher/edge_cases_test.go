@@ -157,6 +157,13 @@ func TestWatch_RootRemove_SurfacesError(t *testing.T) {
 // Create events for every file matching the configured extensions.
 func TestWatch_AtomicSubdirPopulation_FilesAreSynthesized(t *testing.T) {
 	root := t.TempDir()
+	// fsnotify reports events with EvalSymlinks-resolved paths (addRecursive
+	// resolves the watch root before adding). On macOS, t.TempDir() returns
+	// /var/folders/... which resolves to /private/var/folders/... — assertions
+	// must use the resolved form to match the synthesizer's emitted paths.
+	if r, err := filepath.EvalSymlinks(root); err == nil {
+		root = r
+	}
 
 	staging := filepath.Join(t.TempDir(), "package")
 	if err := os.MkdirAll(staging, 0755); err != nil {
@@ -214,6 +221,10 @@ func TestWatch_AtomicSubdirPopulation_FilesAreSynthesized(t *testing.T) {
 // multi-level package directory.
 func TestWatch_AtomicSubdirPopulation_DeeplyNested(t *testing.T) {
 	root := t.TempDir()
+	// See note in TestWatch_AtomicSubdirPopulation_FilesAreSynthesized.
+	if r, err := filepath.EvalSymlinks(root); err == nil {
+		root = r
+	}
 
 	staging := filepath.Join(t.TempDir(), "package")
 	want := []string{

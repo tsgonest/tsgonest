@@ -146,12 +146,18 @@ func (w *Watcher) watchFsnotify() error {
 	defer fsw.Close()
 
 	// Capture the watch roots, normalized, so we can detect when one of
-	// them is renamed or removed mid-flight. Symlink-resolved paths are
-	// preferred because fsnotify reports events using the resolved path
-	// on platforms where the watch was added via a symlinked input.
+	// them is renamed or removed mid-flight. The key is symlink-resolved
+	// because addRecursive passes the EvalSymlinks-resolved path to
+	// fsnotify, and fsnotify reports event paths exactly as added — so the
+	// lookup side must match. The map value is the original (unresolved)
+	// dir so error messages show what the user configured.
 	roots := make(map[string]string, len(w.dirs))
 	for _, dir := range w.dirs {
-		roots[normalizeWatchPath(dir)] = dir
+		resolved := dir
+		if r, err := filepath.EvalSymlinks(dir); err == nil {
+			resolved = r
+		}
+		roots[normalizeWatchPath(resolved)] = dir
 	}
 
 	// Recursively add all directories under each watched root.
