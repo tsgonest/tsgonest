@@ -194,9 +194,11 @@ describe("generated SDK compiles with tsc", () => {
       })
     );
 
-    // Use absolute path to tsc from e2e workspace's node_modules
-    const tscBin = resolve(__dirname, "node_modules/.bin/tsc");
-    const tscResult = spawnSync(tscBin, ["--noEmit", "--project", resolve(outputDir, "tsconfig.json")], {
+    // Invoke tsc.js with node directly. spawnSync can't run the .cmd shim on
+    // Windows without shell:true (Node CVE-2024-27980 mitigation), and
+    // node_modules/.bin/tsc lacks a recognized extension on Windows entirely.
+    const tscJs = resolve(__dirname, "node_modules/typescript/lib/tsc.js");
+    const tscResult = spawnSync(process.execPath, [tscJs, "--noEmit", "--project", resolve(outputDir, "tsconfig.json")], {
       cwd: outputDir,
       encoding: "utf-8",
       timeout: 30000,
