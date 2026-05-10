@@ -1,0 +1,48 @@
+# Default: normalize text files to LF on checkout
+* text=auto eol=lf
+
+# Patches MUST stay LF — git am verifies patch hashes against exact byte sequences
+patches/*.patch -text
+
+# Go source
+*.go    text eol=lf
+go.mod  text eol=lf
+go.sum  text eol=lf
+go.work text eol=lf
+
+# TypeScript / JavaScript
+*.ts   text eol=lf
+*.tsx  text eol=lf
+*.js   text eol=lf
+*.cjs  text eol=lf
+*.mjs  text eol=lf
+
+# Data / config formats
+*.json  text eol=lf
+*.jsonc text eol=lf
+*.toml  text eol=lf
+*.yaml  text eol=lf
+*.yml   text eol=lf
+
+# Documentation / markup
+*.md  text eol=lf
+*.mdx text eol=lf
+
+# Shell scripts
+*.sh text eol=lf
+
+# Binaries — never modify
+*.exe   binary
+*.dll   binary
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.ico   binary
+*.gif   binary
+*.webp  binary
+*.svg   text eol=lf
+*.woff  binary
+*.woff2 binary
+*.ttf   binary
+*.otf   binary
+*.eot   binary
