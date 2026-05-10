@@ -150,9 +150,41 @@ func runDev(args []string) int {
 	sigCh := make(chan os.Signal, 2)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 
+	// Single long-lived stdin scanner shared across config-change restarts.
+	// bufio.Scanner.Scan() blocks in a kernel read(2) syscall and cannot be
+	// interrupted by closing a `done` channel. If we spawned a fresh scanner
+	// per runDevLoop iteration, every config-change restart would leak a
+	// goroutine still blocked on os.Stdin, and stale scanners would race the
+	// active iteration for keystrokes (issue #130). Instead, spawn the scanner
+	// exactly once here. It naturally dies with the process at exit, when
+	// stdin is closed by the OS — that's the only acceptable termination
+	// condition for an uninterruptible read.
+	//
+	// Forwarding is non-blocking via a buffered channel: if the active
+	// runDevLoop iteration isn't currently selecting on rsCh (e.g. between
+	// iterations during a config restart), at most one pending "rs" event is
+	// dropped — which matches the user's intuition that only the most-recent
+	// keystroke matters.
+	rsCh := make(chan struct{}, 1)
+	go func() {
+		scanner := bufio.NewScanner(os.Stdin)
+		for scanner.Scan() {
+			line := strings.TrimSpace(scanner.Text())
+			if line != "rs" {
+				continue
+			}
+			select {
+			case rsCh <- struct{}{}:
+			default:
+				// Active iteration hasn't drained the previous "rs" yet.
+				// Drop this one — coalescing repeated presses is fine.
+			}
+		}
+	}()
+
 	// Run the dev loop. It restarts from scratch when config files change.
 	for {
-		result := runDevLoop(&flags, sigCh)
+		result := runDevLoop(&flags, sigCh, rsCh)
 		if result != devLoopRestart {
 			return 0
 		}
@@ -164,7 +196,14 @@ func runDev(args []string) int {
 // runDevLoop runs one iteration of the dev loop: load config, build, start
 // child, watch source files, and poll config files. Returns devLoopRestart
 // if a config file changed, or devLoopExit if a signal was received.
-func runDevLoop(flags *devFlags, sigCh chan os.Signal) devLoopResult {
+//
+// rsCh receives manual-restart events from the long-lived stdin scanner in
+// runDev. It is shared across iterations so we don't leak a scanner goroutine
+// per config-change restart (issue #130). This iteration drains the channel
+// regardless of whether manualRestart is currently enabled — it just no-ops
+// when the current config disables manualRestart, so a stale "rs" press from
+// a previous iteration's config doesn't pile up on the channel.
+func runDevLoop(flags *devFlags, sigCh chan os.Signal, rsCh <-chan struct{}) devLoopResult {
 	cwd := flags.cwd
 	pretty := compiler.IsPrettyOutput()
 
@@ -405,32 +444,27 @@ func runDevLoop(flags *devFlags, sigCh chan os.Signal) devLoopResult {
 		}
 	}()
 
-	// Manual restart listener
-	if manualRestart {
-		go func() {
-			scanner := bufio.NewScanner(os.Stdin)
-			for scanner.Scan() {
-				select {
-				case <-done:
-					return
-				default:
-				}
-				line := strings.TrimSpace(scanner.Text())
-				if line == "rs" {
-					fmt.Fprintln(os.Stderr, "\nmanual restart triggered...")
-					result := builder.Build()
-					if result != 0 {
-						fmt.Fprintln(os.Stderr, "build failed, waiting for changes...")
-					} else if proc != nil {
-						fmt.Fprintln(os.Stderr, "restarting...")
-						if err := proc.Restart(); err != nil {
-							fmt.Fprintf(os.Stderr, "error restarting: %v\n", err)
-						}
-					}
-					fmt.Fprintln(os.Stderr, "To restart at any time, enter \"rs\".")
-				}
+	// Manual restart listener.
+	//
+	// We always run this goroutine (even when manualRestart is currently
+	// disabled) so that rsCh — which is shared across config-change restarts
+	// — is always being drained while this iteration is active. This prevents
+	// a stale "rs" press from sitting in the channel buffer between iterations
+	// and silently triggering a restart later. The scanner itself lives in
+	// runDev, not here, so we don't leak a goroutine on every restart.
+	go runRsListener(done, rsCh, manualRestart, func() {
+		result := builder.Build()
+		if result != 0 {
+			fmt.Fprintln(os.Stderr, "build failed, waiting for changes...")
+		} else if proc != nil {
+			fmt.Fprintln(os.Stderr, "restarting...")
+			if err := proc.Restart(); err != nil {
+				fmt.Fprintf(os.Stderr, "error restarting: %v\n", err)
 			}
-		}()
+		}
+		fmt.Fprintln(os.Stderr, "To restart at any time, enter \"rs\".")
+	})
+	if manualRestart {
 		fmt.Fprintln(os.Stderr, "To restart at any time, enter \"rs\".")
 	}
 
@@ -547,6 +581,29 @@ func rebuildLoop(d rebuildLoopDeps) {
 
 		case <-d.done:
 			return
+		}
+	}
+}
+
+// runRsListener consumes manual-restart events from rsCh until done closes.
+// When manualRestart is false, events are drained but ignored — this ensures
+// stale presses left over from a prior config don't pile up in the buffered
+// channel between iterations of runDevLoop. When manualRestart is true and an
+// event arrives, the provided onRestart callback runs.
+//
+// Extracted from runDevLoop so the goroutine-leak fix for issue #130 is
+// directly testable without spinning up a real builder/runner.
+func runRsListener(done <-chan struct{}, rsCh <-chan struct{}, manualRestart bool, onRestart func()) {
+	for {
+		select {
+		case <-done:
+			return
+		case <-rsCh:
+			if !manualRestart {
+				continue
+			}
+			fmt.Fprintln(os.Stderr, "\nmanual restart triggered...")
+			onRestart()
 		}
 	}
 }

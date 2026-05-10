@@ -11,7 +11,6 @@ package main
 
 import (
 	"runtime"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -199,25 +198,106 @@ func TestDevLoop_RebuildGoroutineNoRestartUnderRaceStress(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// B. Stdin scanner goroutine multiplies on config restart
+// B. Stdin scanner goroutine multiplies on config restart  — FIXED (#130)
 // ─────────────────────────────────────────────────────────────────────────────
 
-// When manualRestart is true, runDevLoop spawns a goroutine that calls
-// bufio.NewScanner(os.Stdin) and loops on scanner.Scan(). scanner.Scan()
-// blocks in a kernel syscall; closing `done` cannot interrupt it. On a
-// config-change restart, runDevLoop returns and a new iteration spawns
-// another scanner. The previous scanner is still blocked on Stdin. Each
-// config change adds one more scanner. They all race for stdin reads.
+// Issue #130 fix: a single long-lived stdin scanner lives in runDev and
+// forwards "rs" presses to the active runDevLoop iteration via a shared
+// rsCh channel. Each iteration's manual-restart listener (runRsListener)
+// terminates cleanly when its `done` channel closes. As a result, repeated
+// config-change restarts must NOT accumulate goroutines.
 //
-// Reproduction: configure manualRestart: true, save tsconfig.json N times
-// (N config restarts). Type "rs". One of the N+1 scanners wins; the others
-// silently consume keystrokes that the user expected the active loop to see.
-//
-// Fix: hoist the stdin scanner above runDevLoop so a single goroutine
-// survives across config restarts, and have it send "rs" events on a channel
-// that the active runDevLoop iteration selects on.
-func TestDevLoop_StdinScannerLeaksAcrossConfigRestarts_KnownIssue(t *testing.T) {
-	t.Skip("KNOWN ISSUE B: bufio.Scanner on os.Stdin is uninterruptible; each config-change restart leaks a scanner goroutine. Fix in dev.go runDev (lift scanner above the loop).")
+// We can't directly count "scanner goroutines blocked on os.Stdin" in a unit
+// test (that's the whole point — they're uninterruptible), so we exercise
+// the contract that replaced the leaky scanner: runRsListener is the only
+// per-iteration goroutine spawned by the manual-restart path, and it must
+// exit when done closes. After N simulated restarts, total goroutine count
+// must be flat.
+func TestDevLoop_StdinScannerSurvivesAcrossConfigRestarts(t *testing.T) {
+	const restarts = 8
+
+	// Snapshot baseline goroutine count after the runtime stabilises.
+	settle()
+	before := runtime.NumGoroutine()
+
+	rsCh := make(chan struct{}, 1) // shared — same shape as runDev's rsCh
+
+	for i := 0; i < restarts; i++ {
+		done := make(chan struct{})
+		started := make(chan struct{})
+		go func() {
+			close(started)
+			runRsListener(done, rsCh, true, func() {})
+		}()
+		<-started
+		// Simulate a runDevLoop iteration ending (config change → return).
+		close(done)
+		// Give the listener a moment to observe the close and exit.
+		settle()
+	}
+
+	after := runtime.NumGoroutine()
+	if after > before+1 {
+		t.Errorf("goroutine leak across %d simulated config-change restarts: before=%d after=%d (delta=%d)\nA single long-lived stdin scanner must survive restarts without spawning new goroutines per iteration. See issue #130.",
+			restarts, before, after, after-before)
+	}
+}
+
+// Regression test: across N simulated config-change restarts, an "rs" press
+// pushed onto the shared rsCh must reach the currently-active iteration's
+// listener (not a stale leaked scanner from a previous iteration).
+func TestDevLoop_StdinScannerForwardsRsAcrossRestarts(t *testing.T) {
+	const restarts = 5
+
+	rsCh := make(chan struct{}, 1) // shared across iterations, like runDev's rsCh
+
+	for i := 0; i < restarts; i++ {
+		done := make(chan struct{})
+		var triggered atomic.Int32
+		fired := make(chan struct{}, 1)
+
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			runRsListener(done, rsCh, true, func() {
+				triggered.Add(1)
+				select {
+				case fired <- struct{}{}:
+				default:
+				}
+			})
+		}()
+
+		// Push "rs" — like the long-lived scanner does on a real keystroke.
+		select {
+		case rsCh <- struct{}{}:
+		case <-time.After(time.Second):
+			t.Fatalf("iteration %d: rsCh send blocked — listener not draining", i)
+		}
+
+		// The active iteration's listener must consume it.
+		select {
+		case <-fired:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("iteration %d: 'rs' press never reached the active listener (would happen if a stale scanner from a prior iteration intercepted it)", i)
+		}
+		if got := triggered.Load(); got != 1 {
+			t.Fatalf("iteration %d: onRestart fired %d times, want 1", i, got)
+		}
+
+		close(done)
+		wg.Wait()
+	}
+}
+
+// settle yields enough that goroutines closing in response to a `done` close
+// have a chance to actually exit before NumGoroutine is sampled.
+func settle() {
+	for i := 0; i < 20; i++ {
+		runtime.Gosched()
+		time.Sleep(5 * time.Millisecond)
+	}
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
