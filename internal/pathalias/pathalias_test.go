@@ -384,7 +384,7 @@ func TestSourceToOutput(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := tt.resolver.sourceToOutput(tt.srcPath)
+			got := filepath.ToSlash(tt.resolver.sourceToOutput(tt.srcPath))
 			if got != tt.want {
 				t.Errorf("sourceToOutput(%s) = %s, want %s", tt.srcPath, got, tt.want)
 			}
@@ -422,7 +422,7 @@ func TestInferRootDir(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := InferRootDir(tt.files)
+			got := filepath.ToSlash(InferRootDir(tt.files))
 			if got != tt.want {
 				t.Errorf("InferRootDir() = %q, want %q", got, tt.want)
 			}
