@@ -11,6 +11,12 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+// generateConsoleCtrlEvent is a package-level variable so tests can inject a
+// fake implementation to exercise the error-path without a real console.
+var generateConsoleCtrlEvent = func(event uint32, pid uint32) error {
+	return windows.GenerateConsoleCtrlEvent(event, pid)
+}
+
 const createSuspended = 0x00000004
 
 // Start starts the child process inside a Windows Job Object.
@@ -118,7 +124,15 @@ func (r *Runner) stop() error {
 
 	// Try graceful shutdown via CTRL_BREAK_EVENT.
 	// Node.js handles this signal and can run cleanup code.
-	windows.GenerateConsoleCtrlEvent(windows.CTRL_BREAK_EVENT, uint32(r.cmd.Process.Pid))
+	if err := generateConsoleCtrlEvent(windows.CTRL_BREAK_EVENT, uint32(r.cmd.Process.Pid)); err != nil {
+		// Signal not delivered (no console attached, wrong process group, etc.).
+		// Waiting 5s would be futile — r.done will never close on its own.
+		r.cmd.Process.Kill()
+		<-r.done
+		r.closeJob()
+		r.cmd = nil
+		return nil
+	}
 
 	select {
 	case <-r.done:
