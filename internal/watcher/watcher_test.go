@@ -224,3 +224,52 @@ func TestWatcher_Diff_MultipleEvents(t *testing.T) {
 		t.Errorf("expected write, create, and remove events, got %v", events)
 	}
 }
+
+func TestMatchesExtension_CaseInsensitive(t *testing.T) {
+	w := &Watcher{extensions: []string{".ts", ".tsx"}}
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{"App.ts", true},
+		{"App.TS", true},
+		{"App.Ts", true},
+		{"App.tsx", true},
+		{"App.TSX", true},
+		{"App.TsX", true},
+		{"App.js", false},
+		{"App.JS", false},
+	}
+	for _, c := range cases {
+		got := w.matchesExtension(c.path)
+		if got != c.want {
+			t.Errorf("matchesExtension(%q) = %v, want %v", c.path, got, c.want)
+		}
+	}
+}
+
+func TestShouldSkipPath_WindowsPaths(t *testing.T) {
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{`D:/proj/NODE_MODULES/foo.ts`, true},
+		{`D:/proj/node_modules/foo.ts`, true},
+		{`D:/proj/Node_Modules/foo.ts`, true},
+		{`D:/proj/Dist/x.ts`, true},
+		{`D:/proj/dist/x.ts`, true},
+		{`D:/proj/DIST/x.ts`, true},
+		{`/home/user/project/node_modules/pkg/index.ts`, true},
+		{`/home/user/project/NODE_MODULES/pkg/index.ts`, true},
+		{`/home/user/project/.git/objects/abc`, true},
+		{`/home/user/project/.GIT/objects/abc`, true},
+		{`/home/user/project/src/node_modulesFake/bar.ts`, false},
+		{`/home/user/project/src/notdist/x.ts`, false},
+	}
+	for _, c := range cases {
+		got := shouldSkipPath(c.path)
+		if got != c.want {
+			t.Errorf("shouldSkipPath(%q) = %v, want %v", c.path, got, c.want)
+		}
+	}
+}

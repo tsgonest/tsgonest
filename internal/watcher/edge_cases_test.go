@@ -9,7 +9,8 @@ package watcher
 //   Leak. AfterFunc/fsnotify goroutines surviving start/stop cycles.
 //
 // Tests marked KnownIssue are documented bugs that pass against the broken
-// behavior. When a fix lands, these tests should be flipped to assert correctness.
+// behavior. When a fix lands, these tests should be flipped to assert
+// correctness (and the KnownIssue suffix dropped).
 
 import (
 	"errors"
@@ -537,26 +538,25 @@ func TestShouldSkipPath_SeparatorNormalization(t *testing.T) {
 	}
 }
 
-// TestShouldSkipPath_CaseSensitive_KnownIssue documents that shouldSkipPath
-// uses case-sensitive Contains. On Windows (case-insensitive filesystem), a
-// path containing "Node_Modules" is not skipped. Fix: strings.EqualFold or
-// a normalized comparison.
-func TestShouldSkipPath_CaseSensitive_KnownIssue(t *testing.T) {
+// TestShouldSkipPath_CaseInsensitive verifies that shouldSkipPath matches skip
+// directories regardless of case, so Windows paths like NODE_MODULES or Dist
+// are treated the same as their lowercase equivalents.
+func TestShouldSkipPath_CaseInsensitive(t *testing.T) {
 	cases := []struct {
 		path        string
 		shouldSkip  bool
 		description string
 	}{
 		{filepath.Join("project", "node_modules", "foo"), true, "lowercase always skipped"},
-		{filepath.Join("project", "Node_Modules", "foo"), true, "Windows-style mixed-case (currently NOT skipped — bug)"},
-		{filepath.Join("project", "NODE_MODULES", "foo"), true, "uppercase (currently NOT skipped — bug)"},
+		{filepath.Join("project", "Node_Modules", "foo"), true, "Windows-style mixed-case"},
+		{filepath.Join("project", "NODE_MODULES", "foo"), true, "all-uppercase"},
 		{filepath.Join("project", ".git", "objects"), true, ".git always skipped"},
 		{filepath.Join("project", "src", "node_modulesFake"), false, "should NOT skip lookalikes"},
 	}
 	for _, c := range cases {
 		got := shouldSkipPath(c.path)
 		if got != c.shouldSkip {
-			t.Logf("shouldSkipPath(%q) = %v, want %v — %s", c.path, got, c.shouldSkip, c.description)
+			t.Errorf("shouldSkipPath(%q) = %v, want %v — %s", c.path, got, c.shouldSkip, c.description)
 		}
 	}
 }

@@ -328,7 +328,7 @@ func (w *Watcher) Pending() bool {
 func (w *Watcher) matchesExtension(path string) bool {
 	ext := filepath.Ext(path)
 	for _, e := range w.extensions {
-		if ext == e {
+		if strings.EqualFold(ext, e) {
 			return true
 		}
 	}
@@ -373,8 +373,11 @@ func matchedRoot(roots map[string]string, eventPath string) (string, bool) {
 // that should be ignored (e.g., node_modules, .git).
 // Normalizes separators to "/" before matching so that Windows native paths
 // (backslash) and Git Bash / forward-slash paths both match correctly.
+// Comparison is case-insensitive so Windows paths like NODE_MODULES or Dist
+// are treated the same as their lowercase equivalents (skipDirs keys are
+// already lowercase).
 func shouldSkipPath(path string) bool {
-	normalized := filepath.ToSlash(path)
+	normalized := strings.ToLower(filepath.ToSlash(path))
 	for dir := range skipDirs {
 		seg := "/" + dir + "/"
 		if strings.Contains(normalized, seg) ||
@@ -416,7 +419,7 @@ func (w *Watcher) buildSnapshot() map[string]fileInfo {
 			}
 			ext := filepath.Ext(path)
 			for _, e := range w.extensions {
-				if ext == e {
+				if strings.EqualFold(ext, e) {
 					snap[path] = fileInfo{modTime: info.ModTime(), size: info.Size()}
 					break
 				}

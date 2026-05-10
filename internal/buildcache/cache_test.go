@@ -45,6 +45,25 @@ func TestCachePath(t *testing.T) {
 	})
 }
 
+func TestBuildcache_CachePath_CaseInsensitive(t *testing.T) {
+	tests := []struct {
+		tsconf string
+		want   string
+	}{
+		{"/foo/tsconfig.json", "/foo/tsconfig.tsgonest-cache"},
+		{"/foo/tsconfig.JSON", "/foo/tsconfig.tsgonest-cache"},
+		{"/foo/tsconfig.Json", "/foo/tsconfig.tsgonest-cache"},
+		{"/foo/tsconfig.build.json", "/foo/tsconfig.build.tsgonest-cache"},
+		{"/foo/tsconfig.build.JSON", "/foo/tsconfig.build.tsgonest-cache"},
+	}
+	for _, tt := range tests {
+		got := CachePath("", tt.tsconf)
+		if got != tt.want {
+			t.Errorf("CachePath(\"\", %q) = %q, want %q", tt.tsconf, got, tt.want)
+		}
+	}
+}
+
 func TestHashFile(t *testing.T) {
 	dir := t.TempDir()
 
