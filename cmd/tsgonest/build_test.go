@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/microsoft/typescript-go/shim/core"
@@ -784,6 +785,90 @@ func TestPipeline_FullIntegrationWithTSConfig(t *testing.T) {
 	// CLI --target es2022 should override tsconfig target: es2015
 	if finalOpts.Target != core.ScriptTargetES2022 {
 		t.Errorf("Target = %v, want ScriptTargetES2022 (CLI override)", finalOpts.Target)
+	}
+}
+
+// --- validateOutDir tests ---
+
+func TestValidateOutDir_DangerousUnixPaths(t *testing.T) {
+	for _, p := range []string{"/", ".", ".."} {
+		if err := validateOutDir(p); err == nil {
+			t.Errorf("validateOutDir(%q) should refuse dangerous path, got nil", p)
+		}
+	}
+}
+
+func TestValidateOutDir_EmptyString(t *testing.T) {
+	if err := validateOutDir(""); err == nil {
+		t.Error("validateOutDir(\"\") should refuse empty string")
+	}
+}
+
+func TestValidateOutDir_ParentTraversalToRoot(t *testing.T) {
+	// On a Unix system, if CWD is exactly one level below root (e.g. /tmp),
+	// "../.." resolves to "/" which the root-path guard must catch.
+	// We test this by checking that validateOutDir("/") is always refused,
+	// which is covered by TestValidateOutDir_DangerousUnixPaths above.
+	// Additional coverage: raw ".." (one level up from CWD) must be refused
+	// by the token check regardless of where CWD is.
+	if err := validateOutDir(".."); err == nil {
+		t.Error("validateOutDir(\"..\") should always refuse bare parent-traversal")
+	}
+}
+
+func TestValidateOutDir_LegitAbsolutePath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "dist")
+	if err := validateOutDir(path); err != nil {
+		t.Errorf("validateOutDir(%q) should allow legit absolute path, got: %v", path, err)
+	}
+}
+
+func TestValidateOutDir_LegitRelativePath(t *testing.T) {
+	for _, p := range []string{"dist", "./dist", "build/output"} {
+		if err := validateOutDir(p); err != nil {
+			t.Errorf("validateOutDir(%q) should allow legit relative path, got: %v", p, err)
+		}
+	}
+}
+
+func TestValidateOutDir_HomeDirectory(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("cannot determine home dir")
+	}
+	if err := validateOutDir(home); err == nil {
+		t.Errorf("validateOutDir(%q) should refuse home directory", home)
+	}
+}
+
+func TestValidateOutDir_CurrentWorkingDirectory(t *testing.T) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Skip("cannot determine cwd")
+	}
+	if err := validateOutDir(cwd); err == nil {
+		t.Errorf("validateOutDir(%q) should refuse cwd", cwd)
+	}
+}
+
+func TestValidateOutDir_WindowsDriveRoots(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-specific path tests")
+	}
+	for _, p := range []string{`C:\`, `C:`, `D:\`, `c:\`, `\`} {
+		if err := validateOutDir(p); err == nil {
+			t.Errorf("validateOutDir(%q) should refuse Windows drive root", p)
+		}
+	}
+}
+
+func TestValidateOutDir_WindowsLegitPath(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-specific path tests")
+	}
+	p := `C:\Users\project\dist`
+	if err := validateOutDir(p); err != nil {
+		t.Errorf("validateOutDir(%q) should allow legit Windows path, got: %v", p, err)
 	}
 }
 

@@ -842,10 +842,57 @@ func tsbuildInfoPathFromTsconfig(resolvedTsconfigPath string) string {
 	return strings.TrimSuffix(resolvedTsconfigPath, ".json") + ".tsbuildinfo"
 }
 
+// validateOutDir checks that outDir is safe to remove. This is the LAST line of
+// defense before os.RemoveAll — do NOT weaken these checks.
+func validateOutDir(outDir string) error {
+	if outDir == "" {
+		return fmt.Errorf("refusing to clean empty outDir")
+	}
+
+	clean := filepath.Clean(outDir)
+
+	// Reject bare navigation tokens before making the path absolute —
+	// "." and ".." are almost certainly user mistakes, and their resolved
+	// value changes with the working directory at runtime.
+	if clean == "." || clean == ".." {
+		return fmt.Errorf("refusing to clean dangerous path %q", outDir)
+	}
+
+	abs, err := filepath.Abs(clean)
+	if err != nil {
+		return fmt.Errorf("resolving outDir: %w", err)
+	}
+
+	// Strip volume prefix (e.g. "C:" on Windows, "" on Unix), then verify
+	// that something meaningful remains below the root or volume root.
+	vol := filepath.VolumeName(abs)
+	rest := strings.TrimPrefix(abs, vol)
+	rest = strings.Trim(rest, string(filepath.Separator))
+	if rest == "" || rest == "." || rest == ".." {
+		return fmt.Errorf("refusing to clean dangerous path %q", outDir)
+	}
+
+	// Refuse to wipe the user's home directory.
+	if home, err := os.UserHomeDir(); err == nil {
+		if absHome, err := filepath.Abs(home); err == nil && abs == absHome {
+			return fmt.Errorf("refusing to clean home directory %q", outDir)
+		}
+	}
+
+	// Refuse to wipe the current working directory.
+	if cwd, err := os.Getwd(); err == nil {
+		if absCwd, err := filepath.Abs(cwd); err == nil && abs == absCwd {
+			return fmt.Errorf("refusing to clean current working directory %q", outDir)
+		}
+	}
+
+	return nil
+}
+
 // cleanDir removes a directory after safety checks.
 func cleanDir(outDir string) error {
-	if outDir == "/" || outDir == "." || outDir == ".." {
-		return fmt.Errorf("refusing to clean dangerous path: %s", outDir)
+	if err := validateOutDir(outDir); err != nil {
+		return err
 	}
 
 	if _, err := os.Stat(outDir); os.IsNotExist(err) {
@@ -859,8 +906,8 @@ func cleanDir(outDir string) error {
 // smartCleanDir removes all files in outDir but preserves .tsbuildinfo,
 // so incremental compilation can still reuse cached data from the previous build.
 func smartCleanDir(outDir string, tsbuildInfoPath string) error {
-	if outDir == "/" || outDir == "." || outDir == ".." {
-		return fmt.Errorf("refusing to clean dangerous path: %s", outDir)
+	if err := validateOutDir(outDir); err != nil {
+		return err
 	}
 
 	if _, err := os.Stat(outDir); os.IsNotExist(err) {
