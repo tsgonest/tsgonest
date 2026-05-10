@@ -80,19 +80,76 @@ function collectOutput(proc: ChildProcess, durationMs: number): Promise<string> 
   });
 }
 
-function killProc(proc: ChildProcess) {
-  try {
-    // Kill the process group to clean up child processes
-    if (proc.pid) {
-      process.kill(-proc.pid, "SIGTERM");
+/**
+ * Kill the spawned process and resolve only after it has fully exited.
+ *
+ * Awaiting the `exit` event matters on Windows: the OS holds file handles
+ * (fsnotify ReadDirectoryChangesW handles on the watched src/ directory,
+ * the Job Object that contains the child node process, etc.) until the
+ * process is fully reaped. If the test calls `rmSync(tmpDir, ...)` before
+ * the spawned tsgonest has actually exited, Windows refuses the unlink
+ * with EPERM. POSIX permits unlink of an open file and defers cleanup,
+ * which is why this race only bites on Windows.
+ *
+ * Sends SIGTERM (which Node maps to TerminateProcess on Windows) and
+ * waits up to ~5s; if the process is still alive after that, escalates
+ * to SIGKILL so the test cannot hang on a wedged child.
+ */
+function killProc(proc: ChildProcess): Promise<void> {
+  return new Promise((resolveOuter) => {
+    if (proc.exitCode !== null || proc.signalCode !== null) {
+      resolveOuter();
+      return;
     }
-  } catch {
+
+    const cleanup = () => {
+      proc.off("exit", onExit);
+      clearTimeout(forceKillTimer);
+    };
+    const onExit = () => {
+      cleanup();
+      resolveOuter();
+    };
+    proc.on("exit", onExit);
+
+    // Escalate to SIGKILL if the process refuses to exit. 5s mirrors the
+    // graceful-shutdown window the runner itself uses internally.
+    const forceKillTimer = setTimeout(() => {
+      try {
+        if (proc.pid) {
+          process.kill(-proc.pid, "SIGKILL");
+        } else {
+          proc.kill("SIGKILL");
+        }
+      } catch {
+        try {
+          proc.kill("SIGKILL");
+        } catch {
+          // already dead — onExit will fire (or already has)
+        }
+      }
+    }, 5_000);
+
     try {
-      proc.kill("SIGTERM");
+      // Kill the process group to clean up child processes (Unix). On
+      // Windows, Node maps signals to TerminateProcess on the target pid;
+      // the negative-pid trick is not meaningful but the catch below
+      // falls back to a single-process kill.
+      if (proc.pid) {
+        process.kill(-proc.pid, "SIGTERM");
+      } else {
+        proc.kill("SIGTERM");
+      }
     } catch {
-      // already dead
+      try {
+        proc.kill("SIGTERM");
+      } catch {
+        // already dead — onExit will fire (or already has)
+        cleanup();
+        resolveOuter();
+      }
     }
-  }
+  });
 }
 
 /**
@@ -123,9 +180,13 @@ describe("tsgonest dev race condition", () => {
     tmpDir = copyFixture();
   });
 
-  afterAll(() => {
+  afterAll(async () => {
+    // Await process exit before deleting the temp dir. On Windows the OS
+    // refuses to unlink files inside a directory while any process still
+    // holds open handles to them — and tsgonest holds fsnotify and Job
+    // Object handles right up to the moment its main goroutine returns.
     if (devProc) {
-      killProc(devProc);
+      await killProc(devProc);
       devProc = null;
     }
     if (tmpDir && existsSync(tmpDir)) {
@@ -210,12 +271,14 @@ console.log("DEV_READY");
     const restartCount = (fullOutput.match(/restarting/g) || []).length;
     expect(restartCount).toBe(1);
 
-    killProc(devProc);
+    await killProc(devProc);
     devProc = null;
   }, 60_000);
 
   it("should coalesce staggered file writes into a single rebuild", async () => {
-    // Re-copy the fixture for a fresh state
+    // Re-copy the fixture for a fresh state. The previous test already
+    // awaited its devProc to fully exit before reaching this point, so
+    // the rmSync is safe on Windows (no open handles inside tmpDir).
     if (existsSync(tmpDir)) {
       rmSync(tmpDir, { recursive: true, force: true });
     }
@@ -290,7 +353,7 @@ console.log("DEV_READY");
     const rebuildMatches = fullOutput.match(/detected (\d+) change/g) || [];
     expect(rebuildMatches.length).toBe(1);
 
-    killProc(devProc);
+    await killProc(devProc);
     devProc = null;
   }, 60_000);
 });
