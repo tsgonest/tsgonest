@@ -3,23 +3,15 @@ name: CI
 on:
   push:
     branches: [main]
-    # Tag pushes must trigger CI too — the release workflow waits for this
-    # run on the tagged commit to succeed before publishing.
-    tags: ['v*.*.*']
   pull_request:
     branches: [main]
+  workflow_call:
 
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  # ── Full test suite (unit + e2e) ──────────────────────────────
-  #
-  # The Windows leg currently exposes a backlog of platform-specific bugs
-  # tracked in issues #136, #137, #138, #143–#150. Until those land, expect
-  # this matrix slot to fail — that is by design: a red Windows job blocks
-  # PRs until the platform-handling fixes ship.
   test:
     strategy:
       fail-fast: false
@@ -28,8 +20,6 @@ jobs:
     runs-on: ${{ matrix.os }}
     defaults:
       run:
-        # bash is available on all GitHub-hosted runners (Git Bash on Windows).
-        # Using a single shell keeps `just` recipes and inline scripts portable.
         shell: bash
 
     steps:
@@ -58,11 +48,9 @@ jobs:
       - name: Install workspace dependencies
         run: pnpm install --frozen-lockfile
 
-      # ── Go unit tests ────────────────────────────────────────
       - name: Run Go unit tests
         run: just test-unit
 
-      # ── Build binary + packages (needed by e2e) ────────────────
       - name: Build binary
         run: just build
 
@@ -72,6 +60,5 @@ jobs:
       - name: Build migrate script
         run: pnpm --filter tsgonest build:migrate
 
-      # ── E2e tests ────────────────────────────────────────────
       - name: Run e2e tests
         run: just test-e2e

@@ -10,62 +10,19 @@ permissions:
   contents: write        # Create GitHub Release + commit changelog back to main
   id-token: write        # OIDC Trusted Publishing — no NPM_TOKEN secret needed
   pull-requests: read    # git-cliff needs this to enrich changelog with PR titles
-  actions: read          # gh run list — read CI status on the tagged commit
 
-# Tags are immutable, so this guards against accidental re-pushes of the
-# same tag triggering a duplicate publish. cancel-in-progress MUST be
-# false: interrupting an in-flight `pnpm publish` leaves the npm registry
-# in an inconsistent state (some packages published, others not).
+# cancel-in-progress: false — interrupting an in-flight `pnpm publish`
+# leaves the npm registry inconsistent (some packages published, not all).
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  # ── Gate: wait for CI on this exact tag commit to succeed ────────
-  #
-  # CI runs on tag pushes (see .github/workflows/ci.yml triggers). This
-  # job polls until the CI run on $GITHUB_SHA completes, then either gates
-  # the release (CI green) or fails it (CI red). Lets us avoid duplicating
-  # the entire matrix here.
-  wait-for-ci:
-    runs-on: ubuntu-latest
-    timeout-minutes: 35
-    steps:
-      - name: Wait for CI to finish on the tagged commit
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          SHA: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          DEADLINE=$(( $(date +%s) + 1800 ))   # 30 min budget
-          while [ "$(date +%s)" -lt "$DEADLINE" ]; do
-            JSON=$(gh run list \
-              --workflow=CI \
-              --commit="$SHA" \
-              --limit 1 \
-              --json status,conclusion,url)
-            STATUS=$(echo "$JSON" | jq -r '.[0].status     // "missing"')
-            RESULT=$(echo "$JSON" | jq -r '.[0].conclusion // ""')
-            URL=$(   echo "$JSON" | jq -r '.[0].url        // ""')
-            echo "[$(date -u +%T)] CI on $SHA: status=$STATUS conclusion=$RESULT $URL"
+  ci:
+    uses: ./.github/workflows/ci.yml
 
-            if [ "$STATUS" = "completed" ]; then
-              if [ "$RESULT" = "success" ]; then
-                echo "::notice title=CI gate::CI succeeded on $SHA — releasing"
-                exit 0
-              fi
-              echo "::error title=CI gate::CI ended with conclusion '$RESULT' on $SHA — release blocked. See $URL"
-              exit 1
-            fi
-            sleep 30
-          done
-          echo "::error title=CI gate::Timed out after 30 min waiting for CI on $SHA"
-          exit 1
-
-  # ── Release (only runs after CI succeeds on the tag commit) ──────
   release:
-    needs: wait-for-ci
+    needs: ci
     runs-on: ubuntu-latest
 
     steps:
