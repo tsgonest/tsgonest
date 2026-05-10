@@ -241,51 +241,33 @@ func TestDevLoop_ManualRestartCanDoubleRestart_KnownIssue(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// F. --exec flag uses `sh -c` unconditionally
+// F. --exec flag shell selection by GOOS
 // ─────────────────────────────────────────────────────────────────────────────
 
-// dev.go:~243 has:
-//
-//	proc = runner.New("sh", []string{"-c", flags.execCmd}, cwd)
-//
-// `sh` is not on PATH on default Windows installs (only with Git Bash / WSL).
-// Windows users running `tsgonest dev --exec "node ./scripts/run.js"` get
-// "exec: sh: file not found" and the dev loop never starts the child.
-//
-// Fix: select shell by GOOS — "cmd" + ["/C", execCmd] on Windows, "sh" +
-// ["-c", execCmd] elsewhere. Or use os/exec's automatic resolution via a
-// small platform helper.
 func TestDevLoop_ExecFlagShellSelection(t *testing.T) {
-	// This test runs cross-platform but only meaningfully asserts on the
-	// platform where the bug bites.
-	if runtime.GOOS == "windows" {
-		// On Windows the current code unconditionally tries "sh" — the test
-		// can't actually exec it without breaking, so we just assert the
-		// intent: any shell-selection helper added later must NOT pick sh
-		// on Windows.
-		got, _ := pickExecShellForTest("echo hello")
-		if strings.HasPrefix(got, "sh") {
-			t.Errorf("Windows --exec must not use 'sh'; got %q. See KNOWN ISSUE F in dev_known_issues_test.go", got)
-		}
-		return
-	}
-	// On Unix, sh is fine.
-	got, _ := pickExecShellForTest("echo hello")
-	if got != "sh" {
-		t.Errorf("Unix --exec should use 'sh'; got %q", got)
-	}
-}
+	cmd := "echo hello"
 
-// pickExecShellForTest mirrors what a future buildExecCommand helper should
-// return. Today, dev.go inlines the choice ("sh") regardless of platform.
-// This stub lets the test express the intended contract; the implementation
-// will be added when the fix lands.
-func pickExecShellForTest(cmd string) (string, []string) {
-	if runtime.GOOS == "windows" {
-		// PLACEHOLDER: the fix should return ("cmd", []string{"/C", cmd})
-		// or similar. Returning "sh" here mirrors the current bug so the
-		// test currently flags Windows correctly.
-		return "sh", []string{"-c", cmd}
+	prog, args := pickExecShellFor("linux", cmd)
+	if prog != "sh" {
+		t.Errorf("linux: expected prog %q, got %q", "sh", prog)
 	}
-	return "sh", []string{"-c", cmd}
+	if len(args) != 2 || args[0] != "-c" || args[1] != cmd {
+		t.Errorf("linux: expected args %v, got %v", []string{"-c", cmd}, args)
+	}
+
+	prog, args = pickExecShellFor("darwin", cmd)
+	if prog != "sh" {
+		t.Errorf("darwin: expected prog %q, got %q", "sh", prog)
+	}
+	if len(args) != 2 || args[0] != "-c" || args[1] != cmd {
+		t.Errorf("darwin: expected args %v, got %v", []string{"-c", cmd}, args)
+	}
+
+	prog, args = pickExecShellFor("windows", cmd)
+	if prog != "cmd" {
+		t.Errorf("windows: expected prog %q, got %q", "cmd", prog)
+	}
+	if len(args) != 2 || args[0] != "/C" || args[1] != cmd {
+		t.Errorf("windows: expected args %v, got %v", []string{"/C", cmd}, args)
+	}
 }
