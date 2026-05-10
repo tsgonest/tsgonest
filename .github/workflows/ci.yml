@@ -5,40 +5,22 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_call:
 
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  # ── Cross-platform runner process management tests ────────────
-  runner-tests:
+  test:
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-
-    steps:
-      - uses: actions/checkout@v6
-
-      - uses: actions/setup-go@v6
-        with:
-          go-version: '1.26'
-          cache: true
-          cache-dependency-path: '**/go.sum'
-
-      - uses: extractions/setup-just@v3
-
-      - name: Initialize project
-        run: just init
-
-      - name: Run runner process management tests
-        run: go test -v ./internal/runner/ -timeout 120s
-
-  # ── Full test suite (unit + e2e) ──────────────────────────────
-  test:
-    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
 
     steps:
       - uses: actions/checkout@v6
@@ -66,11 +48,9 @@ jobs:
       - name: Install workspace dependencies
         run: pnpm install --frozen-lockfile
 
-      # ── Go unit tests ────────────────────────────────────────
       - name: Run Go unit tests
         run: just test-unit
 
-      # ── Build binary + packages (needed by e2e) ────────────────
       - name: Build binary
         run: just build
 
@@ -80,6 +60,5 @@ jobs:
       - name: Build migrate script
         run: pnpm --filter tsgonest build:migrate
 
-      # ── E2e tests ────────────────────────────────────────────
       - name: Run e2e tests
         run: just test-e2e

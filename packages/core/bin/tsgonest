@@ -24,8 +24,11 @@ function getBinaryPath() {
     return process.env.TSGONEST_BINARY_PATH;
   }
 
-  // 2. Check for a locally-built binary (development: go build -o packages/core/bin/tsgonest-native)
-  const localBinary = path.join(__dirname, "tsgonest-native");
+  // 2. Check for a locally-built binary (development: just build).
+  //    On Windows `just build` emits tsgonest.exe; on Unix it emits tsgonest-native.
+  const localBinaryName =
+    process.platform === "win32" ? "tsgonest.exe" : "tsgonest-native";
+  const localBinary = path.join(__dirname, localBinaryName);
   if (existsSync(localBinary)) {
     return localBinary;
   }
