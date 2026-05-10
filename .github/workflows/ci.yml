@@ -3,6 +3,9 @@ name: CI
 on:
   push:
     branches: [main]
+    # Tag pushes must trigger CI too — the release workflow waits for this
+    # run on the tagged commit to succeed before publishing.
+    tags: ['v*.*.*']
   pull_request:
     branches: [main]
 

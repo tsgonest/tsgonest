@@ -10,68 +10,62 @@ permissions:
   contents: write        # Create GitHub Release + commit changelog back to main
   id-token: write        # OIDC Trusted Publishing — no NPM_TOKEN secret needed
   pull-requests: read    # git-cliff needs this to enrich changelog with PR titles
+  actions: read          # gh run list — read CI status on the tagged commit
+
+# Tags are immutable, so this guards against accidental re-pushes of the
+# same tag triggering a duplicate publish. cancel-in-progress MUST be
+# false: interrupting an in-flight `pnpm publish` leaves the npm registry
+# in an inconsistent state (some packages published, others not).
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  # ── Gate: run the full test suite before releasing ────────
+  # ── Gate: wait for CI on this exact tag commit to succeed ────────
   #
-  # Mirrors the CI matrix in .github/workflows/ci.yml — releases must pass
-  # on every supported runtime, not just Linux. While platform-specific
-  # issues (#136, #137, #138, #143–#150) are still outstanding, a tag push
-  # will be blocked from releasing until the Windows job is green.
-  test:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
-    defaults:
-      run:
-        shell: bash
-
+  # CI runs on tag pushes (see .github/workflows/ci.yml triggers). This
+  # job polls until the CI run on $GITHUB_SHA completes, then either gates
+  # the release (CI green) or fails it (CI red). Lets us avoid duplicating
+  # the entire matrix here.
+  wait-for-ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
     steps:
-      - uses: actions/checkout@v6
+      - name: Wait for CI to finish on the tagged commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          DEADLINE=$(( $(date +%s) + 1800 ))   # 30 min budget
+          while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+            JSON=$(gh run list \
+              --workflow=CI \
+              --commit="$SHA" \
+              --limit 1 \
+              --json status,conclusion,url)
+            STATUS=$(echo "$JSON" | jq -r '.[0].status     // "missing"')
+            RESULT=$(echo "$JSON" | jq -r '.[0].conclusion // ""')
+            URL=$(   echo "$JSON" | jq -r '.[0].url        // ""')
+            echo "[$(date -u +%T)] CI on $SHA: status=$STATUS conclusion=$RESULT $URL"
 
-      - uses: actions/setup-go@v6
-        with:
-          go-version: '1.26'
-          cache: true
-          cache-dependency-path: '**/go.sum'
+            if [ "$STATUS" = "completed" ]; then
+              if [ "$RESULT" = "success" ]; then
+                echo "::notice title=CI gate::CI succeeded on $SHA — releasing"
+                exit 0
+              fi
+              echo "::error title=CI gate::CI ended with conclusion '$RESULT' on $SHA — release blocked. See $URL"
+              exit 1
+            fi
+            sleep 30
+          done
+          echo "::error title=CI gate::Timed out after 30 min waiting for CI on $SHA"
+          exit 1
 
-      - uses: extractions/setup-just@v3
-
-      - uses: pnpm/action-setup@v5
-        with:
-          version: '10'
-
-      - uses: actions/setup-node@v6
-        with:
-          node-version: '24'
-          cache: 'pnpm'
-
-      - name: Initialize project
-        run: just init
-
-      - name: Install workspace dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Run Go unit tests
-        run: just test-unit
-
-      - name: Build binary
-        run: just build
-
-      - name: Build TypeScript packages
-        run: pnpm build:packages
-
-      - name: Build migrate script
-        run: pnpm --filter tsgonest build:migrate
-
-      - name: Run e2e tests
-        run: just test-e2e
-
-  # ── Release (only runs after tests pass) ──────────────────
+  # ── Release (only runs after CI succeeds on the tag commit) ──────
   release:
-    needs: test
+    needs: wait-for-ci
     runs-on: ubuntu-latest
 
     steps:
