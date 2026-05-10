@@ -402,6 +402,62 @@ func TestWatch_PollingMissesIdenticalSizeIdenticalMtimeRewrite(t *testing.T) {
 // shouldSkipPath edge cases
 // ─────────────────────────────────────────────────────────────────────────────
 
+// TestShouldSkipPath_SeparatorNormalization verifies that shouldSkipPath
+// correctly handles forward-slash paths (Git Bash on Windows and Linux/macOS),
+// OS-native paths built with filepath.Join, and edge cases that must not match.
+func TestShouldSkipPath_SeparatorNormalization(t *testing.T) {
+	cases := []struct {
+		path       string
+		want       bool
+		descriptor string
+	}{
+		// Forward-slash paths: the primary regression target.
+		// On Windows, Git Bash (and some fsnotify builds) deliver "C:/..." paths.
+		// On Linux/macOS, all paths are already forward-slash.
+		{`C:/proj/src/node_modules/foo.ts`, true, "forward-slash: mid-path node_modules"},
+		{`C:/proj/node_modules`, true, "forward-slash: node_modules at end (no trailing slash)"},
+		{`C:/proj/.git/objects`, true, "forward-slash: .git mid-path"},
+		{`C:/proj/dist/main.js`, true, "forward-slash: dist mid-path"},
+		{`/home/user/proj/node_modules/foo.ts`, true, "unix: mid-path node_modules"},
+		{`/home/user/proj/node_modules`, true, "unix: node_modules at end"},
+		{`/home/user/proj/.git/HEAD`, true, "unix: .git mid-path"},
+		{`/home/user/proj/build/app.js`, true, "unix: build mid-path"},
+		{`/home/user/proj/coverage/lcov.info`, true, "unix: coverage mid-path"},
+		{`/home/user/proj/.next/cache/foo`, true, "unix: .next mid-path"},
+		{`/home/user/proj/.turbo/cache`, true, "unix: .turbo mid-path"},
+
+		// OS-native paths (filepath.Join uses the platform separator).
+		// These exercise the ToSlash conversion on Windows and are no-ops on Linux/macOS.
+		{filepath.Join("proj", "src", "node_modules", "foo.ts"), true, "native: mid-path node_modules"},
+		{filepath.Join("proj", "node_modules"), true, "native: node_modules at end"},
+		{filepath.Join("proj", ".git", "objects"), true, "native: .git mid-path"},
+		{filepath.Join("proj", "dist", "main.js"), true, "native: dist mid-path"},
+		{filepath.Join("proj", "build", "out.js"), true, "native: build mid-path"},
+		{filepath.Join("proj", "coverage", "lcov.info"), true, "native: coverage mid-path"},
+		{filepath.Join("proj", ".next", "cache", "foo"), true, "native: .next mid-path"},
+		{filepath.Join("proj", ".turbo", "cache"), true, "native: .turbo mid-path"},
+		{filepath.Join("proj", "__pycache__", "mod.pyc"), true, "native: __pycache__ mid-path"},
+
+		// Relative paths
+		{"node_modules/foo.ts", true, "relative forward-slash: node_modules/foo.ts"},
+		{"node_modules", true, "relative: bare node_modules directory name"},
+
+		// Negative cases: must NOT match — substring/suffix traps
+		{"/path/notnode_modules/foo.ts", false, "notnode_modules is not a skip dir"},
+		{"/path/node_modules_old/foo.ts", false, "node_modules_old suffix trap"},
+		{"/path/to/src/app.ts", false, "normal source file"},
+		{"/path/to/mynode_modules/foo.ts", false, "prefix+node_modules substring trap"},
+		{filepath.Join("proj", "src", "node_modulesFake", "foo.ts"), false, "native: lookalike dir must not match"},
+	}
+
+	for _, c := range cases {
+		got := shouldSkipPath(c.path)
+		if got != c.want {
+			t.Errorf("shouldSkipPath(%q) = %v, want %v — %s", c.path, got, c.want, c.descriptor)
+		}
+	}
+}
+
 // TestShouldSkipPath_CaseSensitive_KnownIssue documents that shouldSkipPath
 // uses case-sensitive Contains. On Windows (case-insensitive filesystem), a
 // path containing "Node_Modules" is not skipped. Fix: strings.EqualFold or

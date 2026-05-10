@@ -264,14 +264,16 @@ func fsnotifyOpToString(op fsnotify.Op) string {
 
 // shouldSkipPath returns true if the path contains a directory segment
 // that should be ignored (e.g., node_modules, .git).
+// Normalizes separators to "/" before matching so that Windows native paths
+// (backslash) and Git Bash / forward-slash paths both match correctly.
 func shouldSkipPath(path string) bool {
+	normalized := filepath.ToSlash(path)
 	for dir := range skipDirs {
-		// Check for /dir/ segment or /dir at the end
-		seg := string(filepath.Separator) + dir + string(filepath.Separator)
-		if strings.Contains(path, seg) {
-			return true
-		}
-		if strings.HasSuffix(path, string(filepath.Separator)+dir) {
+		seg := "/" + dir + "/"
+		if strings.Contains(normalized, seg) ||
+			strings.HasSuffix(normalized, "/"+dir) ||
+			normalized == dir ||
+			strings.HasPrefix(normalized, dir+"/") {
 			return true
 		}
 	}
