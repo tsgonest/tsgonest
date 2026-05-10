@@ -61,11 +61,11 @@ build:
   Copy-Item tsgonest.exe packages\core\bin\tsgonest.exe
 
 test: build
-  go test ./internal/...
+  go test -race ./internal/...
   cd e2e && pnpm run test --run && cd ..
 
 test-unit:
-  go test ./internal/...
+  go test -race ./internal/...
 
 test-e2e: build
   cd e2e && pnpm run test --run && cd ..

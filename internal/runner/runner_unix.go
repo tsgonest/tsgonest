@@ -26,10 +26,15 @@ func (r *Runner) Start() error {
 		return fmt.Errorf("starting process: %w", err)
 	}
 
+	r.alive.Store(true)
+
 	// Wait for process in background
+	cmd := r.cmd
+	done := r.done
 	go func() {
-		r.cmd.Wait()
-		close(r.done)
+		cmd.Wait()
+		r.alive.Store(false)
+		close(done)
 	}()
 
 	return nil
