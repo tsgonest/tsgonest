@@ -62,13 +62,13 @@ build:
 
 test: build
   go test -race ./internal/...
-  cd e2e && pnpm run test --run && cd ..
+  pnpm --dir e2e run test --run
 
 test-unit:
   go test -race ./internal/...
 
 test-e2e: build
-  cd e2e && pnpm run test --run && cd ..
+  pnpm --dir e2e run test --run
 
 fmt:
   gofmt -w internal cmd tools
