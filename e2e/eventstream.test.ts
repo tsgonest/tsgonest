@@ -12,7 +12,13 @@ let compiled = false;
 function ensureCompiled() {
   if (!compiled) {
     const result = buildIntegrationFixture();
-    expect(result.exitCode).toBe(0);
+    if (result.exitCode !== 0) {
+      throw new Error(
+        `integration fixture build failed (exit ${result.exitCode}).\n` +
+          `--- stdout ---\n${result.stdout}\n` +
+          `--- stderr ---\n${result.stderr}\n`,
+      );
+    }
     compiled = true;
   }
 }

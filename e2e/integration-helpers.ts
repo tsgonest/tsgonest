@@ -1,43 +1,43 @@
 import { spawn, type ChildProcess } from "child_process";
 import { resolve } from "path";
-import { rmSync, existsSync, writeFileSync } from "fs";
-import { runTsgonest, FIXTURES_DIR } from "./helpers";
+import { existsSync } from "fs";
+import { FIXTURES_DIR } from "./helpers";
 
 export const INTEGRATION_DIR = resolve(FIXTURES_DIR, "integration");
 export const INTEGRATION_DIST = resolve(INTEGRATION_DIR, "dist");
 
 /**
- * Compile the integration fixture with tsgonest.
- * Returns the build result for assertions.
+ * Returns a stub result indicating the integration fixture is already built.
  *
- * Uses a filesystem marker (.tsgonest-e2e-built) to coordinate across parallel
- * Vitest workers — only the first worker cleans and rebuilds. Others skip if
- * the marker already exists (indicating a recent build in this test run).
+ * The actual compile happens in `e2e/global-setup.ts` exactly once before any
+ * test files start. This function only checks the marker dropped by that
+ * global setup. If the marker is missing, the fixture was never built (e.g.
+ * vitest globalSetup misconfigured) — the helper returns exitCode 1 plus a
+ * descriptive stderr so the test failure surfaces the real problem rather
+ * than a bare `expected 1 to be 0`.
+ *
+ * Previous in-test build coordination (TOCTOU marker check + rmSync +
+ * runTsgonest in each worker) raced on Windows: parallel workers would each
+ * see the marker missing, all attempt to rebuild the same dist/, and collide
+ * on file locks (issue #199 Cluster B).
  */
 export function buildIntegrationFixture() {
-  const distDir = resolve(INTEGRATION_DIR, "dist");
-  const marker = resolve(distDir, ".tsgonest-e2e-built");
+  const marker = resolve(INTEGRATION_DIST, ".tsgonest-e2e-built");
 
-  // If another worker already compiled in this run, reuse it.
   if (existsSync(marker)) {
-    return { exitCode: 0, stdout: "(cached)", stderr: "" };
+    return { exitCode: 0, stdout: "(globalSetup cached)", stderr: "" };
   }
 
-  if (existsSync(distDir)) {
-    rmSync(distDir, { recursive: true });
-  }
-  const result = runTsgonest([
-    "--project",
-    "testdata/integration/tsconfig.json",
-    "--config",
-    "testdata/integration/tsgonest.config.json",
-  ]);
-
-  // Write marker so parallel workers skip recompilation.
-  if (result.exitCode === 0 && existsSync(distDir)) {
-    writeFileSync(marker, new Date().toISOString());
-  }
-  return result;
+  return {
+    exitCode: 1,
+    stdout: "",
+    stderr:
+      `integration fixture marker not found at ${marker}.\n` +
+      `globalSetup (e2e/global-setup.ts) is responsible for compiling the\n` +
+      `integration fixture before any test files start. Either globalSetup\n` +
+      `did not run (check vitest.config.ts), or the dist directory was\n` +
+      `wiped between setup and this test.`,
+  };
 }
 
 /**
