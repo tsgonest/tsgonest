@@ -37,8 +37,22 @@ jobs:
         run: go test -v ./internal/runner/ -timeout 120s
 
   # ── Full test suite (unit + e2e) ──────────────────────────────
+  #
+  # The Windows leg currently exposes a backlog of platform-specific bugs
+  # tracked in issues #136, #137, #138, #143–#150. Until those land, expect
+  # this matrix slot to fail — that is by design: a red Windows job blocks
+  # PRs until the platform-handling fixes ship.
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        # bash is available on all GitHub-hosted runners (Git Bash on Windows).
+        # Using a single shell keeps `just` recipes and inline scripts portable.
+        shell: bash
 
     steps:
       - uses: actions/checkout@v6

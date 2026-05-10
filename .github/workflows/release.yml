@@ -13,8 +13,20 @@ permissions:
 
 jobs:
   # ── Gate: run the full test suite before releasing ────────
+  #
+  # Mirrors the CI matrix in .github/workflows/ci.yml — releases must pass
+  # on every supported runtime, not just Linux. While platform-specific
+  # issues (#136, #137, #138, #143–#150) are still outstanding, a tag push
+  # will be blocked from releasing until the Windows job is green.
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
 
     steps:
       - uses: actions/checkout@v6
