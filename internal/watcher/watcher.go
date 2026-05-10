@@ -76,6 +76,11 @@ func (w *Watcher) Watch() error {
 	if err == nil {
 		return nil
 	}
+	// Don't fall back to polling when a watch root vanished — polling the
+	// missing path would also produce nothing, and the user needs to know.
+	if _, gone := err.(*ErrWatchRootGone); gone {
+		return err
+	}
 	// fsnotify failed — fall back to polling
 	return w.watchPolling()
 }
@@ -90,6 +95,20 @@ func (w *Watcher) Stop() {
 	}
 }
 
+// ErrWatchRootGone is returned by Watch when one of the configured watch
+// roots is renamed or removed while the watcher is running. fsnotify's
+// behavior in this case is platform-dependent and silent: macOS (kqueue)
+// stops delivering events, Linux (inotify) auto-removes the watch. Either
+// way, file changes go undetected from that point on, so we surface a
+// clear error rather than appear to keep working.
+type ErrWatchRootGone struct {
+	Path string
+}
+
+func (e *ErrWatchRootGone) Error() string {
+	return fmt.Sprintf("watch root %q was renamed or removed; restart tsgonest dev", e.Path)
+}
+
 // watchFsnotify uses OS-level file system notifications for near-instant
 // change detection. Returns a non-nil error if setup fails (e.g., watch
 // limit exhausted), in which case the caller should fall back to polling.
@@ -99,6 +118,15 @@ func (w *Watcher) watchFsnotify() error {
 		return err
 	}
 	defer fsw.Close()
+
+	// Capture the watch roots, normalized, so we can detect when one of
+	// them is renamed or removed mid-flight. Symlink-resolved paths are
+	// preferred because fsnotify reports events using the resolved path
+	// on platforms where the watch was added via a symlinked input.
+	roots := make(map[string]string, len(w.dirs))
+	for _, dir := range w.dirs {
+		roots[normalizeWatchPath(dir)] = dir
+	}
 
 	// Recursively add all directories under each watched root.
 	for _, dir := range w.dirs {
@@ -122,6 +150,12 @@ func (w *Watcher) watchFsnotify() error {
 			// Chmod is the sole operation; combined Write|Chmod passes through.
 			if ev.Op == fsnotify.Chmod {
 				continue
+			}
+
+			if ev.Has(fsnotify.Remove) || ev.Has(fsnotify.Rename) {
+				if rootPath, gone := matchedRoot(roots, ev.Name); gone {
+					return &ErrWatchRootGone{Path: rootPath}
+				}
 			}
 
 			// Skip events from directories that shouldn't be watched
@@ -272,6 +306,29 @@ func fsnotifyOpToString(op fsnotify.Op) string {
 	default:
 		return "write"
 	}
+}
+
+// normalizeWatchPath returns a canonical absolute form of a watch root
+// for comparison against fsnotify event paths. fsnotify reports event
+// paths as they were passed to Add (no symlink resolution), so we only
+// Abs+Clean here — resolving symlinks would make /var/foo (the path the
+// user added on macOS) miss events reported under that same /var/foo.
+func normalizeWatchPath(p string) string {
+	if abs, err := filepath.Abs(p); err == nil {
+		return filepath.Clean(abs)
+	}
+	return filepath.Clean(p)
+}
+
+// matchedRoot reports whether eventPath equals one of the registered
+// watch roots, returning the original (unnormalized) root path so error
+// messages reflect what the user passed in.
+func matchedRoot(roots map[string]string, eventPath string) (string, bool) {
+	norm := normalizeWatchPath(eventPath)
+	if orig, ok := roots[norm]; ok {
+		return orig, true
+	}
+	return "", false
 }
 
 // shouldSkipPath returns true if the path contains a directory segment

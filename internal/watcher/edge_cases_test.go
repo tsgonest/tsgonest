@@ -12,6 +12,7 @@ package watcher
 // behavior. When a fix lands, these tests should be flipped to assert correctness.
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -52,17 +53,13 @@ func drainEvents(ch <-chan []Event, timeout time.Duration) []Event {
 // D. Watched-root rename
 // ─────────────────────────────────────────────────────────────────────────────
 
-// TestWatch_RootRename_SilentlyStopsEvents_KnownIssue documents that renaming
-// the watched root makes fsnotify silently drop events. There is no logic in
-// addPending or watchFsnotify to re-add the root or surface an error to the
-// caller. A `tsgonest dev` user who runs `mv src src.bak && mv staging src`
-// gets no rebuilds until restart.
-//
-// Expected fix: detect Remove/Rename on a watched root (or any directory we
-// added recursively), then either (a) print a clear error and bail out of the
-// fsnotify loop so the caller can retry, or (b) re-walk and re-add the root
-// when the new path appears.
-func TestWatch_RootRename_SilentlyStopsEvents_KnownIssue(t *testing.T) {
+// TestWatch_RootRename_SurfacesError verifies that when the watched root is
+// renamed out from under the watcher, Watch returns an *ErrWatchRootGone
+// instead of silently going deaf. Before the fix, fsnotify dropped events
+// without any signal: macOS (kqueue) stopped delivering events, Linux
+// (inotify) auto-removed the watch — either way `tsgonest dev` appeared to
+// keep running but never rebuilt again.
+func TestWatch_RootRename_SurfacesError(t *testing.T) {
 	parent := t.TempDir()
 	src := filepath.Join(parent, "src")
 	if err := os.Mkdir(src, 0755); err != nil {
@@ -74,7 +71,9 @@ func TestWatch_RootRename_SilentlyStopsEvents_KnownIssue(t *testing.T) {
 	w := New([]string{src}, []string{".ts"}, 50*time.Millisecond, func(events []Event) {
 		got <- events
 	})
-	go w.Watch()
+
+	watchErr := make(chan error, 1)
+	go func() { watchErr <- w.Watch() }()
 	defer w.Stop()
 	time.Sleep(200 * time.Millisecond)
 
@@ -93,26 +92,55 @@ func TestWatch_RootRename_SilentlyStopsEvents_KnownIssue(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Now create the original path again and write a file inside.
+	select {
+	case err := <-watchErr:
+		var gone *ErrWatchRootGone
+		if !errors.As(err, &gone) {
+			t.Fatalf("expected *ErrWatchRootGone, got %T: %v", err, err)
+		}
+		if gone.Path == "" {
+			t.Errorf("ErrWatchRootGone.Path is empty")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Watch did not return ErrWatchRootGone within 3s after the watched root was renamed")
+	}
+}
+
+// TestWatch_RootRemove_SurfacesError verifies that removing (rmdir) the
+// watched root is also detected and surfaces the same ErrWatchRootGone
+// instead of silently dropping events. Same root-cause as the rename case
+// — both Remove and Rename fsnotify ops on a watch root must terminate
+// the watch loop with a clear error.
+func TestWatch_RootRemove_SurfacesError(t *testing.T) {
+	parent := t.TempDir()
+	src := filepath.Join(parent, "src")
 	if err := os.Mkdir(src, 0755); err != nil {
 		t.Fatal(err)
 	}
-	os.WriteFile(filepath.Join(src, "app.ts"), []byte("const a = 3;"), 0644)
 
-	// Drain anything that arrives in the next second.
-	events := drainEvents(got, 1*time.Second)
+	got := make(chan []Event, 16)
+	w := New([]string{src}, []string{".ts"}, 50*time.Millisecond, func(events []Event) {
+		got <- events
+	})
 
-	// Today, the watcher does not re-attach to the new src/. We expect zero
-	// post-rename events. When the bug is fixed, this assertion should be
-	// flipped to expect at least one event for the new app.ts.
-	for _, ev := range events {
-		if ev.Path == filepath.Join(src, "app.ts") {
-			t.Logf("FIXED: post-rename write was detected (%v) — flip this assertion", ev)
-			return
-		}
+	watchErr := make(chan error, 1)
+	go func() { watchErr <- w.Watch() }()
+	defer w.Stop()
+	time.Sleep(200 * time.Millisecond)
+
+	if err := os.Remove(src); err != nil {
+		t.Fatal(err)
 	}
-	// Still broken — log so the test is observable but not failing CI.
-	t.Logf("KNOWN ISSUE: %d events received post-rename, none for the recreated app.ts", len(events))
+
+	select {
+	case err := <-watchErr:
+		var gone *ErrWatchRootGone
+		if !errors.As(err, &gone) {
+			t.Fatalf("expected *ErrWatchRootGone, got %T: %v", err, err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Watch did not return ErrWatchRootGone within 3s after the watched root was removed")
+	}
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
