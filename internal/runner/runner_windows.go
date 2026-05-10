@@ -63,8 +63,6 @@ func (r *Runner) Start() error {
 		return fmt.Errorf("configuring job object: %w", err)
 	}
 
-	r.done = make(chan struct{})
-
 	if err := r.cmd.Start(); err != nil {
 		windows.CloseHandle(job)
 		r.cmd = nil
@@ -96,6 +94,12 @@ func (r *Runner) Start() error {
 		return fmt.Errorf("resuming process: %w", err)
 	}
 
+	// Allocate r.done and spawn the wait goroutine ONLY after all error-prone
+	// setup has succeeded. If any step above fails, r.done stays as it was
+	// (nil on first Start, or the closed channel from the previous run), so
+	// Wait() will not block forever waiting for a goroutine that was never
+	// spawned. See issue #144.
+	r.done = make(chan struct{})
 	r.alive.Store(true)
 
 	// Wait for process in background
@@ -119,6 +123,16 @@ func (r *Runner) stop() error {
 
 	if r.cmd == nil || r.cmd.Process == nil {
 		r.closeJob()
+		return nil
+	}
+
+	// If r.done is nil, Start() failed after cmd.Start() succeeded but before
+	// the wait goroutine was spawned (issue #144). The Start() error path
+	// already killed the process, so just clean up handles and return.
+	if r.done == nil {
+		r.cmd.Process.Kill()
+		r.closeJob()
+		r.cmd = nil
 		return nil
 	}
 
