@@ -3,7 +3,9 @@
 package runner
 
 import (
+	"errors"
 	"fmt"
+	"os/exec"
 	"syscall"
 	"time"
 	"unsafe"
@@ -19,12 +21,22 @@ var generateConsoleCtrlEvent = func(event uint32, pid uint32) error {
 
 const createSuspended = 0x00000004
 
+// startProcess is overridable in tests to exercise the breakaway-denied retry path.
+var startProcess = func(cmd *exec.Cmd) error { return cmd.Start() }
+
 // Start starts the child process inside a Windows Job Object.
 // The process is created suspended, assigned to the Job Object, then resumed.
 // This eliminates the race where the child could spawn grandchildren before
 // being assigned to the job. The Job Object is configured with
 // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE so all processes in the job are
 // terminated when the handle is closed (including on parent death).
+//
+// CREATE_BREAKAWAY_FROM_JOB is requested first so tsgonest can run inside a
+// CI-provided parent Job Object (GitHub Actions, TeamCity, Azure DevOps, some
+// IDE task runners) without nested-job conflicts. If the parent job disallows
+// breakaway, CreateProcess returns ERROR_ACCESS_DENIED; we then rebuild the
+// *exec.Cmd (Start can only be called once) and retry without the flag, which
+// matches Node.js's behavior for spawned children on Windows.
 func (r *Runner) Start() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -33,13 +45,11 @@ func (r *Runner) Start() error {
 		return ErrRunnerStopped
 	}
 
-	r.cmd = r.newCmd()
+	baseFlags := uint32(syscall.CREATE_NEW_PROCESS_GROUP | createSuspended)
 
-	// CREATE_NEW_PROCESS_GROUP: allows sending CTRL_BREAK_EVENT for graceful shutdown.
-	// CREATE_SUSPENDED: process starts frozen so we can assign the Job Object before
-	// any child processes are spawned.
+	r.cmd = r.newCmd()
 	r.cmd.SysProcAttr = &syscall.SysProcAttr{
-		CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP | createSuspended,
+		CreationFlags: baseFlags | windows.CREATE_BREAKAWAY_FROM_JOB,
 	}
 
 	// Create a Job Object with KILL_ON_JOB_CLOSE.
@@ -63,10 +73,20 @@ func (r *Runner) Start() error {
 		return fmt.Errorf("configuring job object: %w", err)
 	}
 
-	if err := r.cmd.Start(); err != nil {
-		windows.CloseHandle(job)
-		r.cmd = nil
-		return fmt.Errorf("starting process: %w", err)
+	if err := startProcess(r.cmd); err != nil {
+		if isBreakawayDenied(err) {
+			// Parent Job Object disallows breakaway; rebuild *exec.Cmd
+			// (Start may only be called once per Cmd) and retry without the
+			// CREATE_BREAKAWAY_FROM_JOB flag.
+			r.cmd = r.newCmd()
+			r.cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: baseFlags}
+			err = startProcess(r.cmd)
+		}
+		if err != nil {
+			windows.CloseHandle(job)
+			r.cmd = nil
+			return fmt.Errorf("starting process: %w", err)
+		}
 	}
 
 	// Assign the suspended process to the Job Object BEFORE resuming it.
@@ -191,6 +211,13 @@ func (r *Runner) cleanupSuspendedChild(job windows.Handle, procHandle windows.Ha
 	}
 	r.cmd = nil
 	r.jobHandle = 0
+}
+
+// isBreakawayDenied reports whether err is the ERROR_ACCESS_DENIED that
+// CreateProcess returns when CREATE_BREAKAWAY_FROM_JOB is requested but the
+// parent Job Object's JOB_OBJECT_LIMIT_BREAKAWAY_OK flag is not set.
+func isBreakawayDenied(err error) bool {
+	return err != nil && errors.Is(err, syscall.ERROR_ACCESS_DENIED)
 }
 
 // resumeProcessThreads enumerates and resumes all threads of a suspended process.

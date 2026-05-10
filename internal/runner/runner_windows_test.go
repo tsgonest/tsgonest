@@ -3,13 +3,17 @@
 package runner
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/windows"
 )
 
 func processAlive(pid int) bool {
@@ -353,6 +357,132 @@ func TestRunner_DoubleStopSafe(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("second Stop() deadlocked")
+	}
+}
+
+// --- CREATE_BREAKAWAY_FROM_JOB retry tests (issue #150) ---
+
+func TestIsBreakawayDenied(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"ERROR_ACCESS_DENIED direct", syscall.ERROR_ACCESS_DENIED, true},
+		{"wrapped ERROR_ACCESS_DENIED", fmt.Errorf("wrap: %w", syscall.ERROR_ACCESS_DENIED), true},
+		{"PathError wrapping ERROR_ACCESS_DENIED", &os.PathError{Op: "x", Path: "y", Err: syscall.ERROR_ACCESS_DENIED}, true},
+		{"unrelated error", errors.New("nope"), false},
+		{"different errno", syscall.Errno(2), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isBreakawayDenied(tc.err); got != tc.want {
+				t.Errorf("isBreakawayDenied(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRunner_StartFallsBackWhenBreakawayDenied simulates the CI-with-parent-Job
+// scenario by injecting a startProcess that fails the first attempt (the one
+// with CREATE_BREAKAWAY_FROM_JOB) with ERROR_ACCESS_DENIED, then defers to the
+// real exec on the retry. The retry must succeed and the runner must still
+// assign the child to its Job Object normally.
+func TestRunner_StartFallsBackWhenBreakawayDenied(t *testing.T) {
+	originalStart := startProcess
+	t.Cleanup(func() { startProcess = originalStart })
+
+	var attempts int
+	var sawBreakawayFlag, retriedWithoutFlag bool
+	startProcess = func(cmd *exec.Cmd) error {
+		attempts++
+		flags := cmd.SysProcAttr.CreationFlags
+		hasBreakaway := flags&windows.CREATE_BREAKAWAY_FROM_JOB != 0
+		if attempts == 1 {
+			sawBreakawayFlag = hasBreakaway
+			return &os.PathError{Op: "CreateProcess", Path: cmd.Path, Err: syscall.ERROR_ACCESS_DENIED}
+		}
+		retriedWithoutFlag = !hasBreakaway
+		return cmd.Start()
+	}
+
+	r := New("ping", []string{"-n", "300", "127.0.0.1"}, "")
+	if err := r.Start(); err != nil {
+		t.Fatalf("Start should succeed via fallback, got: %v", err)
+	}
+	defer r.Stop()
+
+	if attempts != 2 {
+		t.Errorf("expected 2 startProcess attempts (denied + retry), got %d", attempts)
+	}
+	if !sawBreakawayFlag {
+		t.Error("first attempt should have included CREATE_BREAKAWAY_FROM_JOB")
+	}
+	if !retriedWithoutFlag {
+		t.Error("retry should have dropped CREATE_BREAKAWAY_FROM_JOB")
+	}
+	if !r.Running() {
+		t.Error("runner should be running after the fallback succeeded")
+	}
+}
+
+// TestRunner_StartUsesBreakawayByDefault verifies that the first CreateProcess
+// attempt requests CREATE_BREAKAWAY_FROM_JOB so tsgonest detaches from a parent
+// Job Object whenever the parent permits it.
+func TestRunner_StartUsesBreakawayByDefault(t *testing.T) {
+	originalStart := startProcess
+	t.Cleanup(func() { startProcess = originalStart })
+
+	var firstFlags uint32
+	startProcess = func(cmd *exec.Cmd) error {
+		if firstFlags == 0 {
+			firstFlags = cmd.SysProcAttr.CreationFlags
+		}
+		return cmd.Start()
+	}
+
+	r := New("ping", []string{"-n", "300", "127.0.0.1"}, "")
+	if err := r.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer r.Stop()
+
+	if firstFlags&windows.CREATE_BREAKAWAY_FROM_JOB == 0 {
+		t.Errorf("first CreateProcess attempt should request CREATE_BREAKAWAY_FROM_JOB; flags=0x%x", firstFlags)
+	}
+	if firstFlags&syscall.CREATE_NEW_PROCESS_GROUP == 0 {
+		t.Errorf("flags should still include CREATE_NEW_PROCESS_GROUP; flags=0x%x", firstFlags)
+	}
+	if firstFlags&createSuspended == 0 {
+		t.Errorf("flags should still include CREATE_SUSPENDED; flags=0x%x", firstFlags)
+	}
+}
+
+// TestRunner_StartReturnsRealErrorWhenRetryFails ensures non-ERROR_ACCESS_DENIED
+// failures from the first attempt are not swallowed by the breakaway fallback.
+func TestRunner_StartReturnsRealErrorWhenRetryFails(t *testing.T) {
+	originalStart := startProcess
+	t.Cleanup(func() { startProcess = originalStart })
+
+	sentinel := errors.New("simulated CreateProcess failure")
+	var attempts int
+	startProcess = func(cmd *exec.Cmd) error {
+		attempts++
+		return sentinel
+	}
+
+	r := New("ping", []string{"-n", "300", "127.0.0.1"}, "")
+	err := r.Start()
+	if err == nil {
+		r.Stop()
+		t.Fatal("expected Start to fail")
+	}
+	if !errors.Is(err, sentinel) {
+		t.Errorf("expected wrapped sentinel, got: %v", err)
+	}
+	if attempts != 1 {
+		t.Errorf("non-breakaway failures should NOT trigger the retry; attempts=%d", attempts)
 	}
 }
 
