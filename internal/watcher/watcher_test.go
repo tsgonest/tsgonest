@@ -21,10 +21,16 @@ func TestWatcher_BuildSnapshot(t *testing.T) {
 		t.Fatalf("expected 1 file in snapshot, got %d", len(snap))
 	}
 
-	// Verify the .ts file is in the snapshot
-	tsPath := filepath.Join(dir, "foo.ts")
+	// Verify the .ts file is in the snapshot. buildSnapshot resolves symlinks
+	// at the root (e.g. on macOS /var/folders -> /private/var/folders) so
+	// compare against the resolved path.
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		resolved = dir
+	}
+	tsPath := filepath.Join(resolved, "foo.ts")
 	if _, ok := snap[tsPath]; !ok {
-		t.Fatalf("expected %s in snapshot", tsPath)
+		t.Fatalf("expected %s in snapshot, got %v", tsPath, snap)
 	}
 }
 
