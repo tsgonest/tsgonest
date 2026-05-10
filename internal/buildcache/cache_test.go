@@ -19,7 +19,7 @@ func TestCachePath(t *testing.T) {
 			{"dist", "tsconfig.json", "dist/.tsgonest-cache"},
 		}
 		for _, tt := range tests {
-			got := CachePath(tt.outDir, tt.tsconf)
+			got := filepath.ToSlash(CachePath(tt.outDir, tt.tsconf))
 			if got != tt.want {
 				t.Errorf("CachePath(%q, %q) = %q, want %q", tt.outDir, tt.tsconf, got, tt.want)
 			}
@@ -37,7 +37,7 @@ func TestCachePath(t *testing.T) {
 			{"tsconfig.json", "tsconfig.tsgonest-cache"},
 		}
 		for _, tt := range tests {
-			got := CachePath("", tt.tsconf)
+			got := filepath.ToSlash(CachePath("", tt.tsconf))
 			if got != tt.want {
 				t.Errorf("CachePath(\"\", %q) = %q, want %q", tt.tsconf, got, tt.want)
 			}
@@ -57,7 +57,7 @@ func TestBuildcache_CachePath_CaseInsensitive(t *testing.T) {
 		{"/foo/tsconfig.build.JSON", "/foo/tsconfig.build.tsgonest-cache"},
 	}
 	for _, tt := range tests {
-		got := CachePath("", tt.tsconf)
+		got := filepath.ToSlash(CachePath("", tt.tsconf))
 		if got != tt.want {
 			t.Errorf("CachePath(\"\", %q) = %q, want %q", tt.tsconf, got, tt.want)
 		}
