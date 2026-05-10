@@ -16,6 +16,22 @@ init:
     pushd typescript-go && git am --3way --no-gpg-sign ../patches/*.patch && popd; \
   fi
   mkdir -p internal/collections && find ./typescript-go/internal/collections -type f ! -name '*_test.go' -exec cp {} internal/collections/ \;
+  just _patch-collections
+
+# Rewrites typescript-go's internal/json wrapper imports back to the upstream
+# go-json-experiment packages, since we can't import typescript-go internals.
+[unix]
+_patch-collections:
+  @if grep -q '"github.com/microsoft/typescript-go/internal/json"' internal/collections/ordered_map.go 2>/dev/null; then \
+    sed -i.bak \
+      -e 's|"github.com/microsoft/typescript-go/internal/json"|"github.com/go-json-experiment/json"\n\t"github.com/go-json-experiment/json/jsontext"|' \
+      -e 's|enc \*json\.Encoder|enc *jsontext.Encoder|g' \
+      -e 's|dec \*json\.Decoder|dec *jsontext.Decoder|g' \
+      -e 's|json\.BeginObject|jsontext.BeginObject|g' \
+      -e 's|json\.EndObject|jsontext.EndObject|g' \
+      internal/collections/ordered_map.go && \
+    rm -f internal/collections/ordered_map.go.bak; \
+  fi
 
 [windows]
 init:
@@ -25,6 +41,11 @@ init:
   pushd typescript-go; Get-ChildItem ../patches/*.patch -ErrorAction SilentlyContinue | ForEach-Object { git am --3way --no-gpg-sign $_.FullName }; popd
   New-Item -ItemType Directory -Force -Path internal\collections
   Get-ChildItem -Path .\typescript-go\internal\collections\* -File | Where-Object { $_.Name -notlike '*_test.go' } | ForEach-Object { Copy-Item $_.FullName -Destination .\internal\collections\ }
+  just _patch-collections
+
+[windows]
+_patch-collections:
+  $f = "internal\collections\ordered_map.go"; if (Test-Path $f) { $c = Get-Content -Raw $f; if ($c -match '"github.com/microsoft/typescript-go/internal/json"') { $c = $c -replace '"github.com/microsoft/typescript-go/internal/json"', "`"github.com/go-json-experiment/json`"`r`n`t`"github.com/go-json-experiment/json/jsontext`""; $c = $c -replace 'enc \*json\.Encoder', 'enc *jsontext.Encoder'; $c = $c -replace 'dec \*json\.Decoder', 'dec *jsontext.Decoder'; $c = $c -replace 'json\.BeginObject', 'jsontext.BeginObject'; $c = $c -replace 'json\.EndObject', 'jsontext.EndObject'; Set-Content -NoNewline $f $c } }
 
 [unix]
 build:
