@@ -2419,6 +2419,145 @@ func TestValidateCustomFn_StripsTsExtension(t *testing.T) {
 	assertNotContains(t, code, `validators.ts`)
 }
 
+// Regression tests for #159 — Validate<typeof fn> must emit a real relative
+// import that loads at runtime, regardless of whether tsgo gave us an
+// absolute Windows-style path (`C:/proj/...`) or an absolute Unix path
+// (`/abs/proj/...`). Pre-fix codegen called toRelativeImportPath, which
+// blindly prefixed `./` to drive-letter paths and left absolute Unix paths
+// as-is, leaking the build host's filesystem layout into the artifact.
+
+func TestValidateFnImport_AbsoluteWindowsPathProducesRelativeImport(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+	meta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Properties: []metadata.Property{
+			{
+				Name:     "card",
+				Type:     metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"},
+				Required: true,
+				Constraints: &metadata.Constraints{
+					ValidateFn:     ptrStr("isValidCard"),
+					ValidateModule: ptrStr("C:/proj/src/validators/credit-card.ts"),
+				},
+			},
+		},
+	}
+
+	sourceToOutput := map[string]string{
+		"C:/proj/src/payment.dto.ts":            "C:/proj/dist/payment.dto.ts",
+		"C:/proj/src/validators/credit-card.ts": "C:/proj/dist/validators/credit-card.ts",
+	}
+
+	code := GenerateCompanionSelective("PaymentDto", meta, reg, true, false, CompanionGenOptions{
+		SourceFile:     "C:/proj/dist/payment.dto",
+		SourceToOutput: sourceToOutput,
+	})
+
+	assertContains(t, code, `import { isValidCard } from "./validators/credit-card";`)
+	assertNotContains(t, code, `./C:/`)
+	assertNotContains(t, code, `C:/proj`)
+}
+
+func TestValidateFnImport_AbsoluteUnixPathProducesRelativeImport(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+	meta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Properties: []metadata.Property{
+			{
+				Name:     "card",
+				Type:     metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"},
+				Required: true,
+				Constraints: &metadata.Constraints{
+					ValidateFn:     ptrStr("isValidCard"),
+					ValidateModule: ptrStr("/abs/proj/src/validators/credit-card.ts"),
+				},
+			},
+		},
+	}
+
+	sourceToOutput := map[string]string{
+		"/abs/proj/src/payment.dto.ts":            "/abs/proj/dist/payment.dto.ts",
+		"/abs/proj/src/validators/credit-card.ts": "/abs/proj/dist/validators/credit-card.ts",
+	}
+
+	code := GenerateCompanionSelective("PaymentDto", meta, reg, true, false, CompanionGenOptions{
+		SourceFile:     "/abs/proj/dist/payment.dto",
+		SourceToOutput: sourceToOutput,
+	})
+
+	assertContains(t, code, `import { isValidCard } from "./validators/credit-card";`)
+	assertNotContains(t, code, `/abs/proj`)
+}
+
+func TestValidateFnImport_NestedCompanionLocations(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+	meta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Properties: []metadata.Property{
+			{
+				Name:     "data",
+				Type:     metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"},
+				Required: true,
+				Constraints: &metadata.Constraints{
+					ValidateFn:     ptrStr("checkY"),
+					ValidateModule: ptrStr("/abs/proj/src/validators/y.ts"),
+				},
+			},
+		},
+	}
+
+	sourceToOutput := map[string]string{
+		"/abs/proj/src/sub/x.ts":        "/abs/proj/dist/sub/x.ts",
+		"/abs/proj/src/validators/y.ts": "/abs/proj/dist/validators/y.ts",
+	}
+
+	// Companion lives at dist/sub/x.tsgonest.js → must walk up one dir to
+	// reach dist/validators/y.
+	code := GenerateCompanionSelective("X", meta, reg, true, false, CompanionGenOptions{
+		SourceFile:     "/abs/proj/dist/sub/x",
+		SourceToOutput: sourceToOutput,
+	})
+
+	assertContains(t, code, `import { checkY } from "../validators/y";`)
+	assertNotContains(t, code, `/abs/proj`)
+}
+
+func TestValidateFnImport_BackslashSourcePathIsNormalized(t *testing.T) {
+	// Defense-in-depth: if a Windows-shaped path with backslashes leaks
+	// through (e.g. via filepath.Join populating sourceToOutput on Windows),
+	// the emitted specifier must still be forward-slash relative.
+	reg := metadata.NewTypeRegistry()
+	meta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Properties: []metadata.Property{
+			{
+				Name:     "card",
+				Type:     metadata.Metadata{Kind: metadata.KindAtomic, Atomic: "string"},
+				Required: true,
+				Constraints: &metadata.Constraints{
+					ValidateFn:     ptrStr("isValidCard"),
+					ValidateModule: ptrStr(`C:\proj\src\validators\credit-card.ts`),
+				},
+			},
+		},
+	}
+
+	sourceToOutput := map[string]string{
+		`C:\proj\src\payment.dto.ts`:            `C:\proj\dist\payment.dto.ts`,
+		`C:\proj\src\validators\credit-card.ts`: `C:\proj\dist\validators\credit-card.ts`,
+	}
+
+	code := GenerateCompanionSelective("PaymentDto", meta, reg, true, false, CompanionGenOptions{
+		SourceFile:     `C:\proj\dist\payment.dto`,
+		SourceToOutput: sourceToOutput,
+	})
+
+	assertContains(t, code, `import { isValidCard } from "./validators/credit-card";`)
+	if strings.Contains(code, "\\") {
+		t.Errorf("emitted code should not contain backslashes:\n%s", code)
+	}
+}
+
 // --- Helper ---
 
 // ── Union serialization tests ──────────────────────────────────────────

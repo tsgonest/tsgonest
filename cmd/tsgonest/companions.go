@@ -332,6 +332,7 @@ func generateCompanionsInMemory(program *shimcompiler.Program, cfg *config.Confi
 		ModuleFormat:       moduleFormat,
 		StandardSchema:     cfg.Transforms.StandardSchema,
 		ResponseSerializer: cfg.Transforms.ResponseSerializer,
+		SourceToOutput:     sourceToOutput,
 	}
 
 	type codegenResult struct {

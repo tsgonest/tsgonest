@@ -19,6 +19,13 @@ type CompanionOptions struct {
 	ModuleFormat       string // "cjs" or "esm" (default: "esm")
 	StandardSchema     bool   // Generate Standard Schema v1 wrappers (default: false)
 	ResponseSerializer string // "guard" (default), "safe", or "none" — controls type checking in stringify
+	// SourceToOutput maps each program source file's absolute path (as
+	// reported by tsgo, forward-slash) to its expected output path with
+	// extension preserved. Used to compute relative imports for
+	// `Validate<typeof fn>` validator functions that live in a separate
+	// source file. Optional — when nil, codegen falls back to the validator's
+	// recorded module path verbatim.
+	SourceToOutput map[string]string
 }
 
 // GenerateCompanionFiles generates consolidated companion files (.tsgonest.js)
@@ -60,6 +67,7 @@ func GenerateCompanionFiles(sourceFileName string, types map[string]*metadata.Me
 			StandardSchema:     opts.StandardSchema,
 			ResponseSerializer: opts.ResponseSerializer,
 			SourceFile:         sourceFileName,
+			SourceToOutput:     opts.SourceToOutput,
 		})
 		if isCJS {
 			jsContent = ConvertToCommonJS(jsContent)
