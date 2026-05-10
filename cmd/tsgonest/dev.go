@@ -223,20 +223,12 @@ func runDevLoop(flags *devFlags, sigCh chan os.Signal) devLoopResult {
 	// Determine entry point (after build, so dist/ exists)
 	if entryPoint == "" {
 		entryPoint = detectEntryPoint(cwd)
-	} else if !filepath.IsAbs(entryPoint) && !strings.HasPrefix(entryPoint, "dist/") {
-		if !strings.HasSuffix(entryPoint, ".js") {
-			entryPoint = entryPoint + ".js"
-		}
+	} else {
 		sourceRoot := "src"
 		if cfg != nil && cfg.SourceRoot != "" {
 			sourceRoot = cfg.SourceRoot
 		}
-		withSR := filepath.Join(cwd, "dist", sourceRoot, entryPoint)
-		if _, err := os.Stat(withSR); err == nil {
-			entryPoint = withSR
-		} else {
-			entryPoint = filepath.Join(cwd, "dist", entryPoint)
-		}
+		entryPoint = resolveEntryPoint(entryPoint, cwd, sourceRoot, os.Stat)
 	}
 
 	// Resolve runtime: CLI flag > config > default "node"
@@ -645,4 +637,38 @@ func pickExecShellFor(goos, execCmd string) (string, []string) {
 
 func pickExecShell(execCmd string) (string, []string) {
 	return pickExecShellFor(runtime.GOOS, execCmd)
+}
+
+// hasDistPrefix reports whether p already refers to a path inside (or equal to)
+// the "dist" directory. Separator-normalized so that Windows backslash paths
+// like "dist\main.js" are treated the same as "dist/main.js".
+func hasDistPrefix(p string) bool {
+	n := filepath.ToSlash(p)
+	return strings.HasPrefix(n, "dist/") || n == "dist"
+}
+
+// resolveEntryPoint turns a relative, non-absolute entry point string into an
+// absolute path under <cwd>/dist. statFn is injectable for testing.
+//
+// Rules:
+//   - Absolute paths are returned unchanged.
+//   - Paths that already start with "dist/" (or "dist\" on Windows) are
+//     returned unchanged; they will be made absolute by the caller if needed.
+//   - Otherwise: append ".js" if missing, probe <cwd>/dist/<sourceRoot>/<entry>,
+//     fall back to <cwd>/dist/<entry>.
+func resolveEntryPoint(entry, cwd, sourceRoot string, statFn func(string) (os.FileInfo, error)) string {
+	if filepath.IsAbs(entry) {
+		return entry
+	}
+	if hasDistPrefix(entry) {
+		return entry
+	}
+	if !strings.HasSuffix(entry, ".js") {
+		entry = entry + ".js"
+	}
+	withSR := filepath.Join(cwd, "dist", sourceRoot, entry)
+	if _, err := statFn(withSR); err == nil {
+		return withSR
+	}
+	return filepath.Join(cwd, "dist", entry)
 }
