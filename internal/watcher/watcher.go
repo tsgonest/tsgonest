@@ -169,7 +169,9 @@ func (w *Watcher) watchFsnotify() error {
 				// New directories need to be watched for new files
 				if ev.Has(fsnotify.Create) {
 					if info, err := os.Stat(ev.Name); err == nil && info.IsDir() {
-						w.addRecursive(fsw, ev.Name)
+						if addErr := w.addRecursive(fsw, ev.Name); addErr == nil {
+							w.synthesizeCreatesForExistingFiles(ev.Name)
+						}
 					}
 				}
 				continue
@@ -220,6 +222,42 @@ func (w *Watcher) addRecursive(fsw *fsnotify.Watcher, root string) error {
 				return addErr
 			}
 		}
+		return nil
+	})
+}
+
+// synthesizeCreatesForExistingFiles walks a freshly-attached directory and
+// pushes synthetic Create events for every file already inside that matches
+// the configured extensions. This is the fix for atomically populated
+// directories (e.g., `git checkout` / `git pull` renaming a fully-populated
+// package directory into the watch root): the kernel-level Create events for
+// those pre-existing files happened before fsnotify was watching the dir, so
+// fsnotify never reported them. Without synthesis, dev mode would silently
+// miss the new files until they were touched.
+func (w *Watcher) synthesizeCreatesForExistingFiles(root string) {
+	filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			if path != root {
+				base := filepath.Base(path)
+				if skipDirs[base] || (strings.HasPrefix(base, ".") && base != ".") {
+					return filepath.SkipDir
+				}
+			}
+			return nil
+		}
+		if !d.Type().IsRegular() {
+			return nil
+		}
+		if shouldSkipPath(path) {
+			return nil
+		}
+		if !w.matchesExtension(path) {
+			return nil
+		}
+		w.addPending(Event{Path: path, Op: "create"})
 		return nil
 	})
 }
