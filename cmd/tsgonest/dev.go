@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -244,7 +245,8 @@ func runDevLoop(flags *devFlags, sigCh chan os.Signal) devLoopResult {
 	// Build runtime args
 	var proc *runner.Runner
 	if flags.execCmd != "" {
-		proc = runner.New("sh", []string{"-c", flags.execCmd}, cwd)
+		shell, shellArgs := pickExecShell(flags.execCmd)
+		proc = runner.New(shell, shellArgs, cwd)
 	} else if entryPoint != "" {
 		runtimeArgs := buildRuntimeArgs(runtimeName, entryPoint, flags.debugFlag, flags.envFile, flags.noSourceMaps, flags.passthroughArgs)
 		proc = runner.New(runtimeName, runtimeArgs, cwd)
@@ -632,4 +634,15 @@ func detectEntryPoint(cwd string) string {
 	}
 
 	return ""
+}
+
+func pickExecShellFor(goos, execCmd string) (string, []string) {
+	if goos == "windows" {
+		return "cmd", []string{"/C", execCmd}
+	}
+	return "sh", []string{"-c", execCmd}
+}
+
+func pickExecShell(execCmd string) (string, []string) {
+	return pickExecShellFor(runtime.GOOS, execCmd)
 }
