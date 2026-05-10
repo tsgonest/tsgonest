@@ -189,8 +189,12 @@ func runDevLoop(flags *devFlags, sigCh chan os.Signal) devLoopResult {
 		resolvedConfigPath = cfgResult.Path
 	}
 
-	// Build args for watch rebuilds (no --clean)
-	watchBuildArgs := []string{}
+	// Build args for watch rebuilds (no --clean).
+	// --no-clean suppresses cfg.DeleteOutDir — incremental rebuilds must NOT
+	// wipe dist/ or .tsbuildinfo, otherwise (a) the incremental fast path is
+	// defeated and (b) a freshly restarted node racing on lazy require() can
+	// land in an empty dist/ during the next rebuild's clean window.
+	watchBuildArgs := []string{"--no-clean"}
 	if resolvedConfigPath != "" {
 		watchBuildArgs = append(watchBuildArgs, "--config", resolvedConfigPath)
 	}

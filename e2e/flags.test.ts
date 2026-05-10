@@ -178,4 +178,37 @@ describe("deleteOutDir config option", () => {
 
     clean();
   });
+
+  it("--no-clean should suppress deleteOutDir (used by `tsgonest dev` watch rebuilds)", () => {
+    clean();
+
+    // Initial build with deleteOutDir — establishes a clean dist + .tsbuildinfo.
+    const first = runTsgonest([
+      "--project",
+      "testdata/delete-outdir/tsconfig.json",
+      "--config",
+      "testdata/delete-outdir/tsgonest.config.json",
+    ]);
+    expect(first.exitCode).toBe(0);
+    expect(existsSync(resolve(distDir, "index.js"))).toBe(true);
+
+    // Plant a marker that deleteOutDir would normally wipe.
+    writeFileSync(resolve(distDir, "watch-marker.js"), "marker");
+
+    // Watch-style rebuild: --no-clean must suppress cfg.DeleteOutDir,
+    // so the dist/ contents (including the marker) survive the rebuild.
+    const second = runTsgonest([
+      "--project",
+      "testdata/delete-outdir/tsconfig.json",
+      "--config",
+      "testdata/delete-outdir/tsgonest.config.json",
+      "--no-clean",
+    ]);
+    expect(second.exitCode).toBe(0);
+    expect(second.stderr).not.toContain("cleaning output directory");
+    expect(existsSync(resolve(distDir, "index.js"))).toBe(true);
+    expect(existsSync(resolve(distDir, "watch-marker.js"))).toBe(true);
+
+    clean();
+  });
 });
