@@ -158,7 +158,19 @@ func (w *Watcher) watchFsnotify() error {
 // fsnotify watcher. Skips directories in the skipDirs set and hidden
 // directories (prefixed with "."). Returns an error if adding any
 // directory fails (typically ENOSPC on Linux when the inotify limit is hit).
+//
+// The root is resolved through filepath.EvalSymlinks so that watch roots
+// which are themselves symlinks or Windows junctions (mklink /J, OneDrive
+// Documents/Desktop redirection, monorepo layout symlinks) are walked as
+// their real targets. filepath.Walk uses os.Lstat, which reports symlinks
+// as non-directories regardless of target — without this resolution the
+// walk would no-op silently and no fsnotify.Add would ever run.
+// Symlinks discovered nested inside the tree are NOT followed, to avoid
+// cycles and double-watches.
 func (w *Watcher) addRecursive(fsw *fsnotify.Watcher, root string) error {
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		root = resolved
+	}
 	return filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil // skip inaccessible paths
@@ -290,6 +302,12 @@ type fileInfo struct {
 func (w *Watcher) buildSnapshot() map[string]fileInfo {
 	snap := make(map[string]fileInfo)
 	for _, dir := range w.dirs {
+		// Mirror addRecursive: resolve symlinks/junctions at the root so the
+		// polling fallback walks the real target instead of no-op'ing on a
+		// symlinked watch root. Nested symlinks are still left alone.
+		if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+			dir = resolved
+		}
 		filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 			if err != nil {
 				return nil

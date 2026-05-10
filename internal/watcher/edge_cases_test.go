@@ -514,3 +514,77 @@ func TestWatch_BurstWritesNoDataRace(t *testing.T) {
 	wg.Wait()
 	time.Sleep(200 * time.Millisecond)
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Symlinked watch root (#152)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// TestWatch_SymlinkedRoot_DetectsChanges verifies that fsnotify-mode watching
+// works when the watch root is itself a symlink (or Windows junction). The
+// underlying filepath.Walk uses os.Lstat, which would otherwise see the
+// symlink as a non-directory and skip it entirely — meaning fsw.Add never
+// runs and the dev loop is silent forever. addRecursive must resolve the
+// root via filepath.EvalSymlinks before walking.
+func TestWatch_SymlinkedRoot_DetectsChanges(t *testing.T) {
+	parent := t.TempDir()
+	real := filepath.Join(parent, "real")
+	if err := os.Mkdir(real, 0755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(parent, "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("symlink creation not permitted: %v", err)
+	}
+
+	got := make(chan []Event, 16)
+	w := New([]string{link}, []string{".ts"}, 50*time.Millisecond, func(events []Event) {
+		got <- events
+	})
+	go w.Watch()
+	defer w.Stop()
+	time.Sleep(200 * time.Millisecond)
+
+	// Write a file in the REAL directory and expect an event.
+	if err := os.WriteFile(filepath.Join(real, "app.ts"), []byte("export const x = 1;"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case <-got:
+		// good — fsnotify saw the write through the resolved root
+	case <-time.After(2 * time.Second):
+		t.Fatal("write to symlinked watch root was not detected; addRecursive likely no-op'd")
+	}
+}
+
+// TestPolling_SymlinkedRoot_Snapshots verifies the same root-symlink resolution
+// works for the polling fallback (buildSnapshot). Without EvalSymlinks at the
+// root, the .ts file inside the resolved target would be invisible to the
+// snapshot diff and polling would never report a change.
+func TestPolling_SymlinkedRoot_Snapshots(t *testing.T) {
+	parent := t.TempDir()
+	real := filepath.Join(parent, "real")
+	if err := os.Mkdir(real, 0755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(parent, "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("symlink creation not permitted: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(real, "app.ts"), []byte("export const x = 1;"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	w := &Watcher{
+		dirs:         []string{link},
+		extensions:   []string{".ts"},
+		debounce:     20 * time.Millisecond,
+		pollInterval: 30 * time.Millisecond,
+	}
+
+	snap := w.buildSnapshot()
+	if len(snap) != 1 {
+		t.Fatalf("expected 1 file in snapshot through symlinked root, got %d (snap=%v)", len(snap), snap)
+	}
+}
