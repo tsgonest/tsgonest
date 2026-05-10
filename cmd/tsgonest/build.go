@@ -867,7 +867,8 @@ func runBuildWithIncrAndProgram(args []string, oldIncrProgram *shimincremental.P
 // tsbuildInfoPathFromTsconfig derives the .tsbuildinfo path from a resolved tsconfig path.
 // e.g., "/project/tsconfig.json" → "/project/tsconfig.tsbuildinfo"
 func tsbuildInfoPathFromTsconfig(resolvedTsconfigPath string) string {
-	return strings.TrimSuffix(resolvedTsconfigPath, ".json") + ".tsbuildinfo"
+	ext := filepath.Ext(resolvedTsconfigPath)
+	return strings.TrimSuffix(resolvedTsconfigPath, ext) + ".tsbuildinfo"
 }
 
 // validateOutDir checks that outDir is safe to remove. This is the LAST line of

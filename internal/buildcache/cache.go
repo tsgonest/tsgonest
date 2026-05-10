@@ -60,7 +60,8 @@ func CachePath(outDir string, tsconfigPath string) string {
 	// Fallback: sibling of tsconfig
 	dir := filepath.Dir(tsconfigPath)
 	base := filepath.Base(tsconfigPath)
-	name := strings.TrimSuffix(base, ".json")
+	ext := filepath.Ext(base)
+	name := strings.TrimSuffix(base, ext)
 	return filepath.Join(dir, name+".tsgonest-cache")
 }
 

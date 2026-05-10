@@ -961,3 +961,23 @@ func TestRunBuild_SweepEmptyDir(t *testing.T) {
 	sweepBuildCacheTmp(t.TempDir())
 	sweepBuildCacheTmp("")
 }
+
+func TestTsbuildInfoPathFromTsconfig_CaseInsensitive(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"/project/tsconfig.json", "/project/tsconfig.tsbuildinfo"},
+		{"/project/tsconfig.JSON", "/project/tsconfig.tsbuildinfo"},
+		{"/project/tsconfig.Json", "/project/tsconfig.tsbuildinfo"},
+		{"/project/tsconfig.build.json", "/project/tsconfig.build.tsbuildinfo"},
+		{"/project/tsconfig.build.JSON", "/project/tsconfig.build.tsbuildinfo"},
+		{"/project/tsconfig", "/project/tsconfig.tsbuildinfo"},
+	}
+	for _, tt := range tests {
+		got := tsbuildInfoPathFromTsconfig(tt.input)
+		if got != tt.want {
+			t.Errorf("tsbuildInfoPathFromTsconfig(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
