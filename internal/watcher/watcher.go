@@ -26,6 +26,12 @@ const DefaultPollInterval = 500 * time.Millisecond
 // allowed before the watcher gives up on fsnotify and falls back to polling.
 const maxOverflowFailures = 2
 
+// rootLivenessPollInterval is how often the fsnotify backend Stats each watch
+// root to detect rename/removal. Required because Windows
+// ReadDirectoryChangesW does not emit any event for the watched directory
+// itself when it is renamed or deleted.
+const rootLivenessPollInterval = 500 * time.Millisecond
+
 // skipDirs are directory base names that should never be watched or walked.
 // These are either non-source content or hidden directories that produce
 // noise (node_modules, .git) or are too large to watch efficiently.
@@ -152,12 +158,14 @@ func (w *Watcher) watchFsnotify() error {
 	// lookup side must match. The map value is the original (unresolved)
 	// dir so error messages show what the user configured.
 	roots := make(map[string]string, len(w.dirs))
+	rootResolved := make([][2]string, 0, len(w.dirs))
 	for _, dir := range w.dirs {
 		resolved := dir
 		if r, err := filepath.EvalSymlinks(dir); err == nil {
 			resolved = r
 		}
 		roots[normalizeWatchPath(resolved)] = dir
+		rootResolved = append(rootResolved, [2]string{resolved, dir})
 	}
 
 	// Recursively add all directories under each watched root.
@@ -171,10 +179,43 @@ func (w *Watcher) watchFsnotify() error {
 	w.prevSnapshot = w.buildSnapshot()
 	w.snapMu.Unlock()
 
+	// Poll-based root liveness check. fsnotify's Rename/Remove signal for the
+	// watched root itself is platform-dependent: Linux (inotify) emits
+	// IN_MOVE_SELF/IN_DELETE_SELF, but Windows ReadDirectoryChangesW watches
+	// by HANDLE — renaming or removing the watched directory does NOT generate
+	// any event for the dir itself. A periodic os.Stat covers Windows and
+	// hardens the other platforms against missed/coalesced events.
+	rootGone := make(chan string, 1)
+	pollDone := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(rootLivenessPollInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-pollDone:
+				return
+			case <-ticker.C:
+				for _, pair := range rootResolved {
+					if _, err := os.Stat(pair[0]); err != nil && os.IsNotExist(err) {
+						select {
+						case rootGone <- pair[1]:
+						default:
+						}
+						return
+					}
+				}
+			}
+		}
+	}()
+	defer close(pollDone)
+
 	for {
 		select {
 		case <-w.stopCh:
 			return nil
+
+		case path := <-rootGone:
+			return &ErrWatchRootGone{Path: path}
 
 		case ev, ok := <-fsw.Events:
 			if !ok {
