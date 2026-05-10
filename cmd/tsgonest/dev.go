@@ -482,10 +482,15 @@ func runDevLoop(flags *devFlags, sigCh chan os.Signal) devLoopResult {
 	}
 
 	printStatus(os.Stderr, pretty, "◇", "watching for changes...")
-	w.Watch()
+	watchErr := w.Watch()
 
 	if restartRequested.Load() {
 		return devLoopRestart
+	}
+	if gone, ok := watchErr.(*watcher.ErrWatchRootGone); ok {
+		printStatus(os.Stderr, pretty, "✗", "watched directory %q was renamed or removed; please restart `tsgonest dev`", gone.Path)
+	} else if watchErr != nil {
+		fmt.Fprintf(os.Stderr, "watcher error: %v\n", watchErr)
 	}
 	return devLoopExit
 }
