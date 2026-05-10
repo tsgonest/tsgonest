@@ -410,8 +410,12 @@ async function main(): Promise<void> {
     project = new Project({ compilerOptions: { strict: true } });
   }
 
+  // ts-morph's globber uses process.cwd() and its underlying tinyglobby does
+  // not accept absolute Windows-style paths as glob patterns. Switch to opts.cwd
+  // so the include globs resolve correctly on every platform.
+  process.chdir(cwd);
   for (const pattern of opts.include) {
-    project.addSourceFilesAtPaths(resolve(cwd, pattern));
+    project.addSourceFilesAtPaths(pattern);
   }
 
   const files = project.getSourceFiles();
