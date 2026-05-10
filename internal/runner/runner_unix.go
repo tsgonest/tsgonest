@@ -23,6 +23,7 @@ func (r *Runner) Start() error {
 	r.done = make(chan struct{})
 
 	if err := r.cmd.Start(); err != nil {
+		r.cmd = nil
 		return fmt.Errorf("starting process: %w", err)
 	}
 

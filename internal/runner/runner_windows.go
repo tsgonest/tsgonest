@@ -39,6 +39,7 @@ func (r *Runner) Start() error {
 	// Create a Job Object with KILL_ON_JOB_CLOSE.
 	job, err := windows.CreateJobObject(nil, nil)
 	if err != nil {
+		r.cmd = nil
 		return fmt.Errorf("creating job object: %w", err)
 	}
 
@@ -52,6 +53,7 @@ func (r *Runner) Start() error {
 	)
 	if err != nil {
 		windows.CloseHandle(job)
+		r.cmd = nil
 		return fmt.Errorf("configuring job object: %w", err)
 	}
 
@@ -59,6 +61,7 @@ func (r *Runner) Start() error {
 
 	if err := r.cmd.Start(); err != nil {
 		windows.CloseHandle(job)
+		r.cmd = nil
 		return fmt.Errorf("starting process: %w", err)
 	}
 
@@ -70,15 +73,11 @@ func (r *Runner) Start() error {
 		uint32(r.cmd.Process.Pid),
 	)
 	if err != nil {
-		// Can't open process — kill the suspended process to avoid orphan
-		r.cmd.Process.Kill()
-		windows.CloseHandle(job)
+		r.cleanupSuspendedChild(job, 0)
 		return fmt.Errorf("opening process for job assignment: %w", err)
 	}
 	if err := windows.AssignProcessToJobObject(job, procHandle); err != nil {
-		windows.CloseHandle(procHandle)
-		r.cmd.Process.Kill()
-		windows.CloseHandle(job)
+		r.cleanupSuspendedChild(job, procHandle)
 		return fmt.Errorf("assigning process to job object: %w", err)
 	}
 	windows.CloseHandle(procHandle)
@@ -87,10 +86,7 @@ func (r *Runner) Start() error {
 
 	// Resume the process now that it's in the Job Object.
 	if err := resumeProcessThreads(r.cmd.Process.Pid); err != nil {
-		// If resume fails, kill the process to avoid a suspended orphan.
-		r.cmd.Process.Kill()
-		windows.CloseHandle(job)
-		r.jobHandle = 0
+		r.cleanupSuspendedChild(job, 0)
 		return fmt.Errorf("resuming process: %w", err)
 	}
 
@@ -146,6 +142,27 @@ func (r *Runner) closeJob() {
 		windows.CloseHandle(windows.Handle(r.jobHandle))
 		r.jobHandle = 0
 	}
+}
+
+// cleanupSuspendedChild reaps a suspended child created by Start() when one of
+// the post-Start setup steps (OpenProcess, AssignProcessToJobObject, thread
+// resume) fails. TerminateProcess alone leaves the kernel process slot alive
+// because *os.Process still owns a handle; without Wait() the handle leaks
+// until Runner is garbage collected, and r.cmd would otherwise be left
+// pointing at a dead Cmd that subsequent calls would treat as live.
+func (r *Runner) cleanupSuspendedChild(job windows.Handle, procHandle windows.Handle) {
+	if r.cmd != nil && r.cmd.Process != nil {
+		_ = r.cmd.Process.Kill()
+		_ = r.cmd.Wait()
+	}
+	if procHandle != 0 {
+		windows.CloseHandle(procHandle)
+	}
+	if job != 0 {
+		windows.CloseHandle(job)
+	}
+	r.cmd = nil
+	r.jobHandle = 0
 }
 
 // resumeProcessThreads enumerates and resumes all threads of a suspended process.
