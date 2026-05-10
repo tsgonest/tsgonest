@@ -20,11 +20,19 @@ type Runner struct {
 	// manual restart ("rs") commands without the child consuming input.
 	DisableStdin bool
 
-	mu        sync.Mutex
-	cmd       *exec.Cmd
-	done      chan struct{}
-	stopped   bool    // set by Stop(); prevents Start() after explicit shutdown
-	jobHandle uintptr // Windows Job Object handle; unused on other platforms
+	mu      sync.Mutex
+	cmd     *exec.Cmd
+	done    chan struct{}
+	stopped bool // set by Stop(); prevents Start() after explicit shutdown
+	// stopFinished is non-nil while a stop() invocation is mid-flight.
+	// It closes once the initiating stop() has finished both the kill wait
+	// and its post-wait state cleanup. Concurrent Stop() callers see a
+	// non-nil stopFinished and wait on it instead of issuing duplicate
+	// signals. This is what releases the mutex across the up-to-5s wait
+	// without exposing a window where another goroutine can observe the
+	// runner mid-cleanup.
+	stopFinished chan struct{}
+	jobHandle    uintptr // Windows Job Object handle; unused on other platforms
 
 	// alive is read by Running() without holding r.mu. The stdlib mutates
 	// cmd.ProcessState from inside cmd.Wait() without our lock, so reading

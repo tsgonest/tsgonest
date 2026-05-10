@@ -243,3 +243,112 @@ func TestRunner_RunningAfterExit(t *testing.T) {
 		t.Error("expected process to not be running after exit")
 	}
 }
+
+// TestRunnerStop_RunningCallsDontBlockBehindWait verifies that callers of
+// r.mu (e.g. Wait()) do not block on Stop()'s 5s graceful-kill wait. We
+// start a child that ignores SIGTERM, fire Stop() in a goroutine, and assert
+// a competing r.mu acquisition returns within 100ms even though Stop() is
+// mid-wait. We acquire r.mu directly rather than calling Running(), because
+// Running() has an orthogonal data race on cmd.ProcessState (KNOWN ISSUE G,
+// fixed separately by #134).
+func TestRunnerStop_RunningCallsDontBlockBehindWait(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow test (requires 5s SIGTERM timeout)")
+	}
+
+	script := `trap '' TERM; while true; do sleep 300 & wait $!; done`
+	r := New("sh", []string{"-c", script}, "")
+	if err := r.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	time.Sleep(200 * time.Millisecond)
+
+	stopDone := make(chan struct{})
+	stopStart := time.Now()
+	go func() {
+		r.Stop()
+		close(stopDone)
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+
+	muAcquired := make(chan struct{})
+	go func() {
+		r.mu.Lock()
+		_ = r.cmd
+		r.mu.Unlock()
+		close(muAcquired)
+	}()
+
+	select {
+	case <-muAcquired:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatalf("r.mu acquisition blocked behind Stop()'s graceful-kill wait — mutex held across 5s timer")
+	}
+
+	<-stopDone
+	if elapsed := time.Since(stopStart); elapsed < 4*time.Second {
+		t.Logf("Stop() returned in %v (process may have been killed by SIGKILL fallback)", elapsed)
+	}
+}
+
+// TestRunnerStop_ConcurrentStopsDoNotDoubleKill fires 10 simultaneous Stop()
+// calls and asserts they all return promptly without errors and without
+// triggering the race detector. Only one initiator issues the actual kill;
+// the rest serialize on r.stopFinished.
+func TestRunnerStop_ConcurrentStopsDoNotDoubleKill(t *testing.T) {
+	r := New("sleep", []string{"300"}, "")
+	if err := r.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	const goroutines = 10
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	var errCount atomic.Int32
+	var ready sync.WaitGroup
+	ready.Add(goroutines)
+	gate := make(chan struct{})
+
+	for range goroutines {
+		go func() {
+			defer wg.Done()
+			ready.Done()
+			<-gate
+			if err := r.Stop(); err != nil {
+				errCount.Add(1)
+				t.Errorf("concurrent Stop returned error: %v", err)
+			}
+		}()
+	}
+
+	ready.Wait()
+	close(gate)
+
+	doneAll := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(doneAll)
+	}()
+
+	select {
+	case <-doneAll:
+	case <-time.After(10 * time.Second):
+		t.Fatal("concurrent Stop() calls did not all complete within 10s — deadlock or contention")
+	}
+
+	if errCount.Load() != 0 {
+		t.Fatalf("expected zero errors from %d concurrent Stop calls, got %d", goroutines, errCount.Load())
+	}
+
+	r.mu.Lock()
+	stopFinishedNow := r.stopFinished
+	cmdNow := r.cmd
+	r.mu.Unlock()
+	if stopFinishedNow != nil {
+		t.Error("r.stopFinished should be nil after all Stop() calls return")
+	}
+	if cmdNow != nil {
+		t.Error("r.cmd should be nil after Stop()")
+	}
+}

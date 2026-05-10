@@ -167,52 +167,77 @@ func (r *Runner) Start() error {
 }
 
 // stop stops the child process gracefully, with a force-kill timeout.
+//
+// The mutex is released across the up-to-5s graceful-shutdown wait so that
+// concurrent callers of Running(), Wait(), Restart() (and even another Stop())
+// do not block behind us. r.stopFinished serializes Stop() callers: a second
+// Stop() entering while the first is mid-wait waits on the initiator's
+// stopFinished channel — which closes only after cleanup completes — so
+// secondary callers never observe the runner mid-cleanup or race with the
+// follow-up Restart's Start.
 func (r *Runner) stop() error {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	r.stopped = true
 
 	if r.cmd == nil || r.cmd.Process == nil {
+		r.stopped = true
 		r.closeJob()
+		r.mu.Unlock()
 		return nil
 	}
 
 	// If r.done is nil, Start() failed after cmd.Start() succeeded but before
 	// the wait goroutine was spawned (issue #144). The Start() error path
-	// already killed the process, so just clean up handles and return.
+	// already killed the process via cleanupSuspendedChild, but be defensive:
+	// kill again, close the job, and return without engaging the stopFinished
+	// dance because there is no wait goroutine to wake.
 	if r.done == nil {
+		r.stopped = true
 		r.cmd.Process.Kill()
 		r.closeJob()
 		r.cmd = nil
+		r.mu.Unlock()
 		return nil
 	}
 
-	// Try graceful shutdown via CTRL_BREAK_EVENT.
-	// Node.js handles this signal and can run cleanup code.
-	if err := generateConsoleCtrlEvent(windows.CTRL_BREAK_EVENT, uint32(r.cmd.Process.Pid)); err != nil {
-		// Signal not delivered (no console attached, wrong process group, etc.).
-		// Waiting 5s would be futile — r.done will never close on its own.
-		r.cmd.Process.Kill()
-		<-r.done
-		r.closeJob()
-		r.cmd = nil
+	if r.stopFinished != nil {
+		wait := r.stopFinished
+		r.mu.Unlock()
+		<-wait
 		return nil
 	}
 
-	select {
-	case <-r.done:
-		r.closeJob()
-		r.cmd = nil
-		return nil
-	case <-time.After(5 * time.Second):
-		// Graceful shutdown timed out — force kill
-		r.cmd.Process.Kill()
-		<-r.done
-		r.closeJob()
-		r.cmd = nil
-		return nil
+	finished := make(chan struct{})
+	r.stopFinished = finished
+	r.stopped = true
+	cmd := r.cmd
+	done := r.done
+	r.mu.Unlock()
+
+	// Try graceful shutdown via CTRL_BREAK_EVENT outside the mutex. Node.js
+	// handles this signal and can run cleanup code. If the signal cannot be
+	// delivered (no console attached, wrong process group, etc.) waiting 5s
+	// would be futile — done will never close on its own — so jump straight
+	// to Kill (issue #146).
+	ctrlErr := generateConsoleCtrlEvent(windows.CTRL_BREAK_EVENT, uint32(cmd.Process.Pid))
+	if ctrlErr != nil {
+		cmd.Process.Kill()
+		<-done
+	} else {
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			cmd.Process.Kill()
+			<-done
+		}
 	}
+
+	r.mu.Lock()
+	r.closeJob()
+	r.cmd = nil
+	r.stopFinished = nil
+	r.mu.Unlock()
+	close(finished)
+	return nil
 }
 
 // closeJob closes the Windows Job Object handle.
