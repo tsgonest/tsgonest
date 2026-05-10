@@ -6,6 +6,20 @@ import (
 	"time"
 )
 
+// statFn is the os.Stat implementation used by WatchFiles.
+// Tests may replace it to inject transient or permanent errors.
+var statFn = os.Stat
+
+// statMu guards reads and writes to statFn so tests can safely swap it.
+var statMu sync.RWMutex
+
+func stat(name string) (os.FileInfo, error) {
+	statMu.RLock()
+	fn := statFn
+	statMu.RUnlock()
+	return fn(name)
+}
+
 // WatchFiles polls specific file paths for changes (modification, creation,
 // or deletion). When any watched file changes, onChange is called with the
 // file path. Returns a stop function that halts polling.
@@ -29,12 +43,16 @@ func WatchFiles(paths []string, pollInterval time.Duration, onChange func(path s
 				return
 			case <-ticker.C:
 				for _, path := range paths {
-					info, err := os.Stat(path)
+					info, err := stat(path)
 
 					oldTime := snapshot[path]
 					var newTime time.Time
 					if err == nil {
 						newTime = info.ModTime()
+					} else if !os.IsNotExist(err) {
+						// Transient: lock contention, AV scan, mid-rename window.
+						// Skip this poll; next poll will see the settled state.
+						continue
 					}
 					// zero → non-zero: file created
 					// non-zero → different: file modified
@@ -60,7 +78,7 @@ func WatchFiles(paths []string, pollInterval time.Duration, onChange func(path s
 func snapshotFiles(paths []string) map[string]time.Time {
 	snap := make(map[string]time.Time, len(paths))
 	for _, p := range paths {
-		info, err := os.Stat(p)
+		info, err := stat(p)
 		if err == nil {
 			snap[p] = info.ModTime()
 		}
