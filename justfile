@@ -38,8 +38,8 @@ init:
   git submodule update --init --depth 1 typescript-go
   git -C typescript-go config user.email "ci@tsgonest"
   git -C typescript-go config user.name  "tsgonest CI"
-  pushd typescript-go; Get-ChildItem ../patches/*.patch -ErrorAction SilentlyContinue | ForEach-Object { git am --3way --no-gpg-sign $_.FullName }; popd
-  New-Item -ItemType Directory -Force -Path internal\collections
+  if ((Get-ChildItem patches/*.patch -ErrorAction SilentlyContinue).Count -gt 0) { Push-Location typescript-go; Get-ChildItem ../patches/*.patch | ForEach-Object { git am --3way --no-gpg-sign $_.FullName; if ($LASTEXITCODE -ne 0) { throw "git am failed for $($_.Name)" } }; Pop-Location }
+  New-Item -ItemType Directory -Force -Path internal\collections | Out-Null
   Get-ChildItem -Path .\typescript-go\internal\collections\* -File | Where-Object { $_.Name -notlike '*_test.go' } | ForEach-Object { Copy-Item $_.FullName -Destination .\internal\collections\ }
   just _patch-collections
 
@@ -56,8 +56,8 @@ build:
 
 [windows]
 build:
-  $env:GOOS="windows"; $env:GOARCH="amd64"; go build -o tsgonest.exe ./cmd/tsgonest
-  New-Item -ItemType Directory -Force -Path packages\core\bin
+  go build -o tsgonest.exe ./cmd/tsgonest
+  New-Item -ItemType Directory -Force -Path packages\core\bin | Out-Null
   Copy-Item tsgonest.exe packages\core\bin\tsgonest.exe
 
 test: build
@@ -82,6 +82,12 @@ bench: build
 bench-json: build
   cd benchmarks && pnpm run build && pnpm run bench:json
 
+[unix]
 clean:
   rm -f tsgonest tsgonest.exe
   rm -rf dist/
+
+[windows]
+clean:
+  Remove-Item -Force -ErrorAction SilentlyContinue tsgonest, tsgonest.exe
+  Remove-Item -Force -Recurse -ErrorAction SilentlyContinue dist
