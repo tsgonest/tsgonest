@@ -1,11 +1,13 @@
 package watcher
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -19,6 +21,10 @@ type Event struct {
 
 // DefaultPollInterval is the default polling interval for the polling fallback.
 const DefaultPollInterval = 500 * time.Millisecond
+
+// maxOverflowFailures is the number of consecutive overflow recovery attempts
+// allowed before the watcher gives up on fsnotify and falls back to polling.
+const maxOverflowFailures = 2
 
 // skipDirs are directory base names that should never be watched or walked.
 // These are either non-source content or hidden directories that produce
@@ -49,6 +55,11 @@ type Watcher struct {
 	pending []Event
 	timer   *time.Timer
 	stopCh  chan struct{}
+
+	snapMu            sync.Mutex
+	prevSnapshot      map[string]fileInfo
+	overflowFailures  int
+	fallbackToPolling bool
 }
 
 // New creates a new file watcher.
@@ -70,10 +81,11 @@ func (w *Watcher) SetPollInterval(d time.Duration) {
 
 // Watch starts watching for file changes. This is a blocking call that runs
 // until Stop() is called. Tries fsnotify first, falls back to polling if
-// the OS watch limit is exhausted.
+// the OS watch limit is exhausted or if fsnotify reports too many buffer
+// overflows in a row (Windows ReadDirectoryChangesW or inotify queue).
 func (w *Watcher) Watch() error {
 	err := w.watchFsnotify()
-	if err == nil {
+	if err == nil && !w.shouldFallback() {
 		return nil
 	}
 	// Don't fall back to polling when a watch root vanished — polling the
@@ -81,8 +93,15 @@ func (w *Watcher) Watch() error {
 	if _, gone := err.(*ErrWatchRootGone); gone {
 		return err
 	}
-	// fsnotify failed — fall back to polling
+	// fsnotify failed (or asked us to fall back after repeated overflows) —
+	// run the polling backend.
 	return w.watchPolling()
+}
+
+func (w *Watcher) shouldFallback() bool {
+	w.snapMu.Lock()
+	defer w.snapMu.Unlock()
+	return w.fallbackToPolling
 }
 
 // Stop stops the watcher.
@@ -112,6 +131,13 @@ func (e *ErrWatchRootGone) Error() string {
 // watchFsnotify uses OS-level file system notifications for near-instant
 // change detection. Returns a non-nil error if setup fails (e.g., watch
 // limit exhausted), in which case the caller should fall back to polling.
+//
+// On a buffer-overflow error from the kernel (Windows ERROR_NOTIFY_ENUM_DIR
+// surfaced as fsnotify.ErrEventOverflow, or inotify IN_Q_OVERFLOW), the
+// watcher re-walks the watched roots and synthesizes events for any files
+// whose modTime/size differs from the in-memory snapshot. After
+// maxOverflowFailures consecutive failed recoveries it gives up and lets
+// Watch() fall back to polling.
 func (w *Watcher) watchFsnotify() error {
 	fsw, err := fsnotify.NewWatcher()
 	if err != nil {
@@ -135,6 +161,10 @@ func (w *Watcher) watchFsnotify() error {
 		}
 	}
 
+	w.snapMu.Lock()
+	w.prevSnapshot = w.buildSnapshot()
+	w.snapMu.Unlock()
+
 	for {
 		select {
 		case <-w.stopCh:
@@ -144,10 +174,6 @@ func (w *Watcher) watchFsnotify() error {
 			if !ok {
 				return nil
 			}
-			// Ignore Chmod-only events — these fire on all platforms for
-			// non-content changes: macOS Spotlight/xattr, Windows Defender
-			// scans, Linux permission/ownership changes. Only suppress when
-			// Chmod is the sole operation; combined Write|Chmod passes through.
 			if ev.Op == fsnotify.Chmod {
 				continue
 			}
@@ -164,9 +190,7 @@ func (w *Watcher) watchFsnotify() error {
 				continue
 			}
 
-			// Filter by extension
 			if !w.matchesExtension(ev.Name) {
-				// New directories need to be watched for new files
 				if ev.Has(fsnotify.Create) {
 					if info, err := os.Stat(ev.Name); err == nil && info.IsDir() {
 						if addErr := w.addRecursive(fsw, ev.Name); addErr == nil {
@@ -177,6 +201,7 @@ func (w *Watcher) watchFsnotify() error {
 				continue
 			}
 
+			w.recordSnapshotEntry(ev.Name)
 			event := Event{Path: ev.Name, Op: fsnotifyOpToString(ev.Op)}
 			w.addPending(event)
 
@@ -184,10 +209,118 @@ func (w *Watcher) watchFsnotify() error {
 			if !ok {
 				return nil
 			}
-			// Log but don't crash — transient errors are common
+			if isOverflowError(err) {
+				if w.handleOverflow(fsw) {
+					return nil
+				}
+				continue
+			}
 			fmt.Fprintf(os.Stderr, "watcher: %v\n", err)
 		}
 	}
+}
+
+// handleOverflow runs the snapshot-diff recovery and tracks consecutive
+// failures. Returns true if the caller should exit watchFsnotify so the
+// outer Watch() can fall back to polling.
+func (w *Watcher) handleOverflow(fsw *fsnotify.Watcher) bool {
+	recovered := w.recoverFromOverflow(fsw)
+
+	w.snapMu.Lock()
+	if recovered {
+		w.overflowFailures = 0
+	} else {
+		w.overflowFailures++
+	}
+	failures := w.overflowFailures
+	w.snapMu.Unlock()
+
+	if failures >= maxOverflowFailures {
+		fmt.Fprintf(os.Stderr,
+			"watcher: fsnotify overflow recovery failed %d times; falling back to polling\n",
+			failures)
+		w.snapMu.Lock()
+		w.fallbackToPolling = true
+		w.snapMu.Unlock()
+		return true
+	}
+	return false
+}
+
+// recoverFromOverflow re-walks every watched root, diffs against the
+// in-memory snapshot, and pushes synthesized Create/Write/Remove events
+// downstream. It also re-attaches fsw to any directories that appeared
+// since the last walk so subsequent events do not get dropped.
+//
+// Returns true on a clean re-walk (no errors, snapshot replaced). Returns
+// false if any root failed to walk — the caller treats this as a recovery
+// failure and may fall back to polling on repeated misses.
+func (w *Watcher) recoverFromOverflow(fsw *fsnotify.Watcher) bool {
+	ok := true
+	if fsw != nil {
+		for _, dir := range w.dirs {
+			if err := w.addRecursive(fsw, dir); err != nil {
+				ok = false
+			}
+		}
+	}
+
+	newSnapshot := w.buildSnapshot()
+
+	w.snapMu.Lock()
+	prev := w.prevSnapshot
+	w.prevSnapshot = newSnapshot
+	w.snapMu.Unlock()
+
+	for _, ev := range w.diff(prev, newSnapshot) {
+		w.addPending(ev)
+	}
+	return ok
+}
+
+func (w *Watcher) recordSnapshotEntry(path string) {
+	info, err := os.Stat(path)
+	if err != nil {
+		w.snapMu.Lock()
+		if w.prevSnapshot != nil {
+			delete(w.prevSnapshot, path)
+		}
+		w.snapMu.Unlock()
+		return
+	}
+	if info.IsDir() {
+		return
+	}
+	w.snapMu.Lock()
+	if w.prevSnapshot == nil {
+		w.prevSnapshot = make(map[string]fileInfo)
+	}
+	w.prevSnapshot[path] = fileInfo{modTime: info.ModTime(), size: info.Size()}
+	w.snapMu.Unlock()
+}
+
+// isOverflowError reports whether err is a kernel-level overflow signal
+// from any fsnotify backend. Windows ReadDirectoryChangesW reports
+// ERROR_NOTIFY_ENUM_DIR (1022) when its 64KB buffer overflows during a
+// burst (large git checkout, pnpm install). Linux inotify reports
+// IN_Q_OVERFLOW when the per-instance event queue fills. Both surface as
+// fsnotify.ErrEventOverflow; we also accept ENOSPC on Linux (inotify
+// watch-descriptor exhaustion) and a string fallback for any future
+// backend that wraps differently.
+func isOverflowError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, fsnotify.ErrEventOverflow) {
+		return true
+	}
+	if errors.Is(err, syscall.ENOSPC) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "overflow") ||
+		strings.Contains(msg, "notify_enum_dir") ||
+		strings.Contains(msg, "error 1022")
 }
 
 // addRecursive walks a directory tree and adds each directory to the
@@ -273,9 +406,17 @@ var printWatchLimitWarning = sync.OnceFunc(func() {
 	fmt.Fprintln(os.Stderr, "")
 })
 
-// watchPolling uses the original polling approach as a fallback.
+// watchPolling uses the original polling approach as a fallback. When
+// transitioning from fsnotify after an overflow fallback, it seeds from the
+// last-known fsnotify snapshot so the initial poll doesn't synthesize
+// spurious "create" events for every file already on disk.
 func (w *Watcher) watchPolling() error {
-	snapshot := w.buildSnapshot()
+	w.snapMu.Lock()
+	snapshot := w.prevSnapshot
+	w.snapMu.Unlock()
+	if snapshot == nil {
+		snapshot = w.buildSnapshot()
+	}
 
 	ticker := time.NewTicker(w.pollInterval)
 	defer ticker.Stop()
@@ -293,6 +434,9 @@ func (w *Watcher) watchPolling() error {
 				}
 			}
 			snapshot = newSnapshot
+			w.snapMu.Lock()
+			w.prevSnapshot = newSnapshot
+			w.snapMu.Unlock()
 		}
 	}
 }

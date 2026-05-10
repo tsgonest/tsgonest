@@ -565,6 +565,193 @@ func TestShouldSkipPath_CaseInsensitive(t *testing.T) {
 // Stress: many concurrent file events
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Overflow recovery (Issue #137)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// TestIsOverflowError_RecognizesKernelSignals locks in the detection contract
+// across all backends so a backend swap or fsnotify upgrade can't silently
+// make the watcher stop recovering from bursts.
+func TestIsOverflowError_RecognizesKernelSignals(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"unrelated", fmt.Errorf("permission denied"), false},
+		{"fsnotify sentinel", fmtErrf("%w", fsnotifyOverflowSentinel()), true},
+		{"enospc wrapped", fmtErrf("inotify: %w", syscallENOSPC()), true},
+		{"windows-style string", fmt.Errorf("ReadDirectoryChangesW: notify_enum_dir overflow"), true},
+		{"raw 1022 string", fmt.Errorf("system call returned error 1022"), true},
+		{"buffer overflow string", fmt.Errorf("queue or buffer overflow"), true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := isOverflowError(c.err); got != c.want {
+				t.Errorf("isOverflowError(%v) = %v, want %v", c.err, got, c.want)
+			}
+		})
+	}
+}
+
+// TestWatch_OverflowRecovery_SynthesizesMissedEvents primes the snapshot,
+// mutates files OUT-OF-BAND so fsnotify never sees them (no time.Sleep race —
+// we touch files after priming and call the recovery path directly), then
+// asserts the recovery synthesizes write/create/remove events for every change.
+func TestWatch_OverflowRecovery_SynthesizesMissedEvents(t *testing.T) {
+	dir := t.TempDir()
+	// buildSnapshot resolves the watch root through EvalSymlinks (e.g. /var ->
+	// /private/var on macOS), so events arrive keyed on the resolved path.
+	// Resolve here too so the assertions match.
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = resolved
+	}
+	keep := filepath.Join(dir, "keep.ts")
+	mutate := filepath.Join(dir, "mutate.ts")
+	gone := filepath.Join(dir, "gone.ts")
+
+	if err := os.WriteFile(keep, []byte("export const k=1;"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(mutate, []byte("export const m=1;"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(gone, []byte("export const g=1;"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := make(chan []Event, 16)
+	w := New([]string{dir}, []string{".ts"}, 30*time.Millisecond, func(events []Event) {
+		got <- events
+	})
+	w.primeSnapshotForTest()
+
+	// Mutate out-of-band: rewrite mutate.ts (size + mtime change), create new.ts,
+	// remove gone.ts. None of these go through fsnotify because Watch() isn't running.
+	time.Sleep(20 * time.Millisecond)
+	if err := os.WriteFile(mutate, []byte("export const m=42;"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	created := filepath.Join(dir, "new.ts")
+	if err := os.WriteFile(created, []byte("export const n=1;"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(gone); err != nil {
+		t.Fatal(err)
+	}
+
+	// Trigger the same recovery path the overflow error branch would.
+	if w.triggerOverflowForTest() {
+		t.Fatalf("single overflow recovery shouldn't trigger fallback")
+	}
+	if w.overflowFailuresForTest() != 0 {
+		t.Errorf("expected failures=0 after clean recovery, got %d", w.overflowFailuresForTest())
+	}
+
+	events := drainEvents(got, 500*time.Millisecond)
+
+	byPath := map[string]string{}
+	for _, ev := range events {
+		byPath[ev.Path] = ev.Op
+	}
+	if op := byPath[mutate]; op != "write" {
+		t.Errorf("expected write event for mutated file, got %q (all=%v)", op, events)
+	}
+	if op := byPath[created]; op != "create" {
+		t.Errorf("expected create event for new file, got %q (all=%v)", op, events)
+	}
+	if op := byPath[gone]; op != "remove" {
+		t.Errorf("expected remove event for deleted file, got %q (all=%v)", op, events)
+	}
+	if _, present := byPath[keep]; present {
+		t.Errorf("did not expect any event for unchanged file, got %q", byPath[keep])
+	}
+}
+
+// TestWatch_OverflowFallback_SwitchesToPolling forces two consecutive failed
+// recoveries and asserts (a) the failure counter increments, (b) the watcher
+// flips into polling mode, and (c) Watch() is now serviced by the polling
+// backend (it picks up a fresh write).
+func TestWatch_OverflowFallback_SwitchesToPolling(t *testing.T) {
+	dir := t.TempDir()
+	// Match buildSnapshot's EvalSymlinks resolution so polling event paths
+	// compare equal to our expected target path.
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = resolved
+	}
+	if err := os.WriteFile(filepath.Join(dir, "seed.ts"), []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := make(chan []Event, 16)
+	w := New([]string{dir}, []string{".ts"}, 30*time.Millisecond, func(events []Event) {
+		got <- events
+	})
+	w.SetPollInterval(50 * time.Millisecond)
+	w.primeSnapshotForTest()
+
+	// Force every recovery attempt to look like it failed even though the
+	// re-walk itself succeeded.
+	recoverHook = func() bool { return true }
+	t.Cleanup(func() { recoverHook = nil })
+
+	if w.triggerOverflowForTest() {
+		t.Fatalf("first failure should not trigger fallback (need %d)", maxOverflowFailures)
+	}
+	if got := w.overflowFailuresForTest(); got != 1 {
+		t.Fatalf("after 1 failed recovery, expected failures=1, got %d", got)
+	}
+	if w.fallbackTriggeredForTest() {
+		t.Fatalf("fallback flag set too early")
+	}
+
+	if !w.triggerOverflowForTest() {
+		t.Fatalf("second failure should trigger fallback")
+	}
+	if !w.fallbackTriggeredForTest() {
+		t.Fatalf("fallbackToPolling should be true after %d failures", maxOverflowFailures)
+	}
+
+	// Now run the polling backend (the real Watch() would have done this
+	// automatically after watchFsnotify returned). Confirm new writes are
+	// still delivered through the polling path.
+	stopped := make(chan struct{})
+	go func() {
+		_ = w.watchPolling()
+		close(stopped)
+	}()
+	defer func() {
+		w.Stop()
+		<-stopped
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	target := filepath.Join(dir, "after-fallback.ts")
+	if err := os.WriteFile(target, []byte("y"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case events := <-got:
+			for _, ev := range events {
+				if ev.Path == target {
+					return
+				}
+			}
+		case <-deadline:
+			t.Fatal("polling backend did not deliver an event for the post-fallback write")
+		}
+	}
+}
+
+// helpers used only by TestIsOverflowError_RecognizesKernelSignals.
+func fmtErrf(format string, a ...any) error { return fmt.Errorf(format, a...) }
+func fsnotifyOverflowSentinel() error       { return errOverflow }
+func syscallENOSPC() error                  { return errENOSPC }
+
 // TestWatch_BurstWritesNoDataRace runs the watcher under concurrent writes to
 // `go test -race` for a few hundred file events. Catches data races in the
 // shared `pending` slice.
