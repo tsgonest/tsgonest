@@ -34,6 +34,7 @@ type buildFlags struct {
 	TsconfigPath string
 	DumpMetadata bool
 	Clean        bool
+	NoClean      bool // overrides cfg.DeleteOutDir; used by watch rebuilds
 	Assets       string
 	NoCheck      bool
 	TsgoArgs     []string // flags to forward to tsgo's ParseCommandLine
@@ -65,6 +66,8 @@ func parseBuildArgs(args []string) buildFlags {
 			f.DumpMetadata = true
 		case "--clean":
 			f.Clean = true
+		case "--no-clean":
+			f.NoClean = true
 		case "--assets":
 			if i+1 < len(args) {
 				i++
@@ -197,7 +200,10 @@ func runBuildWithIncrAndProgram(args []string, oldIncrProgram *shimincremental.P
 
 	// Honor deleteOutDir from config (same as nest-cli.json convention).
 	// The --clean CLI flag always wins, but deleteOutDir in config enables it too.
-	if !clean && cfg != nil && cfg.DeleteOutDir {
+	// --no-clean (used by `tsgonest dev` watch rebuilds) suppresses both — wiping
+	// dist/ and .tsbuildinfo on every incremental rebuild causes a race where
+	// the previous node restart's lazy require() lands in an empty dist/.
+	if !clean && !flags.NoClean && cfg != nil && cfg.DeleteOutDir {
 		clean = true
 	}
 

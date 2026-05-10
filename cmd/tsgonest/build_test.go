@@ -67,6 +67,24 @@ func TestParseBuildArgs_TsgonestFlags(t *testing.T) {
 	}
 }
 
+func TestParseBuildArgs_NoCleanFlag(t *testing.T) {
+	f := parseBuildArgs([]string{"--no-clean"})
+	if !f.NoClean {
+		t.Error("NoClean should be true when --no-clean is passed")
+	}
+	if f.Clean {
+		t.Error("Clean should remain false when only --no-clean is passed")
+	}
+
+	// Both flags coexist (dev mode initial build with deleteOutDir):
+	// --no-clean from watchBuildArgs + --clean appended for the initial build.
+	// Both bools are set; runBuildWithIncrAndProgram resolves precedence.
+	both := parseBuildArgs([]string{"--no-clean", "--clean"})
+	if !both.NoClean || !both.Clean {
+		t.Errorf("both flags should parse: NoClean=%v Clean=%v", both.NoClean, both.Clean)
+	}
+}
+
 func TestParseBuildArgs_ProjectShortFlag(t *testing.T) {
 	f := parseBuildArgs([]string{"-p", "tsconfig.app.json"})
 	if f.TsconfigPath != "tsconfig.app.json" {
