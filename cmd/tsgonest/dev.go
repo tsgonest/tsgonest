@@ -343,12 +343,15 @@ func runDevLoop(flags *devFlags, sigCh chan os.Signal, rsCh <-chan struct{}) dev
 	defer close(done)
 
 	// Channel-based rebuild loop: the watcher pushes debounced event batches
-	// into changeCh. A single goroutine processes them sequentially, draining
-	// any batches that arrived during a build before restarting the process.
-	// This prevents the race condition where rapid multi-file saves (IDE
-	// refactors, save-all) cause premature process restarts with a partially
-	// built output directory.
-	changeCh := make(chan []watcher.Event, 16)
+	// into triggerCh as file-change triggers, while the manual-restart "rs"
+	// listener pushes restart triggers onto the same channel. A single
+	// goroutine processes them sequentially, draining any triggers that
+	// arrived during a build before restarting the process. This prevents
+	// the race where rapid multi-file saves cause a premature restart with
+	// a partially built dist/, AND serializes every proc.Restart() through
+	// one path so a manual "rs" racing with a file-change rebuild collapses
+	// into a single restart instead of firing twice (issue #131).
+	triggerCh := make(chan rebuildTrigger, 16)
 
 	w := watcher.New(
 		[]string{srcDir},
@@ -356,7 +359,7 @@ func runDevLoop(flags *devFlags, sigCh chan os.Signal, rsCh <-chan struct{}) dev
 		300*time.Millisecond,
 		func(events []watcher.Event) {
 			select {
-			case changeCh <- events:
+			case triggerCh <- rebuildTrigger{events: events}:
 			case <-done:
 			}
 		},
@@ -371,7 +374,7 @@ func runDevLoop(flags *devFlags, sigCh chan os.Signal, rsCh <-chan struct{}) dev
 	go func() {
 		defer wg.Done()
 		rebuildLoop(rebuildLoopDeps{
-			changeCh:            changeCh,
+			triggerCh:           triggerCh,
 			done:                done,
 			builder:             builder,
 			proc:                procIface,
@@ -452,17 +455,16 @@ func runDevLoop(flags *devFlags, sigCh chan os.Signal, rsCh <-chan struct{}) dev
 	// a stale "rs" press from sitting in the channel buffer between iterations
 	// and silently triggering a restart later. The scanner itself lives in
 	// runDev, not here, so we don't leak a goroutine on every restart.
+	//
+	// "rs" presses are routed through triggerCh so the rebuild loop's drain
+	// logic serializes them against in-flight file-change rebuilds —
+	// preventing a double proc.Restart() when an "rs" races a file change
+	// (issue #131).
 	go runRsListener(done, rsCh, manualRestart, func() {
-		result := builder.Build()
-		if result != 0 {
-			fmt.Fprintln(os.Stderr, "build failed, waiting for changes...")
-		} else if proc != nil {
-			fmt.Fprintln(os.Stderr, "restarting...")
-			if err := proc.Restart(); err != nil {
-				fmt.Fprintf(os.Stderr, "error restarting: %v\n", err)
-			}
+		select {
+		case triggerCh <- rebuildTrigger{rs: true}:
+		case <-done:
 		}
-		fmt.Fprintln(os.Stderr, "To restart at any time, enter \"rs\".")
 	})
 	if manualRestart {
 		fmt.Fprintln(os.Stderr, "To restart at any time, enter \"rs\".")
@@ -498,10 +500,20 @@ type rebuildRestarter interface {
 	Restart() error
 }
 
+// rebuildTrigger is the unit of work consumed by the rebuild loop.
+// File-change batches set events; the manual "rs" command sets rs=true.
+// Routing both through one channel lets the drain logic serialize them
+// against an in-flight build so a "rs" racing a file change collapses
+// into a single proc.Restart() (issue #131).
+type rebuildTrigger struct {
+	events []watcher.Event
+	rs     bool
+}
+
 // rebuildLoopDeps bundles the inputs to rebuildLoop. It exists to keep the
 // long parameter list manageable and to give tests a single struct to fill in.
 type rebuildLoopDeps struct {
-	changeCh            <-chan []watcher.Event
+	triggerCh           <-chan rebuildTrigger
 	done                <-chan struct{}
 	builder             rebuildBuilder
 	proc                rebuildRestarter
@@ -512,50 +524,73 @@ type rebuildLoopDeps struct {
 	manualRestart       bool
 }
 
-// rebuildLoop is the body of the dev rebuild goroutine. After each debounced
-// batch it builds, then drains any changes that arrived during the build. If
-// nothing else is pending it restarts the child process. Crucially it checks
-// d.done immediately before calling proc.Restart() — without that check, an
-// in-flight build could complete after the dev loop began shutting down and
-// spawn a fresh child after proc.Stop, leaking an orphan.
+// rebuildLoop is the body of the dev rebuild goroutine. It is the single
+// goroutine that ever calls proc.Restart() — both file-change batches and
+// manual "rs" signals are routed through d.triggerCh, so the drain step
+// folds any queued triggers (file changes or rs) into the current iteration.
+//
+// Per-trigger semantics:
+//   - file-change trigger: build (single-file fast path or full), then drain.
+//   - "rs" trigger: skip the build (the user asked for a restart, not a
+//     recompile), then drain.
+//
+// In either case, if the drain finds queued file changes, the restart is
+// deferred so the next debounced batch gets a clean build + single restart.
+// Extra "rs" signals collapse into the current restart. This prevents the
+// double-restart race between a manual "rs" and an in-flight file-change
+// rebuild (issue #131).
+//
+// Crucially the loop also checks d.done immediately before calling
+// proc.Restart() — without that check, an in-flight build could complete
+// after the dev loop began shutting down and spawn a fresh child after
+// proc.Stop, leaking an orphan (issue #129).
 func rebuildLoop(d rebuildLoopDeps) {
 	for {
 		select {
-		case events := <-d.changeCh:
-			if !d.preserveWatchOutput {
-				fmt.Fprint(os.Stderr, "\033[2J\033[H")
-			}
-
-			printStatus(os.Stderr, d.pretty, "◆", "detected %d change(s), rebuilding...", len(events))
-
-			if d.verbose {
-				for _, ev := range events {
-					fmt.Fprintf(os.Stderr, "  [%s] %s\n", ev.Op, ev.Path)
+		case trig := <-d.triggerCh:
+			result := 0
+			if trig.rs {
+				fmt.Fprintln(os.Stderr, "\nmanual restart triggered...")
+			} else {
+				if !d.preserveWatchOutput {
+					fmt.Fprint(os.Stderr, "\033[2J\033[H")
+				}
+				printStatus(os.Stderr, d.pretty, "◆", "detected %d change(s), rebuilding...", len(trig.events))
+				if d.verbose {
+					for _, ev := range trig.events {
+						fmt.Fprintf(os.Stderr, "  [%s] %s\n", ev.Op, ev.Path)
+					}
+				}
+				if len(trig.events) == 1 && trig.events[0].Op == "write" {
+					result = d.builder.BuildSingleFile(trig.events[0].Path)
+				} else {
+					result = d.builder.Build()
 				}
 			}
 
-			var result int
-			if len(events) == 1 && events[0].Op == "write" {
-				result = d.builder.BuildSingleFile(events[0].Path)
-			} else {
-				result = d.builder.Build()
-			}
-
-			changedDuringBuild := false
+			// Drain: collapse any further triggers (file changes or rs)
+			// that arrived during this iteration. Pending file changes
+			// in the channel or the watcher's debounce buffer mean the
+			// source tree is still settling; defer the restart so the
+			// next debounced batch gets a clean build + single restart.
+			// Extra rs signals just collapse into this one restart.
+			fileChangeQueued := false
 		drainLoop:
 			for {
 				select {
-				case <-d.changeCh:
-					changedDuringBuild = true
+				case t2 := <-d.triggerCh:
+					if !t2.rs {
+						fileChangeQueued = true
+					}
 				default:
 					break drainLoop
 				}
 			}
 			if d.pending != nil && d.pending() {
-				changedDuringBuild = true
+				fileChangeQueued = true
 			}
 
-			if changedDuringBuild {
+			if fileChangeQueued {
 				printStatus(os.Stderr, d.pretty, "↻", "changes detected during build, debouncing...")
 				continue
 			}
@@ -566,7 +601,7 @@ func rebuildLoop(d rebuildLoopDeps) {
 			default:
 			}
 
-			if result != 0 {
+			if !trig.rs && result != 0 {
 				printStatus(os.Stderr, d.pretty, "✗", "build failed, watching for changes...")
 			} else if d.proc != nil {
 				printStatus(os.Stderr, d.pretty, "▶", "restarting...")

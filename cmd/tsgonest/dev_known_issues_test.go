@@ -85,7 +85,7 @@ func TestDevLoop_RebuildGoroutineDoesNotRestartAfterShutdown(t *testing.T) {
 		releaseBuild: make(chan struct{}),
 	}
 	restarter := &fakeRestarter{}
-	changeCh := make(chan []watcher.Event, 1)
+	triggerCh := make(chan rebuildTrigger, 1)
 	done := make(chan struct{})
 
 	var wg sync.WaitGroup
@@ -93,15 +93,15 @@ func TestDevLoop_RebuildGoroutineDoesNotRestartAfterShutdown(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		rebuildLoop(rebuildLoopDeps{
-			changeCh: changeCh,
-			done:     done,
-			builder:  builder,
-			proc:     restarter,
-			pending:  func() bool { return false },
+			triggerCh: triggerCh,
+			done:      done,
+			builder:   builder,
+			proc:      restarter,
+			pending:   func() bool { return false },
 		})
 	}()
 
-	changeCh <- []watcher.Event{{Path: "src/a.ts", Op: "write"}}
+	triggerCh <- rebuildTrigger{events: []watcher.Event{{Path: "src/a.ts", Op: "write"}}}
 
 	select {
 	case <-builder.buildStarted:
@@ -144,7 +144,7 @@ func TestDevLoop_RebuildGoroutineNoRestartUnderRaceStress(t *testing.T) {
 			releaseBuild: make(chan struct{}),
 		}
 		restarter := &fakeRestarter{}
-		changeCh := make(chan []watcher.Event, 1)
+		triggerCh := make(chan rebuildTrigger, 1)
 		done := make(chan struct{})
 
 		var wg sync.WaitGroup
@@ -152,15 +152,15 @@ func TestDevLoop_RebuildGoroutineNoRestartUnderRaceStress(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			rebuildLoop(rebuildLoopDeps{
-				changeCh: changeCh,
-				done:     done,
-				builder:  builder,
-				proc:     restarter,
-				pending:  func() bool { return false },
+				triggerCh: triggerCh,
+				done:      done,
+				builder:   builder,
+				proc:      restarter,
+				pending:   func() bool { return false },
 			})
 		}()
 
-		changeCh <- []watcher.Event{{Path: "src/a.ts", Op: "write"}}
+		triggerCh <- rebuildTrigger{events: []watcher.Event{{Path: "src/a.ts", Op: "write"}}}
 
 		select {
 		case <-builder.buildStarted:
@@ -301,23 +301,112 @@ func settle() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// C. "rs" + file-change → double proc.Restart()
+// C. "rs" + file-change → double proc.Restart()  — FIXED (#131)
 // ─────────────────────────────────────────────────────────────────────────────
 
-// The rebuild goroutine has a drain check: after each build, it checks
-// changeCh and w.Pending(); if more changes are in flight, it skips
-// proc.Restart() and waits for the next batch. The manual-restart "rs"
-// goroutine has no equivalent check. If the user types "rs" during a slow
-// rebuild, both flows complete and both call proc.Restart() back-to-back.
-// Result: a brief port-already-in-use window or a double restart flicker.
-//
-// Reproduction: trigger a slow file-change rebuild, then type "rs" before
-// it completes. Observe the child restarted twice.
-//
-// Fix: route "rs" through the same changeCh (or a sibling channel) that the
-// rebuild goroutine drains, so all restart triggers go through one serializer.
-func TestDevLoop_ManualRestartCanDoubleRestart_KnownIssue(t *testing.T) {
-	t.Skip("KNOWN ISSUE C: 'rs' restart path has no drain check; can double-restart with a concurrent file-change rebuild. Fix in dev.go runDevLoop manual-restart branch.")
+// Regression test for issue #131. The rebuild loop is the single place
+// that calls proc.Restart(); both file-change batches and manual "rs"
+// signals are routed through triggerCh. When an "rs" races with an
+// in-flight file-change rebuild, the drain step at the end of the
+// in-flight iteration collapses the second trigger so we end up with
+// exactly one restart instead of two.
+func TestDevLoop_ManualRestartDoesNotDoubleRestart(t *testing.T) {
+	builder := &fakeBuilder{
+		buildStarted: make(chan struct{}, 1),
+		releaseBuild: make(chan struct{}),
+	}
+	restarter := &fakeRestarter{}
+	triggerCh := make(chan rebuildTrigger, 16)
+	done := make(chan struct{})
+
+	loopExited := make(chan struct{})
+	go func() {
+		rebuildLoop(rebuildLoopDeps{
+			triggerCh: triggerCh,
+			done:      done,
+			builder:   builder,
+			proc:      restarter,
+			pending:   func() bool { return false },
+		})
+		close(loopExited)
+	}()
+
+	// Kick off a slow file-change rebuild.
+	triggerCh <- rebuildTrigger{events: []watcher.Event{{Path: "/src/a.ts", Op: "write"}}}
+
+	// Wait for the build to start.
+	select {
+	case <-builder.buildStarted:
+	case <-time.After(2 * time.Second):
+		close(done)
+		close(builder.releaseBuild)
+		<-loopExited
+		t.Fatal("file-change build never started")
+	}
+
+	// Type "rs" while the build is mid-flight.
+	triggerCh <- rebuildTrigger{rs: true}
+
+	// Let the file-change build complete. The drain step should fold
+	// the queued rs signal into a single restart.
+	close(builder.releaseBuild)
+
+	// Give the loop time to process drain + restart, then assert. We wait
+	// long enough that a buggy implementation would have processed the "rs"
+	// trigger as a second iteration and restarted a second time.
+	time.Sleep(200 * time.Millisecond)
+
+	close(done)
+	<-loopExited
+
+	if got := restarter.Count(); got != 1 {
+		t.Errorf("expected exactly 1 restart when rs races a file-change rebuild, got %d", got)
+	}
+}
+
+// TestDevLoop_RsAndFileChangeFiredSimultaneously verifies that when an
+// rs trigger and a file-change trigger land on triggerCh within
+// microseconds of each other, the loop still produces exactly one
+// proc.Restart() — neither trigger leaks past the drain step.
+func TestDevLoop_RsAndFileChangeFiredSimultaneously(t *testing.T) {
+	builder := &fakeBuilder{}
+	restarter := &fakeRestarter{}
+	triggerCh := make(chan rebuildTrigger, 16)
+	done := make(chan struct{})
+
+	loopExited := make(chan struct{})
+	go func() {
+		rebuildLoop(rebuildLoopDeps{
+			triggerCh: triggerCh,
+			done:      done,
+			builder:   builder,
+			proc:      restarter,
+			pending:   func() bool { return false },
+		})
+		close(loopExited)
+	}()
+
+	// Fire both triggers back-to-back in the same goroutine — the loop
+	// is asleep on a select and will pick up whichever lands first,
+	// leaving the other in the buffered channel for the drain step to
+	// collapse.
+	triggerCh <- rebuildTrigger{events: []watcher.Event{{Path: "/src/a.ts", Op: "write"}}}
+	triggerCh <- rebuildTrigger{rs: true}
+
+	// Wait long enough for the loop to definitely process both triggers
+	// (build is synchronous and instant in this test — fakeBuilder has
+	// no buildStarted/releaseBuild gating).
+	time.Sleep(200 * time.Millisecond)
+
+	close(done)
+	<-loopExited
+
+	if got := restarter.Count(); got != 1 {
+		t.Errorf("expected exactly 1 restart when rs + file-change race, got %d", got)
+	}
+	if got := builder.calls.Load(); got != 1 {
+		t.Errorf("expected exactly 1 build (file-change wins, rs collapses), got %d", got)
+	}
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
