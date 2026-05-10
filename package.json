@@ -9,7 +9,7 @@
   },
   "scripts": {
     "build": "pnpm -r build",
-    "build:packages": "pnpm --filter './packages/**' build",
+    "build:packages": "pnpm --filter \"./packages/**\" build",
     "build:docs": "pnpm --filter docs build",
     "dev:docs": "pnpm --filter docs dev",
     "start:docs": "pnpm --filter docs start",
