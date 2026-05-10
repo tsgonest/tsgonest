@@ -45,52 +45,81 @@ func (r *Runner) Start() error {
 }
 
 // stop stops the child process gracefully, with a force-kill timeout.
+//
+// The mutex is released across the up-to-5s graceful-shutdown wait so that
+// concurrent callers of Running(), Wait(), Restart() (and even another Stop())
+// do not block behind us. r.stopFinished serializes Stop() callers: a second
+// Stop() entering while the first is mid-wait waits on the initiator's
+// stopFinished channel — which closes only after cleanup completes — so
+// secondary callers never observe the runner mid-cleanup or race with a
+// follow-up Restart's Start.
 func (r *Runner) stop() error {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	r.stopped = true
 
 	if r.cmd == nil || r.cmd.Process == nil {
+		r.stopped = true
+		r.mu.Unlock()
 		return nil
 	}
 
 	// If r.done is nil, Start() failed after cmd.Start() succeeded but before
-	// the wait goroutine was spawned (issue #144). Reap directly and return.
+	// the wait goroutine was spawned (issue #144). Reap directly and return —
+	// there is no wait goroutine to signal, so the stopFinished dance is
+	// unnecessary.
 	if r.done == nil {
+		r.stopped = true
 		r.cmd.Process.Kill()
 		_, _ = r.cmd.Process.Wait()
 		r.cmd = nil
+		r.mu.Unlock()
 		return nil
 	}
 
-	// Kill the process group
-	pgid, pgidErr := syscall.Getpgid(r.cmd.Process.Pid)
+	if r.stopFinished != nil {
+		wait := r.stopFinished
+		r.mu.Unlock()
+		<-wait
+		return nil
+	}
+
+	finished := make(chan struct{})
+	r.stopFinished = finished
+	r.stopped = true
+	cmd := r.cmd
+	done := r.done
+	r.mu.Unlock()
+
+	pgid, pgidErr := syscall.Getpgid(cmd.Process.Pid)
 	if pgidErr == nil {
 		if err := syscall.Kill(-pgid, syscall.SIGTERM); err != nil && err != syscall.ESRCH {
+			r.mu.Lock()
+			r.stopFinished = nil
+			r.mu.Unlock()
+			close(finished)
 			return fmt.Errorf("sending SIGTERM to process group: %w", err)
 		}
 	} else {
-		r.cmd.Process.Signal(syscall.SIGTERM)
+		cmd.Process.Signal(syscall.SIGTERM)
 	}
 
-	// Wait for it to stop (with timeout)
+	var retErr error
 	select {
-	case <-r.done:
-		r.cmd = nil
-		return nil
+	case <-done:
 	case <-time.After(5 * time.Second):
-		// Force kill
 		if pgidErr == nil {
 			if err := syscall.Kill(-pgid, syscall.SIGKILL); err != nil && err != syscall.ESRCH {
-				r.cmd = nil
-				return fmt.Errorf("force-killing process group: %w", err)
+				retErr = fmt.Errorf("force-killing process group: %w", err)
 			}
 		} else {
-			r.cmd.Process.Kill()
+			cmd.Process.Kill()
 		}
-		<-r.done
-		r.cmd = nil
-		return nil
+		<-done
 	}
+
+	r.mu.Lock()
+	r.cmd = nil
+	r.stopFinished = nil
+	r.mu.Unlock()
+	close(finished)
+	return retErr
 }
