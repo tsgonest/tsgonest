@@ -266,7 +266,13 @@ func runDevLoop(flags *devFlags, sigCh chan os.Signal) devLoopResult {
 		}
 	}
 
-	// Ensure child cleanup on return (covers both exit and restart paths)
+	// Ensure child cleanup on return (covers both exit and restart paths).
+	// Defer registration order matters here — defers run LIFO, so the order is:
+	//   1. close(done) — signals helper goroutines to begin shutdown
+	//   2. wg.Wait()   — joins the rebuild goroutine before we touch proc
+	//   3. proc.Stop() — only after the rebuild goroutine has exited, so it
+	//      cannot race with us by calling proc.Restart() after Stop.
+	// Registering proc.Stop first means it runs last.
 	defer func() {
 		if proc != nil {
 			proc.Stop()
@@ -295,7 +301,12 @@ func runDevLoop(flags *devFlags, sigCh chan os.Signal) devLoopResult {
 	}
 
 	// done is closed when runDevLoop returns, so helper goroutines can exit cleanly.
+	// wg tracks the rebuild goroutine so we can join it before proc.Stop runs;
+	// otherwise an in-flight rebuild can complete and call proc.Restart() after
+	// Stop, spawning an orphan child.
 	done := make(chan struct{})
+	var wg sync.WaitGroup
+	defer wg.Wait()
 	defer close(done)
 
 	// Channel-based rebuild loop: the watcher pushes debounced event batches
@@ -318,77 +329,25 @@ func runDevLoop(flags *devFlags, sigCh chan os.Signal) devLoopResult {
 		},
 	)
 
-	// Rebuild loop goroutine.
-	// Strategy: build after each debounced batch, then check whether more
-	// changes arrived during the build.  If so, DON'T restart — loop back
-	// and wait for the next debounced batch so the full "calm period" passes
-	// before the final build + restart.  This prevents the race where rapid
-	// multi-file saves cause a premature restart with a half-written dist/.
+	// Rebuild loop goroutine. See rebuildLoop for the build/restart strategy.
+	var procIface rebuildRestarter
+	if proc != nil {
+		procIface = proc
+	}
+	wg.Add(1)
 	go func() {
-		for {
-			select {
-			case events := <-changeCh:
-				if !flags.preserveWatchOutput {
-					fmt.Fprint(os.Stderr, "\033[2J\033[H")
-				}
-
-				printStatus(os.Stderr, pretty, "◆", "detected %d change(s), rebuilding...", len(events))
-
-				if flags.verbose {
-					for _, ev := range events {
-						fmt.Fprintf(os.Stderr, "  [%s] %s\n", ev.Op, ev.Path)
-					}
-				}
-
-				// Fast path: single file changed with no deletes/creates — use UpdateProgram
-				// which skips re-reading/re-parsing all other source files.
-				var result int
-				if len(events) == 1 && events[0].Op == "write" {
-					result = builder.BuildSingleFile(events[0].Path)
-				} else {
-					result = builder.Build()
-				}
-
-				// Check whether more changes are in-flight: either already
-				// flushed to the channel, or still in the watcher's debounce
-				// buffer.  If so, skip the restart and loop back — the next
-				// debounced batch will trigger another build once things settle.
-				changedDuringBuild := false
-			drainLoop:
-				for {
-					select {
-					case <-changeCh:
-						changedDuringBuild = true
-					default:
-						break drainLoop
-					}
-				}
-				if w.Pending() {
-					changedDuringBuild = true
-				}
-
-				if changedDuringBuild {
-					printStatus(os.Stderr, pretty, "↻", "changes detected during build, debouncing...")
-					continue
-				}
-
-				if result != 0 {
-					printStatus(os.Stderr, pretty, "✗", "build failed, watching for changes...")
-				} else if proc != nil {
-					printStatus(os.Stderr, pretty, "▶", "restarting...")
-					if err := proc.Restart(); err != nil {
-						fmt.Fprintf(os.Stderr, "error restarting: %v\n", err)
-					}
-				}
-
-				if manualRestart {
-					fmt.Fprintln(os.Stderr, "To restart at any time, enter \"rs\".")
-				}
-
-			case <-done:
-				return
-			}
-		}
+		defer wg.Done()
+		rebuildLoop(rebuildLoopDeps{
+			changeCh:            changeCh,
+			done:                done,
+			builder:             builder,
+			proc:                procIface,
+			pending:             w.Pending,
+			pretty:              pretty,
+			verbose:             flags.verbose,
+			preserveWatchOutput: flags.preserveWatchOutput,
+			manualRestart:       manualRestart,
+		})
 	}()
 
 	// Watch config files for changes. When tsconfig.json or tsgonest.config
@@ -493,6 +452,109 @@ func runDevLoop(flags *devFlags, sigCh chan os.Signal) devLoopResult {
 		fmt.Fprintf(os.Stderr, "watcher error: %v\n", watchErr)
 	}
 	return devLoopExit
+}
+
+// rebuildBuilder is the subset of devBuilder used by rebuildLoop. Defined as
+// an interface so tests can substitute a fake builder without touching tsgo.
+type rebuildBuilder interface {
+	Build() int
+	BuildSingleFile(path string) int
+}
+
+// rebuildRestarter is the subset of *runner.Runner used by rebuildLoop.
+// Restart() must NOT be called after the dev loop has signalled shutdown
+// (see rebuildLoop), because runner.Runner.Restart clears its internal
+// "stopped" flag and would spawn a fresh child after the dev loop's
+// deferred Stop has run, leaking an orphan process.
+type rebuildRestarter interface {
+	Restart() error
+}
+
+// rebuildLoopDeps bundles the inputs to rebuildLoop. It exists to keep the
+// long parameter list manageable and to give tests a single struct to fill in.
+type rebuildLoopDeps struct {
+	changeCh            <-chan []watcher.Event
+	done                <-chan struct{}
+	builder             rebuildBuilder
+	proc                rebuildRestarter
+	pending             func() bool
+	pretty              bool
+	verbose             bool
+	preserveWatchOutput bool
+	manualRestart       bool
+}
+
+// rebuildLoop is the body of the dev rebuild goroutine. After each debounced
+// batch it builds, then drains any changes that arrived during the build. If
+// nothing else is pending it restarts the child process. Crucially it checks
+// d.done immediately before calling proc.Restart() — without that check, an
+// in-flight build could complete after the dev loop began shutting down and
+// spawn a fresh child after proc.Stop, leaking an orphan.
+func rebuildLoop(d rebuildLoopDeps) {
+	for {
+		select {
+		case events := <-d.changeCh:
+			if !d.preserveWatchOutput {
+				fmt.Fprint(os.Stderr, "\033[2J\033[H")
+			}
+
+			printStatus(os.Stderr, d.pretty, "◆", "detected %d change(s), rebuilding...", len(events))
+
+			if d.verbose {
+				for _, ev := range events {
+					fmt.Fprintf(os.Stderr, "  [%s] %s\n", ev.Op, ev.Path)
+				}
+			}
+
+			var result int
+			if len(events) == 1 && events[0].Op == "write" {
+				result = d.builder.BuildSingleFile(events[0].Path)
+			} else {
+				result = d.builder.Build()
+			}
+
+			changedDuringBuild := false
+		drainLoop:
+			for {
+				select {
+				case <-d.changeCh:
+					changedDuringBuild = true
+				default:
+					break drainLoop
+				}
+			}
+			if d.pending != nil && d.pending() {
+				changedDuringBuild = true
+			}
+
+			if changedDuringBuild {
+				printStatus(os.Stderr, d.pretty, "↻", "changes detected during build, debouncing...")
+				continue
+			}
+
+			select {
+			case <-d.done:
+				return
+			default:
+			}
+
+			if result != 0 {
+				printStatus(os.Stderr, d.pretty, "✗", "build failed, watching for changes...")
+			} else if d.proc != nil {
+				printStatus(os.Stderr, d.pretty, "▶", "restarting...")
+				if err := d.proc.Restart(); err != nil {
+					fmt.Fprintf(os.Stderr, "error restarting: %v\n", err)
+				}
+			}
+
+			if d.manualRestart {
+				fmt.Fprintln(os.Stderr, "To restart at any time, enter \"rs\".")
+			}
+
+		case <-d.done:
+			return
+		}
+	}
 }
 
 // resolveRuntime determines the runtime to use.

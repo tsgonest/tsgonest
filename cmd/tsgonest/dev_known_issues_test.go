@@ -12,29 +12,190 @@ package main
 import (
 	"runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
+
+	"github.com/tsgonest/tsgonest/internal/watcher"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
-// A. Defer-order can spawn an orphan child after Stop()
+// A. Defer-order can spawn an orphan child after Stop()  — FIXED (#129)
 // ─────────────────────────────────────────────────────────────────────────────
 
-// In runDevLoop, the deferred close(done) runs before the deferred proc.Stop()
-// (LIFO order — proc.Stop's defer is registered first at line ~266, close(done)
-// later at line ~295). The rebuild goroutine is not joined. If it's mid-build
-// when runDevLoop returns:
+// fakeBuilder lets us simulate a slow rebuild without invoking tsgo. The
+// build pauses on buildStarted/releaseBuild so the test can interleave a
+// shutdown with an in-flight build.
+type fakeBuilder struct {
+	buildStarted chan struct{}
+	releaseBuild chan struct{}
+	calls        atomic.Int32
+}
+
+func (f *fakeBuilder) Build() int {
+	f.calls.Add(1)
+	if f.buildStarted != nil {
+		select {
+		case f.buildStarted <- struct{}{}:
+		default:
+		}
+	}
+	if f.releaseBuild != nil {
+		<-f.releaseBuild
+	}
+	return 0
+}
+
+func (f *fakeBuilder) BuildSingleFile(_ string) int { return f.Build() }
+
+// fakeRestarter records every Restart() call so the test can assert that
+// no restart happens after shutdown was signalled.
+type fakeRestarter struct {
+	mu       sync.Mutex
+	restarts int
+}
+
+func (f *fakeRestarter) Restart() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.restarts++
+	return nil
+}
+
+func (f *fakeRestarter) Count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.restarts
+}
+
+// TestDevLoop_RebuildGoroutineDoesNotRestartAfterShutdown reproduces the
+// orphan-child race from issue #129 and asserts the fix:
 //
-//  1. close(done) fires — does NOT unblock the goroutine; it's running a build.
-//  2. proc.Stop() fires — kills the current child.
-//  3. Rebuild goroutine completes — sees no `<-done` arm yet (it hasn't reached
-//     the next select). Calls proc.Restart() → proc.Start() → orphan child.
-//  4. runDevLoop returns. The orphan child outlives the dev loop.
-//
-// Fix: track the rebuild goroutine with sync.WaitGroup and Wait() before the
-// proc.Stop() defer runs. Or set an atomic "shutting down" flag that the
-// rebuild goroutine checks before calling proc.Restart().
-func TestDevLoop_RebuildGoroutineCanRestartAfterShutdown_KnownIssue(t *testing.T) {
-	t.Skip("KNOWN ISSUE A: rebuild goroutine isn't joined; can call proc.Restart() after proc.Stop() — orphan node process. Fix in dev.go runDevLoop.")
+//  1. Trigger a rebuild.
+//  2. Wait until the build is mid-flight.
+//  3. Close `done` (simulating runDevLoop's deferred close).
+//  4. Release the build so it completes.
+//  5. The goroutine must NOT call proc.Restart() — its post-build done check
+//     must short-circuit, otherwise a fresh child would be spawned after
+//     proc.Stop has run, leaking an orphan.
+//  6. The goroutine must exit (verified via wg.Wait inside a timeout).
+func TestDevLoop_RebuildGoroutineDoesNotRestartAfterShutdown(t *testing.T) {
+	builder := &fakeBuilder{
+		buildStarted: make(chan struct{}, 1),
+		releaseBuild: make(chan struct{}),
+	}
+	restarter := &fakeRestarter{}
+	changeCh := make(chan []watcher.Event, 1)
+	done := make(chan struct{})
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		rebuildLoop(rebuildLoopDeps{
+			changeCh: changeCh,
+			done:     done,
+			builder:  builder,
+			proc:     restarter,
+			pending:  func() bool { return false },
+		})
+	}()
+
+	changeCh <- []watcher.Event{{Path: "src/a.ts", Op: "write"}}
+
+	select {
+	case <-builder.buildStarted:
+	case <-time.After(2 * time.Second):
+		close(done)
+		close(builder.releaseBuild)
+		wg.Wait()
+		t.Fatal("build never started")
+	}
+
+	close(done)
+	close(builder.releaseBuild)
+
+	exited := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(exited)
+	}()
+	select {
+	case <-exited:
+	case <-time.After(2 * time.Second):
+		t.Fatal("rebuild goroutine did not exit after done was closed")
+	}
+
+	if got := restarter.Count(); got != 0 {
+		t.Fatalf("proc.Restart() called %d time(s) after shutdown — orphan child would have been spawned", got)
+	}
+}
+
+// TestDevLoop_RebuildGoroutineNoRestartUnderRaceStress hammers the same
+// shutdown race many times. If the done check were removed (or the WaitGroup
+// join missing), some iterations would race between build completion and
+// shutdown and call Restart().
+func TestDevLoop_RebuildGoroutineNoRestartUnderRaceStress(t *testing.T) {
+	const iterations = 50
+
+	for i := 0; i < iterations; i++ {
+		builder := &fakeBuilder{
+			buildStarted: make(chan struct{}, 1),
+			releaseBuild: make(chan struct{}),
+		}
+		restarter := &fakeRestarter{}
+		changeCh := make(chan []watcher.Event, 1)
+		done := make(chan struct{})
+
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			rebuildLoop(rebuildLoopDeps{
+				changeCh: changeCh,
+				done:     done,
+				builder:  builder,
+				proc:     restarter,
+				pending:  func() bool { return false },
+			})
+		}()
+
+		changeCh <- []watcher.Event{{Path: "src/a.ts", Op: "write"}}
+
+		select {
+		case <-builder.buildStarted:
+		case <-time.After(2 * time.Second):
+			close(done)
+			close(builder.releaseBuild)
+			wg.Wait()
+			t.Fatalf("iter %d: build never started", i)
+		}
+
+		// Close done while the build is mid-flight, then release the build
+		// so it finishes and reaches the post-build branch. The goroutine
+		// must observe done and skip proc.Restart(), even though releaseBuild
+		// is closed on the very next instruction. Without a defensive done
+		// check before Restart, the goroutine's prior post-drainLoop state
+		// would race ahead and spawn a fresh child.
+		close(done)
+		close(builder.releaseBuild)
+
+		exited := make(chan struct{})
+		go func() {
+			wg.Wait()
+			close(exited)
+		}()
+		select {
+		case <-exited:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("iter %d: rebuild goroutine did not exit", i)
+		}
+
+		if got := restarter.Count(); got != 0 {
+			t.Fatalf("iter %d: proc.Restart() called %d time(s) after shutdown — orphan-child race regressed", i, got)
+		}
+	}
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
