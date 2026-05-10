@@ -378,3 +378,67 @@ func TestRunner_ConcurrentStopRestart(t *testing.T) {
 	}
 	r.Stop()
 }
+
+// TestRunnerStop_NoConsoleSkipsWait verifies that when GenerateConsoleCtrlEvent
+// returns an error (e.g. ERROR_INVALID_HANDLE — no console attached), stop()
+// kills the process immediately and returns well under the 5-second grace period.
+func TestRunnerStop_NoConsoleSkipsWait(t *testing.T) {
+	orig := generateConsoleCtrlEvent
+	generateConsoleCtrlEvent = func(event uint32, pid uint32) error {
+		return fmt.Errorf("ERROR_INVALID_HANDLE")
+	}
+	t.Cleanup(func() { generateConsoleCtrlEvent = orig })
+
+	r := New("ping", []string{"-n", "300", "127.0.0.1"}, "")
+	if err := r.Start(); err != nil {
+		t.Fatal(err)
+	}
+
+	start := time.Now()
+	if err := r.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	elapsed := time.Since(start)
+
+	if elapsed >= 500*time.Millisecond {
+		t.Errorf("Stop() took %v — expected <500ms when signal delivery fails (no 5s wait)", elapsed)
+	}
+}
+
+// TestRunnerStop_WithConsoleWaitsForGraceful verifies that when
+// GenerateConsoleCtrlEvent succeeds and the process exits promptly,
+// stop() returns via the graceful path without waiting the full 5 seconds.
+func TestRunnerStop_WithConsoleWaitsForGraceful(t *testing.T) {
+	orig := generateConsoleCtrlEvent
+	generateConsoleCtrlEvent = func(event uint32, pid uint32) error {
+		// Signal "succeeded" — now kill the process so r.done closes quickly,
+		// simulating a process that handles CTRL_BREAK and exits gracefully.
+		return nil
+	}
+	t.Cleanup(func() { generateConsoleCtrlEvent = orig })
+
+	r := New("ping", []string{"-n", "300", "127.0.0.1"}, "")
+	if err := r.Start(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Kill the process out-of-band so r.done closes while stop() is in the select.
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		r.mu.Lock()
+		if r.cmd != nil && r.cmd.Process != nil {
+			r.cmd.Process.Kill()
+		}
+		r.mu.Unlock()
+	}()
+
+	start := time.Now()
+	if err := r.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	elapsed := time.Since(start)
+
+	if elapsed >= 5*time.Second {
+		t.Errorf("Stop() took %v — should have returned via graceful path when r.done closes", elapsed)
+	}
+}
