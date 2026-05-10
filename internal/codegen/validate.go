@@ -438,7 +438,21 @@ func companionImportPath(typeName string, registry *metadata.TypeRegistry) strin
 
 // relativeCompanionImport computes a relative import path from the current companion
 // file to the target companion file. Both paths should be relative to the same root.
+//
+// Inputs are normalized to forward slashes first because they may arrive with
+// backslashes on Windows (the upstream `outputBase` is built via
+// `filepath.Join`, which uses native separators). The `path` package below
+// only understands `/`, so without this normalization a Windows path like
+// `D:\proj\dist\foo.tsgonest.js` would be treated as a single component,
+// fall through to the "no common prefix" branch, and emit
+// `./D:\proj\dist\foo.tsgonest.js` — a broken `require()` target. See #140.
+//
+// We use strings.ReplaceAll instead of filepath.ToSlash because ToSlash only
+// converts the OS-native separator — on Unix builds processing Windows-shaped
+// paths (e.g. tests, cross-compiled tools), backslashes pass through unchanged.
 func relativeCompanionImport(fromCompanionPath, toCompanionPath string) string {
+	fromCompanionPath = strings.ReplaceAll(fromCompanionPath, "\\", "/")
+	toCompanionPath = strings.ReplaceAll(toCompanionPath, "\\", "/")
 	fromDir := path.Dir(fromCompanionPath)
 	rel, err := relPath(fromDir, toCompanionPath)
 	if err != "" {
