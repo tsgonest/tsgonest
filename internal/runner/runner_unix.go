@@ -20,13 +20,16 @@ func (r *Runner) Start() error {
 	r.cmd = r.newCmd()
 	r.cmd.SysProcAttr = sysProcAttr()
 
-	r.done = make(chan struct{})
-
 	if err := r.cmd.Start(); err != nil {
 		r.cmd = nil
 		return fmt.Errorf("starting process: %w", err)
 	}
 
+	// Allocate r.done and spawn the wait goroutine ONLY after all error-prone
+	// setup has succeeded. If cmd.Start fails, r.done stays as it was so
+	// Wait() will not block forever on a goroutine that was never spawned.
+	// See issue #144.
+	r.done = make(chan struct{})
 	r.alive.Store(true)
 
 	// Wait for process in background
@@ -49,6 +52,15 @@ func (r *Runner) stop() error {
 	r.stopped = true
 
 	if r.cmd == nil || r.cmd.Process == nil {
+		return nil
+	}
+
+	// If r.done is nil, Start() failed after cmd.Start() succeeded but before
+	// the wait goroutine was spawned (issue #144). Reap directly and return.
+	if r.done == nil {
+		r.cmd.Process.Kill()
+		_, _ = r.cmd.Process.Wait()
+		r.cmd = nil
 		return nil
 	}
 
