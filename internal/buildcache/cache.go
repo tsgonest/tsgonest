@@ -28,7 +28,12 @@ var removeFn = os.Remove
 
 // SchemaVersion is bumped when the cache format or analysis output format changes.
 // A mismatch forces a full rebuild, ensuring binary upgrades don't produce stale outputs.
-const SchemaVersion = 1
+//
+// v2: alias-site JSDoc now propagates through type aliases (cross-file imports,
+// arrays of aliased types) and per-element constraint checks are emitted in
+// companion JS. Older caches predate these emits and must be invalidated so the
+// new binary regenerates affected companions.
+const SchemaVersion = 2
 
 // Cache represents the on-disk post-processing cache.
 // It records what was true when post-processing last ran successfully.
