@@ -253,6 +253,69 @@ func (env *walkerEnv) walkExportedTypeWithRegistry(t *testing.T, typeName string
 	return metadata.Metadata{}, nil
 }
 
+// walkAliasType walks a top-level type alias via its referencing AST position
+// to mirror production parameter/return-type walks (which call WalkTypeNode on
+// the type annotation node). Requires the source file to contain a probe
+// declaration `declare const __probe: <typeName>;` so the helper can locate an
+// AST type node that references the alias by name.
+func (env *walkerEnv) walkAliasType(t *testing.T, typeName string) metadata.Metadata {
+	t.Helper()
+	return env.walkProbeType(t, "__probe", typeName)
+}
+
+// walkProbeType locates `declare const <probeName>: <expectedAlias>;` in the
+// source file and walks the variable's type annotation via WalkTypeNode. This
+// exercises the same AST-driven code path used in production. expectedAlias is
+// optional — pass "" to skip the alias-name assertion.
+func (env *walkerEnv) walkProbeType(t *testing.T, probeName string, expectedAlias string) metadata.Metadata {
+	t.Helper()
+
+	walker := analyzer.NewTypeWalker(env.checker)
+
+	for _, stmt := range env.sourceFile.Statements.Nodes {
+		if stmt == nil || stmt.Kind != ast.KindVariableStatement {
+			continue
+		}
+		vs := stmt.AsVariableStatement()
+		if vs == nil || vs.DeclarationList == nil {
+			continue
+		}
+		declList := vs.DeclarationList.AsVariableDeclarationList()
+		if declList == nil {
+			continue
+		}
+		for _, declNode := range declList.Declarations.Nodes {
+			if declNode == nil || declNode.Kind != ast.KindVariableDeclaration {
+				continue
+			}
+			decl := declNode.AsVariableDeclaration()
+			if decl == nil || decl.Name() == nil {
+				continue
+			}
+			if decl.Name().Text() != probeName {
+				continue
+			}
+			typeNode := decl.Type
+			if typeNode == nil {
+				t.Fatalf("probe %q has no type annotation", probeName)
+			}
+			if expectedAlias != "" {
+				if typeNode.Kind != ast.KindTypeReference {
+					t.Fatalf("probe %q type annotation is not a TypeReference (kind=%v)", probeName, typeNode.Kind)
+				}
+				ref := typeNode.AsTypeReferenceNode()
+				if ref == nil || ref.TypeName == nil || ref.TypeName.Text() != expectedAlias {
+					t.Fatalf("probe %q expected to reference %q", probeName, expectedAlias)
+				}
+			}
+			return walker.WalkTypeNode(typeNode)
+		}
+	}
+
+	t.Fatalf("probe variable %q not found in source file", probeName)
+	return metadata.Metadata{}
+}
+
 // walkAllNamedTypes walks all type aliases in the source file using WalkNamedType
 // (matching production behavior in generateCompanionsInMemory), then returns the
 // walker for inspection. This is critical for testing sub-field type registration.

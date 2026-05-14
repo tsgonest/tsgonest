@@ -251,15 +251,119 @@ func (w *TypeWalker) WalkType(t *shimchecker.Type) metadata.Metadata {
 
 	flags := t.Flags()
 
-	// Handle union and intersection first (they may contain null/undefined members)
-	if flags&shimchecker.TypeFlagsUnion != 0 {
-		return w.walkUnion(t)
-	}
-	if flags&shimchecker.TypeFlagsIntersection != 0 {
-		return w.walkIntersection(t)
+	var result metadata.Metadata
+	switch {
+	case flags&shimchecker.TypeFlagsUnion != 0:
+		result = w.walkUnion(t)
+	case flags&shimchecker.TypeFlagsIntersection != 0:
+		result = w.walkIntersection(t)
+	default:
+		result = w.walkSingleType(t)
 	}
 
-	return w.walkSingleType(t)
+	return w.applyAliasJSDoc(t, result)
+}
+
+// extractAliasJSDocFromTypeNode returns JSDoc constraints found on the alias
+// declaration that the given type node references, or nil if no alias-JSDoc
+// is found. Handles primitive aliases like `type MongoId = string;` where the
+// resolved Type carries no AliasSymbol (TypeScript collapses primitive aliases
+// to the shared singleton, so we recover the alias via the AST type node).
+func (w *TypeWalker) extractAliasJSDocFromTypeNode(typeNode *ast.Node) *metadata.Constraints {
+	if typeNode == nil {
+		return nil
+	}
+	// Unwrap parenthesized types so `(MongoId)` is handled too.
+	for typeNode != nil && typeNode.Kind == ast.KindParenthesizedType {
+		typeNode = typeNode.Type()
+	}
+	if typeNode == nil || typeNode.Kind != ast.KindTypeReference {
+		return nil
+	}
+	ref := typeNode.AsTypeReferenceNode()
+	if ref == nil || ref.TypeName == nil {
+		return nil
+	}
+	sym := w.checker.GetSymbolAtLocation(ref.TypeName)
+	if sym == nil {
+		return nil
+	}
+	// For cross-file imports, GetSymbolAtLocation returns an import-alias symbol
+	// whose declarations are ImportSpecifier nodes. Resolve to the original
+	// symbol so we reach the TypeAliasDeclaration carrying the JSDoc.
+	if sym.Flags&ast.SymbolFlagsAlias != 0 {
+		if original := w.checker.GetAliasedSymbol(sym); original != nil {
+			sym = original
+		}
+	}
+	if sym.Declarations == nil {
+		return nil
+	}
+	for _, decl := range sym.Declarations {
+		if decl == nil || decl.Kind != ast.KindTypeAliasDeclaration {
+			continue
+		}
+		if c := w.extractJSDocConstraints(decl); c != nil {
+			return c
+		}
+	}
+	return nil
+}
+
+// applyAliasJSDoc enriches result.Constraints with JSDoc tags found on the
+// type's alias declaration (e.g. /** @pattern */ type MongoId = string).
+// Only applies to atomic/array kinds where JSDoc validation tags are
+// semantically meaningful. Existing constraints (branded inline tags) take
+// precedence over alias-site JSDoc, mirroring the broader → narrower
+// precedence already used between branded and property-site JSDoc.
+//
+// Note: this only catches aliases whose info is attached directly on the type
+// (object/array aliases). Primitive aliases (`type MongoId = string`) collapse
+// to a shared singleton with no AliasSymbol, so AST-position-based extraction
+// via extractAliasJSDocFromTypeNode is required at call sites that have the
+// originating TypeNode in hand (e.g. WalkTypeNode, analyzeObjectProperties).
+func (w *TypeWalker) applyAliasJSDoc(t *shimchecker.Type, result metadata.Metadata) metadata.Metadata {
+	if result.Kind != metadata.KindAtomic && result.Kind != metadata.KindArray {
+		return result
+	}
+	var aliasJSDoc *metadata.Constraints
+
+	// Fast path: alias info is attached directly on the type (object/array aliases).
+	if alias := shimchecker.Type_alias(t); alias != nil {
+		if sym := alias.Symbol(); sym != nil {
+			name := sym.Name
+			if !(name == "" || name == "__type" || name == "__object" || (len(name) > 0 && name[0] == '\xfe')) && sym.Declarations != nil {
+				for _, decl := range sym.Declarations {
+					if decl == nil || decl.Kind != ast.KindTypeAliasDeclaration {
+						continue
+					}
+					if c := w.extractJSDocConstraints(decl); c != nil {
+						aliasJSDoc = c
+						break
+					}
+				}
+			}
+		}
+	}
+
+	return w.mergeAliasJSDocInto(result, aliasJSDoc)
+}
+
+// mergeAliasJSDocInto merges alias-site JSDoc constraints into result.Constraints
+// using the precedence rule shared by applyAliasJSDoc and WalkTypeNode: existing
+// (branded/inline) constraints win over alias-site JSDoc.
+func (w *TypeWalker) mergeAliasJSDocInto(result metadata.Metadata, aliasJSDoc *metadata.Constraints) metadata.Metadata {
+	if aliasJSDoc == nil {
+		return result
+	}
+	if result.Constraints == nil {
+		result.Constraints = aliasJSDoc
+		return result
+	}
+	merged := *aliasJSDoc
+	mergeConstraints(&merged, result.Constraints)
+	result.Constraints = &merged
+	return result
 }
 
 // walkSingleType handles a non-union, non-intersection type.
@@ -1232,20 +1336,50 @@ func (w *TypeWalker) analyzeObjectProperties(t *shimchecker.Type, name string) m
 
 		isReadonly := shimchecker.Checker_isReadonlySymbol(w.checker, prop)
 
-		// Extract constraints from two sources:
-		// 1. Branded phantom types (e.g., string & tags.Format<"email">)
-		// 2. JSDoc tags (e.g., @format email)
-		// JSDoc takes precedence over branded types for the same constraint.
+		// Extract constraints from three sources, broadest → narrowest:
+		// 1. Alias-site JSDoc (e.g. /** @pattern */ type MongoId = string)
+		// 2. Branded phantom types (e.g., string & tags.Format<"email">)
+		// 3. Property-site JSDoc (e.g. /** @format email */ on the field)
+		// Later sources override earlier ones — property-site is the most specific.
 		var constraints *metadata.Constraints
 
-		// Start with branded type constraints (if any)
+		// Seed with alias-site JSDoc when the property type is a TypeReference
+		// to a type alias whose declaration has JSDoc tags. Primitive aliases
+		// like `type MongoId = string` lose AliasSymbol on the resolved Type,
+		// so we recover the alias via the property's AST type node.
+		if prop.ValueDeclaration != nil {
+			if aliasJSDoc := w.extractAliasJSDocFromTypeNode(prop.ValueDeclaration.Type()); aliasJSDoc != nil {
+				c := *aliasJSDoc // copy so subsequent merges don't mutate the source
+				constraints = &c
+			}
+		}
+
+		// Layer in branded type constraints (override alias-site for any same fields)
 		if propMeta.Constraints != nil {
-			c := *propMeta.Constraints // copy
-			constraints = &c
+			if constraints == nil {
+				c := *propMeta.Constraints // copy
+				constraints = &c
+			} else {
+				mergeConstraints(constraints, propMeta.Constraints)
+			}
 			propMeta.Constraints = nil // don't leak to codegen
 		}
 
-		// Merge JSDoc constraints (takes precedence) and extract property annotations
+		// Element-level alias-JSDoc: for `userIds: MongoId[]`, the property's type
+		// node is an ArrayType. Recurse into its ElementType to recover alias-JSDoc
+		// on the element, and attach to propMeta.ElementType.Constraints so codegen's
+		// per-element loop can emit the runtime check.
+		if prop.ValueDeclaration != nil && propMeta.Kind == metadata.KindArray && propMeta.ElementType != nil {
+			if typeNode := prop.ValueDeclaration.Type(); typeNode != nil && typeNode.Kind == ast.KindArrayType {
+				elemNode := typeNode.AsArrayTypeNode().ElementType
+				if elemAliasJSDoc := w.extractAliasJSDocFromTypeNode(elemNode); elemAliasJSDoc != nil {
+					merged := w.mergeAliasJSDocInto(*propMeta.ElementType, elemAliasJSDoc)
+					propMeta.ElementType = &merged
+				}
+			}
+		}
+
+		// Merge property-site JSDoc (most specific — takes precedence) and extract annotations
 		var ann propertyAnnotations
 		if prop.ValueDeclaration != nil {
 			jsdocConstraints := w.extractJSDocConstraints(prop.ValueDeclaration)
@@ -1412,6 +1546,28 @@ func (w *TypeWalker) getTypeName(t *shimchecker.Type) string {
 func (w *TypeWalker) WalkTypeNode(node *ast.Node) metadata.Metadata {
 	t := w.checker.GetTypeFromTypeNode(node)
 	result := w.WalkType(t)
+
+	// Recover alias-site JSDoc constraints for primitive aliases via the AST
+	// position. TypeScript collapses `type MongoId = string` to the shared
+	// primitive singleton, so applyAliasJSDoc's type-driven fast path misses
+	// these. extractAliasJSDocFromTypeNode resolves the symbol referenced at
+	// this exact AST position, which is unambiguous even when many aliases
+	// share the same underlying primitive type.
+	if result.Kind == metadata.KindAtomic || result.Kind == metadata.KindArray {
+		if aliasJSDoc := w.extractAliasJSDocFromTypeNode(node); aliasJSDoc != nil {
+			result = w.mergeAliasJSDocInto(result, aliasJSDoc)
+		}
+	}
+
+	// Element-level alias-JSDoc on top-level array walks (e.g. `@Param('ids') ids: MongoId[]`
+	// or method return type `MongoId[]`). Attaches to result.ElementType.Constraints.
+	if result.Kind == metadata.KindArray && result.ElementType != nil && node != nil && node.Kind == ast.KindArrayType {
+		elemNode := node.AsArrayTypeNode().ElementType
+		if elemAliasJSDoc := w.extractAliasJSDocFromTypeNode(elemNode); elemAliasJSDoc != nil {
+			merged := w.mergeAliasJSDocInto(*result.ElementType, elemAliasJSDoc)
+			result.ElementType = &merged
+		}
+	}
 
 	// Preserve the type name for named type references.
 	// Skip wrapper types (Promise, Observable) — their inner type is already unwrapped.
