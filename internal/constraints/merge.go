@@ -66,6 +66,15 @@ func Merge(dst, src *metadata.Constraints) {
 	if src.UniqueItems != nil {
 		dst.UniqueItems = src.UniqueItems
 	}
+	if src.MaxSize != nil {
+		dst.MaxSize = src.MaxSize
+	}
+	if src.MinSize != nil {
+		dst.MinSize = src.MinSize
+	}
+	if len(src.MimeTypes) > 0 {
+		dst.MimeTypes = src.MimeTypes
+	}
 	if src.Default != nil {
 		dst.Default = src.Default
 	}

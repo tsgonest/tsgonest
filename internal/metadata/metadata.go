@@ -161,6 +161,11 @@ type Constraints struct {
 	MaxItems    *int  `json:"maxItems,omitempty"`
 	UniqueItems *bool `json:"uniqueItems,omitempty"`
 
+	// File upload constraints (Phase 9/10 — applied to File or FileStream values)
+	MaxSize   *uint64  `json:"maxSize,omitempty"`
+	MinSize   *uint64  `json:"minSize,omitempty"`
+	MimeTypes []string `json:"mimeTypes,omitempty"`
+
 	// Schema-only (no runtime validation)
 	Default *string `json:"default,omitempty"`
 

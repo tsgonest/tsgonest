@@ -1160,6 +1160,13 @@ func (w *TypeWalker) walkObjectType(t *shimchecker.Type) metadata.Metadata {
 			return metadata.Metadata{Kind: metadata.KindNative, NativeType: name}
 		case "File", "Blob", "StreamableFile":
 			return metadata.Metadata{Kind: metadata.KindNative, NativeType: name}
+		case "FileStream":
+			// `FileStream` is a tsgonest-shipped interface declared with a
+			// `__tsgonest_fileStream` phantom property. Treat it as a distinct
+			// native type so codegen can emit the streaming multipart parser.
+			if hasFileStreamMarker(w.checker, t) {
+				return metadata.Metadata{Kind: metadata.KindNative, NativeType: "FileStream"}
+			}
 		case "Error":
 			return metadata.Metadata{Kind: metadata.KindNative, NativeType: "Error"}
 		}

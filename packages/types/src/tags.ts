@@ -427,3 +427,52 @@ export type Uint = Type<"uint32">;
 
 /** number & Type<"double"> */
 export type Double = Type<"double">;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// File upload constraints
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Maximum byte size for a `File` or `FileStream`.
+ * @example MaxSize<5_000_000>  // 5MB
+ * @example MaxSize<{value: 5_000_000, error: "File too large"}>
+ */
+export type MaxSize<N extends number | { value: number; error?: string }> =
+  N extends { value: infer V extends number; error: infer E extends string }
+    ? { readonly __tsgonest_maxSize?: V; readonly __tsgonest_maxSize_error?: E }
+    : { readonly __tsgonest_maxSize?: N extends { value: infer V } ? V : N };
+
+/**
+ * Minimum byte size for a `File` or `FileStream`.
+ * @example MinSize<1>
+ */
+export type MinSize<N extends number | { value: number; error?: string }> =
+  N extends { value: infer V extends number; error: infer E extends string }
+    ? { readonly __tsgonest_minSize?: V; readonly __tsgonest_minSize_error?: E }
+    : { readonly __tsgonest_minSize?: N extends { value: infer V } ? V : N };
+
+/**
+ * Allowed MIME types for a `File` or `FileStream`. Accepts a union of string
+ * literals; values like `'image/*'` match any image subtype.
+ * @example MimeTypes<'image/png' | 'image/jpeg'>
+ * @example MimeTypes<'image/*'>
+ */
+export type MimeTypes<U extends string> = {
+  readonly __tsgonest_mimeTypes?: U;
+};
+
+/**
+ * A streaming file upload from `multipart/form-data`. Distinct from `File`
+ * (which is buffered) — tsgonest emits a streaming parser when a body field
+ * is typed as `FileStream`. `MaxSize` is enforced incrementally as bytes flow.
+ *
+ * The `stream` property is consumed by the handler; reading past `MaxSize`
+ * causes the read to reject with a typed error.
+ */
+export interface FileStream {
+  readonly name: string;
+  readonly type: string;
+  readonly stream: ReadableStream<Uint8Array>;
+  /** Phantom marker the analyzer reads to distinguish from `File`. */
+  readonly __tsgonest_fileStream?: true;
+}

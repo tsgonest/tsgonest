@@ -1,0 +1,60 @@
+{
+  "name": "@mintkit/bun",
+  "version": "0.0.1",
+  "description": "Mint adapter for Bun — vendored, shadcn-style. Provides wrap(), BUN_SERVER, and gracefulShutdown.",
+  "type": "module",
+  "main": "dist/index.cjs",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.mts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.mts",
+        "default": "./dist/index.mjs"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsdown",
+    "test": "vitest --run"
+  },
+  "keywords": [
+    "mint",
+    "mintkit",
+    "bun",
+    "adapter",
+    "tsgonest"
+  ],
+  "dependencies": {
+    "@mintkit/core": "workspace:*"
+  },
+  "peerDependencies": {
+    "@mintkit/core": "workspace:*",
+    "bun-types": "*"
+  },
+  "peerDependenciesMeta": {
+    "bun-types": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.0",
+    "@types/node": "^25.5.0",
+    "bun-types": "^1.3.11",
+    "tsdown": "^0.21.7",
+    "typescript": "^5.7.0",
+    "vitest": "^4.1.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tsgonest/tsgonest"
+  }
+}

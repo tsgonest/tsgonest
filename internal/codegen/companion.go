@@ -92,6 +92,21 @@ func GenerateCompanionFiles(sourceFileName string, types map[string]*metadata.Me
 	return files
 }
 
+// CompanionPathForOutput returns the companion file path for a type given its
+// source-file output base (e.g. "dist/user.dto.ts") and the type name.
+// Wrapper around the package-internal companionPath so cross-package callers
+// (cmd/tsgonest) can compute companion locations without duplicating the rule.
+func CompanionPathForOutput(sourceFileName string, typeName string) string {
+	return companionPath(sourceFileName, typeName)
+}
+
+// RelativeCompanionImport returns a forward-slash relative module specifier
+// from `fromCompanionPath` to `toCompanionPath`. Exported wrapper around the
+// internal helper.
+func RelativeCompanionImport(fromCompanionPath, toCompanionPath string) string {
+	return relativeCompanionImport(fromCompanionPath, toCompanionPath)
+}
+
 // companionPath generates the companion file path from the source file path.
 // e.g., "src/user.dto.ts" + "CreateUserDto" → "src/user.dto.CreateUserDto.tsgonest.js"
 func companionPath(sourceFileName string, typeName string) string {

@@ -6,3 +6,5 @@ packages:
   - 'benchmarks/http'
   - 'testdata/integration'
   - 'testdata/mint-hello'
+  - 'testdata/mint-typed'
+  - 'testdata/mint-upload'

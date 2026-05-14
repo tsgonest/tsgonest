@@ -97,6 +97,26 @@ func SetBranded(c *metadata.Constraints, key string, typeMeta *metadata.Metadata
 			return true
 		}
 
+	// File upload constraints
+	case FieldMaxSize:
+		if f, ok := LiteralFloat(typeMeta); ok && f >= 0 {
+			n := uint64(f)
+			c.MaxSize = &n
+			return true
+		}
+	case FieldMinSize:
+		if f, ok := LiteralFloat(typeMeta); ok && f >= 0 {
+			n := uint64(f)
+			c.MinSize = &n
+			return true
+		}
+	case FieldMimeTypes:
+		mimes := collectStringLiterals(typeMeta)
+		if len(mimes) > 0 {
+			c.MimeTypes = mimes
+			return true
+		}
+
 	// String case validation
 	case FieldUppercase:
 		if b, ok := LiteralBool(typeMeta); ok && b {

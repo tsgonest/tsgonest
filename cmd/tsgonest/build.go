@@ -434,7 +434,13 @@ func runBuildWithIncrAndProgram(args []string, oldIncrProgram *shimincremental.P
 		}
 		// Mint register companions are emitted independently of type companions —
 		// hello-world controllers have no DTOs and thus no neededTypes entries.
-		if mintCompanions := generateMintRegisterCompanions(controllers, sourceToOutput, modFmt); len(mintCompanions) > 0 {
+		// We pass the walker's registry so the generator can resolve DTO
+		// companion paths for @Body/@Query/@Param/@Headers and return types.
+		mintRegistry := controllerRegistry
+		if mintRegistry == nil && sharedWalker != nil {
+			mintRegistry = sharedWalker.Registry()
+		}
+		if mintCompanions := generateMintRegisterCompanions(controllers, sourceToOutput, modFmt, mintRegistry, cfg.Transforms.ResponseSerializer); len(mintCompanions) > 0 {
 			allCompanions = append(allCompanions, mintCompanions...)
 		}
 		timing.Companions = time.Since(companionStart)

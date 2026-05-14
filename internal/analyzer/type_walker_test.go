@@ -6105,6 +6105,70 @@ func TestWalkType_BlobNativeType(t *testing.T) {
 	}
 }
 
+// TestWalkType_FileStreamNativeType verifies the tsgonest-shipped FileStream
+// interface is recognized as a distinct native type via its phantom marker.
+func TestWalkType_FileStreamNativeType(t *testing.T) {
+	env := setupWalker(t, `
+		interface FileStream {
+			readonly name: string;
+			readonly type: string;
+			readonly stream: any;
+			readonly __tsgonest_fileStream?: true;
+		}
+		type Upload = { file: FileStream; };
+	`)
+	defer env.release()
+
+	m := env.walkExportedType(t, "Upload")
+	assertKind(t, m, metadata.KindObject)
+
+	fileProp := m.Properties[0]
+	if fileProp.Type.Kind != metadata.KindNative || fileProp.Type.NativeType != "FileStream" {
+		t.Errorf("file: expected KindNative/FileStream, got Kind=%s NativeType=%q", fileProp.Type.Kind, fileProp.Type.NativeType)
+	}
+}
+
+// TestWalkType_FileMaxSizeBranded verifies that `File & {__tsgonest_maxSize?: 5000}`
+// extracts a MaxSize constraint while preserving the underlying File native type.
+func TestWalkType_FileMaxSizeBranded(t *testing.T) {
+	env := setupWalker(t, `
+		interface Blob { readonly size: number; readonly type: string; }
+		interface File extends Blob { readonly name: string; }
+		type Avatar = File & { readonly __tsgonest_maxSize?: 5000 };
+	`)
+	defer env.release()
+
+	m := env.walkExportedType(t, "Avatar")
+	if m.Kind != metadata.KindNative || m.NativeType != "File" {
+		t.Fatalf("expected KindNative/File, got Kind=%s NativeType=%q", m.Kind, m.NativeType)
+	}
+	if m.Constraints == nil || m.Constraints.MaxSize == nil {
+		t.Fatalf("expected MaxSize constraint, got %#v", m.Constraints)
+	}
+	if *m.Constraints.MaxSize != 5000 {
+		t.Errorf("expected MaxSize=5000, got %d", *m.Constraints.MaxSize)
+	}
+}
+
+// TestWalkType_FileMimeTypesUnionBranded verifies that a MimeTypes union
+// extracts a slice of allowed MIME types.
+func TestWalkType_FileMimeTypesUnionBranded(t *testing.T) {
+	env := setupWalker(t, `
+		interface Blob { readonly size: number; readonly type: string; }
+		interface File extends Blob { readonly name: string; }
+		type Pic = File & { readonly __tsgonest_mimeTypes?: "image/png" | "image/jpeg" };
+	`)
+	defer env.release()
+
+	m := env.walkExportedType(t, "Pic")
+	if m.Kind != metadata.KindNative || m.NativeType != "File" {
+		t.Fatalf("expected KindNative/File, got Kind=%s NativeType=%q", m.Kind, m.NativeType)
+	}
+	if m.Constraints == nil || len(m.Constraints.MimeTypes) != 2 {
+		t.Fatalf("expected 2 mime types, got %#v", m.Constraints)
+	}
+}
+
 // TestWalkType_InterfacePropertyTypesRegistered verifies that interfaces used
 // as property types are registered as named schemas (KindRef), not inlined as
 // empty schemas. Regression: nested interfaces with branded type properties

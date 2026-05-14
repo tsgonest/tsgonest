@@ -828,13 +828,16 @@ func (a *ControllerAnalyzer) analyzeMethod(methodNode *ast.Node, controllerPath 
 	// Apply content type to body parameters:
 	// 1. JSDoc @contentType override takes highest priority
 	// 2. Auto-detect: string body → text/plain
-	// 3. Default: application/json (empty string means default)
+	// 3. Auto-detect: body type with a File/FileStream field → multipart/form-data
+	// 4. Default: application/json (empty string means default)
 	for i := range params {
 		if params[i].Category == string(CategoryBody) {
 			if contentType != "" {
 				params[i].ContentType = contentType
 			} else if params[i].Type.Kind == metadata.KindAtomic && params[i].Type.Atomic == "string" {
 				params[i].ContentType = "text/plain"
+			} else if bodyContainsFileField(&params[i].Type, a.registry) {
+				params[i].ContentType = "multipart/form-data"
 			}
 			// else: leave empty, generator will default to application/json
 		}
@@ -1415,6 +1418,52 @@ func (a *ControllerAnalyzer) analyzeParameter(paramNode *ast.Node, className str
 	}
 
 	return rp
+}
+
+// bodyContainsFileField inspects a body type for top-level fields of type
+// `File`, `Blob`, `File[]`, or `FileStream`. Follows KindRef into the registry.
+// Used to auto-set ContentType="multipart/form-data" on routes whose bodies are
+// declared with file fields (no explicit @FormDataBody / @contentType needed).
+func bodyContainsFileField(m *metadata.Metadata, registry *metadata.TypeRegistry) bool {
+	if m == nil {
+		return false
+	}
+	target := m
+	if m.Kind == metadata.KindRef && registry != nil {
+		if resolved := registry.Types[m.Ref]; resolved != nil {
+			target = resolved
+		}
+	}
+	if target.Kind != metadata.KindObject {
+		return false
+	}
+	for _, prop := range target.Properties {
+		pt := &prop.Type
+		// Unwrap optional unions.
+		if pt.Kind == metadata.KindUnion {
+			for i := range pt.UnionMembers {
+				um := &pt.UnionMembers[i]
+				if um.Kind == metadata.KindAtomic && (um.Atomic == "undefined" || um.Atomic == "null") {
+					continue
+				}
+				pt = um
+				break
+			}
+		}
+		if pt.Kind == metadata.KindNative {
+			switch pt.NativeType {
+			case "File", "Blob", "FileStream":
+				return true
+			}
+		}
+		if pt.Kind == metadata.KindArray && pt.ElementType != nil {
+			el := pt.ElementType
+			if el.Kind == metadata.KindNative && (el.NativeType == "File" || el.NativeType == "Blob") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // extractInitializerLiteralValue extracts a Go value from an AST literal expression.

@@ -123,12 +123,16 @@ describe("Mint Phase 1: Hello World seam", () => {
     expect(openapi.paths["/hello"].get.operationId).toBe("Hello_hello");
   });
 
-  it("serves /hello via Bun.serve(app.fetch) with 200 + body", async () => {
+  it("serves /hello via Bun.serve(app.fetch) with 200 + JSON body", async () => {
     const server = await startBunServer();
     try {
       const res = await fetch(`${server.url}/hello`);
       expect(res.status).toBe(200);
-      expect(await res.text()).toBe("Hello from Mint!");
+      // Phase 2: all return values are JSON-serialized so SDKs can consume
+      // responses without sniffing the handler signature. Strings become a
+      // quoted JSON literal.
+      expect(res.headers.get("content-type")).toMatch(/application\/json/);
+      expect(await res.text()).toBe('"Hello from Mint!"');
     } finally {
       await server.stop();
     }

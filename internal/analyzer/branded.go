@@ -23,18 +23,26 @@ func (w *TypeWalker) tryDetectBranded(rawTypes []*shimchecker.Type, members []me
 
 	for i := range members {
 		m := &members[i]
-		if m.Kind == metadata.KindAtomic || m.Kind == metadata.KindLiteral {
+		switch {
+		case m.Kind == metadata.KindAtomic || m.Kind == metadata.KindLiteral:
 			if atomicMember != nil {
 				return nil // Multiple atomics/literals — not a branded type
 			}
 			atomicMember = m
-		} else if m.Kind == metadata.KindObject && isPhantomObject(m) {
+		case m.Kind == metadata.KindNative && isFileLikeNative(m.NativeType):
+			// `File & MaxSize<N>` and friends — treat File/Blob/FileStream as
+			// the "atomic" carrier for file-upload constraint extraction.
+			if atomicMember != nil {
+				return nil
+			}
+			atomicMember = m
+		case m.Kind == metadata.KindObject && isPhantomObject(m):
 			phantomMembers = append(phantomMembers, m)
 			if i < len(rawTypes) {
 				rawPhantomTypes = append(rawPhantomTypes, rawTypes[i])
 			}
 			phantomCount++
-		} else {
+		default:
 			return nil // Non-atomic, non-phantom member — not a branded type
 		}
 	}
@@ -194,6 +202,28 @@ func extractBrandedTagConstraint(c *metadata.Constraints, tagType *metadata.Meta
 
 	// Map typia kind to our constraint keys
 	return extractConstraintValue(c, kind, valueMeta)
+}
+
+// isFileLikeNative reports whether a NativeType is a file-shaped value that
+// can carry MaxSize/MinSize/MimeTypes constraints.
+func isFileLikeNative(name string) bool {
+	switch name {
+	case "File", "Blob", "FileStream":
+		return true
+	}
+	return false
+}
+
+// hasFileStreamMarker reports whether an interface/type exposes the
+// `__tsgonest_fileStream` phantom property. tsgonest uses this marker to
+// distinguish the streaming `FileStream` interface from a user type that
+// happens to be named `FileStream`.
+func hasFileStreamMarker(checker *shimchecker.Checker, t *shimchecker.Type) bool {
+	if checker == nil || t == nil {
+		return false
+	}
+	sym := checker.GetPropertyOfType(t, "__tsgonest_fileStream")
+	return sym != nil
 }
 
 // isPhantomObject checks if an object type only has "phantom" properties

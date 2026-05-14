@@ -377,7 +377,18 @@ func generateCompanionsInMemory(program *shimcompiler.Program, cfg *config.Confi
 // The companion sits next to the controller's emitted JS and is generated
 // regardless of whether the controller has any DTO types — Phase 1 hello-world
 // controllers have no @Body/@Query/@Param and thus produce no type companions.
-func generateMintRegisterCompanions(controllers []analyzer.ControllerInfo, sourceToOutput map[string]string, moduleFormat string) []codegen.CompanionFile {
+//
+// For Phase 2, each route's parameters and return type are projected into the
+// codegen input so the emitted wrapper parses inputs from the Event, runs the
+// existing tsgonest-generated `assertXxx` validators, and serialises the
+// return value via `stringifyXxx`/`serializeXxx` from the same companions.
+func generateMintRegisterCompanions(
+	controllers []analyzer.ControllerInfo,
+	sourceToOutput map[string]string,
+	moduleFormat string,
+	registry *metadata.TypeRegistry,
+	responseSerializer string,
+) []codegen.CompanionFile {
 	var out []codegen.CompanionFile
 	isCJS := moduleFormat == "cjs"
 
@@ -394,19 +405,37 @@ func generateMintRegisterCompanions(controllers []analyzer.ControllerInfo, sourc
 		controllerBase := strings.TrimSuffix(outputBase, ".ts")
 		importPath := "./" + filepath.Base(controllerBase)
 
+		// The Mint register companion lives at codegen.MintRegisterPath(outputBase, ctrl.Name).
+		registerCompanionPath := codegen.MintRegisterPath(outputBase, ctrl.Name)
+
 		routes := make([]codegen.MintRouteInfo, 0, len(ctrl.Routes))
 		for _, r := range ctrl.Routes {
-			routes = append(routes, codegen.MintRouteInfo{
+			route := codegen.MintRouteInfo{
 				Method:     r.Method,
 				Path:       r.Path,
 				MethodName: r.MethodName,
-			})
+			}
+
+			// Project route parameters into codegen-friendly shape.
+			for _, p := range r.Parameters {
+				mp := buildMintParam(p, registry, registerCompanionPath)
+				if mp == nil {
+					continue
+				}
+				route.Params = append(route.Params, *mp)
+			}
+
+			// Project return type.
+			projectReturn(&route, &r.ReturnType, registry, registerCompanionPath)
+
+			routes = append(routes, route)
 		}
 
 		input := codegen.MintRegisterInput{
 			ControllerName:       ctrl.Name,
 			ControllerImportPath: importPath,
 			Routes:               routes,
+			ResponseSerializer:   responseSerializer,
 		}
 
 		jsPath := codegen.MintRegisterPath(outputBase, ctrl.Name)
@@ -424,4 +453,341 @@ func generateMintRegisterCompanions(controllers []analyzer.ControllerInfo, sourc
 	}
 
 	return out
+}
+
+// buildMintParam projects an analyzer.RouteParameter into the codegen shape.
+// Returns nil when the parameter cannot be represented (e.g. anonymous types
+// without a companion; those are intentionally skipped — the handler will see
+// whatever the user typed, but validation won't run).
+func buildMintParam(p analyzer.RouteParameter, registry *metadata.TypeRegistry, registerCompanionPath string) *codegen.MintParamInfo {
+	local := p.LocalName
+	if local == "" {
+		local = p.Name
+	}
+	if local == "" {
+		// Without a JS-visible name we can't bind the value into the call site.
+		return nil
+	}
+
+	kind, ok := paramCategoryToKind(p.Category)
+	if !ok {
+		return nil
+	}
+
+	mp := codegen.MintParamInfo{
+		Kind:      kind,
+		Name:      p.Name,
+		LocalName: local,
+	}
+
+	// Body with File/FileStream fields → multipart parsing path.
+	if kind == codegen.MintParamBody {
+		if mb := buildMultipartBody(&p, registry); mb != nil {
+			mp.Multipart = mb
+			return &mp
+		}
+	}
+
+	// DTO-shaped param: whole-object @Body / @Query / @Headers with a named type.
+	dtoSlot := (kind == codegen.MintParamBody) ||
+		((kind == codegen.MintParamQuery || kind == codegen.MintParamHeader) && p.Name == "")
+	if dtoSlot && p.TypeName != "" && registry != nil {
+		if companionImport := companionImportForType(p.TypeName, registry, registerCompanionPath); companionImport != "" {
+			mp.TypeName = p.TypeName
+			mp.CompanionImport = companionImport
+			return &mp
+		}
+	}
+
+	// Scalar param (named @Param / @Query / @Headers, or @Body without a type).
+	if p.Type.Kind == metadata.KindAtomic {
+		mp.Atomic = p.Type.Atomic
+		mp.Constraints = p.Type.Constraints
+	}
+	return &mp
+}
+
+// buildMultipartBody inspects a body parameter's type metadata for File or
+// FileStream fields. When at least one is found, returns a multipart description
+// that the codegen uses instead of the JSON-body path. Returns nil for JSON bodies.
+func buildMultipartBody(p *analyzer.RouteParameter, registry *metadata.TypeRegistry) *codegen.MintMultipartBody {
+	if p == nil {
+		return nil
+	}
+	obj := resolveObjectMetadata(&p.Type, registry)
+	if obj == nil {
+		return nil
+	}
+
+	hasFile := false
+	for _, prop := range obj.Properties {
+		k := classifyMultipartFieldKind(&prop.Type)
+		if k == multipartFieldKindFile || k == multipartFieldKindFileArray || k == multipartFieldKindFileStream {
+			hasFile = true
+			break
+		}
+	}
+	if !hasFile {
+		return nil
+	}
+
+	mb := &codegen.MintMultipartBody{}
+	for _, prop := range obj.Properties {
+		k := classifyMultipartFieldKind(&prop.Type)
+		field := codegen.MintMultipartField{
+			Name:     prop.Name,
+			Required: prop.Required,
+		}
+		// File-shaped constraints can live on the leaf type (after branded
+		// extraction) or on the property level — combine both.
+		field.Constraints = mergeFileConstraints(prop.Type.Constraints, prop.Constraints)
+		switch k {
+		case multipartFieldKindFile:
+			field.Kind = codegen.MintFieldFile
+			mb.Fields = append(mb.Fields, field)
+		case multipartFieldKindFileArray:
+			field.Kind = codegen.MintFieldFileArray
+			mb.Fields = append(mb.Fields, field)
+		case multipartFieldKindFileStream:
+			field.Kind = codegen.MintFieldFileStream
+			mb.Streaming = true
+			mb.Fields = append(mb.Fields, field)
+		case multipartFieldKindScalar:
+			field.Kind = codegen.MintFieldScalar
+			leaf := scalarLeaf(&prop.Type)
+			if leaf != nil {
+				field.Atomic = leaf.Atomic
+				field.Constraints = mergeFileConstraints(leaf.Constraints, prop.Constraints)
+			}
+			mb.Fields = append(mb.Fields, field)
+		case multipartFieldKindUnknown:
+			// Skip — emit no validation for unknown leaf types.
+		}
+	}
+
+	return mb
+}
+
+type multipartFieldKind int
+
+const (
+	multipartFieldKindUnknown multipartFieldKind = iota
+	multipartFieldKindScalar
+	multipartFieldKindFile
+	multipartFieldKindFileArray
+	multipartFieldKindFileStream
+)
+
+// classifyMultipartFieldKind reports how a property of a multipart body should
+// be parsed. Unwraps optional/nullable union wrappers.
+func classifyMultipartFieldKind(m *metadata.Metadata) multipartFieldKind {
+	if m == nil {
+		return multipartFieldKindUnknown
+	}
+	leaf := unwrapOptional(m)
+	if leaf == nil {
+		return multipartFieldKindUnknown
+	}
+	switch leaf.Kind {
+	case metadata.KindNative:
+		switch leaf.NativeType {
+		case "File", "Blob":
+			return multipartFieldKindFile
+		case "FileStream":
+			return multipartFieldKindFileStream
+		}
+	case metadata.KindArray:
+		if leaf.ElementType != nil {
+			el := unwrapOptional(leaf.ElementType)
+			if el != nil && el.Kind == metadata.KindNative && (el.NativeType == "File" || el.NativeType == "Blob") {
+				return multipartFieldKindFileArray
+			}
+		}
+	case metadata.KindAtomic, metadata.KindLiteral:
+		return multipartFieldKindScalar
+	}
+	return multipartFieldKindUnknown
+}
+
+func scalarLeaf(m *metadata.Metadata) *metadata.Metadata {
+	if m == nil {
+		return nil
+	}
+	leaf := unwrapOptional(m)
+	if leaf == nil {
+		return nil
+	}
+	if leaf.Kind == metadata.KindAtomic || leaf.Kind == metadata.KindLiteral {
+		return leaf
+	}
+	return nil
+}
+
+// unwrapOptional strips union members of `undefined`/`null` to find the
+// concrete leaf, e.g. `File | undefined` → `File`.
+func unwrapOptional(m *metadata.Metadata) *metadata.Metadata {
+	if m == nil {
+		return nil
+	}
+	if m.Kind != metadata.KindUnion {
+		return m
+	}
+	for i := range m.UnionMembers {
+		um := &m.UnionMembers[i]
+		if um.Kind == metadata.KindAtomic && (um.Atomic == "undefined" || um.Atomic == "null") {
+			continue
+		}
+		if um.Kind == metadata.KindLiteral && um.LiteralValue == nil {
+			continue
+		}
+		return um
+	}
+	return m
+}
+
+// resolveObjectMetadata follows a KindRef to its target in the registry. Returns
+// the dereferenced object's metadata, or nil for non-object types.
+func resolveObjectMetadata(m *metadata.Metadata, registry *metadata.TypeRegistry) *metadata.Metadata {
+	if m == nil {
+		return nil
+	}
+	if m.Kind == metadata.KindObject {
+		return m
+	}
+	if m.Kind == metadata.KindRef && registry != nil {
+		if resolved := registry.Types[m.Ref]; resolved != nil && resolved.Kind == metadata.KindObject {
+			return resolved
+		}
+	}
+	return nil
+}
+
+// mergeFileConstraints overlays per-property constraints onto the leaf-type's
+// constraints. The leaf's branded constraints take precedence, but the property
+// may add JSDoc constraints; we union them.
+func mergeFileConstraints(leaf, prop *metadata.Constraints) *metadata.Constraints {
+	if leaf == nil && prop == nil {
+		return nil
+	}
+	out := &metadata.Constraints{}
+	if prop != nil {
+		*out = *prop
+	}
+	if leaf != nil {
+		if leaf.MaxSize != nil {
+			out.MaxSize = leaf.MaxSize
+		}
+		if leaf.MinSize != nil {
+			out.MinSize = leaf.MinSize
+		}
+		if len(leaf.MimeTypes) > 0 {
+			out.MimeTypes = leaf.MimeTypes
+		}
+		if leaf.MinLength != nil {
+			out.MinLength = leaf.MinLength
+		}
+		if leaf.MaxLength != nil {
+			out.MaxLength = leaf.MaxLength
+		}
+		if leaf.Pattern != nil {
+			out.Pattern = leaf.Pattern
+		}
+		if leaf.Minimum != nil {
+			out.Minimum = leaf.Minimum
+		}
+		if leaf.Maximum != nil {
+			out.Maximum = leaf.Maximum
+		}
+	}
+	return out
+}
+
+func paramCategoryToKind(category string) (codegen.MintParamKind, bool) {
+	switch category {
+	case string(analyzer.CategoryBody):
+		return codegen.MintParamBody, true
+	case string(analyzer.CategoryQuery):
+		return codegen.MintParamQuery, true
+	case string(analyzer.CategoryParam):
+		return codegen.MintParamPathParam, true
+	case string(analyzer.CategoryHeaders):
+		return codegen.MintParamHeader, true
+	}
+	return 0, false
+}
+
+// companionImportForType returns the relative module specifier to the named
+// type's companion file (.tsgonest.js), as seen from the Mint register
+// companion file. Empty if the type has no recorded source file (and thus no
+// companion will be emitted for it).
+func companionImportForType(typeName string, registry *metadata.TypeRegistry, registerCompanionPath string) string {
+	outputBase := registry.SourceFile(typeName)
+	if outputBase == "" {
+		return ""
+	}
+	dtoCompanion := codegen.CompanionPathForOutput(outputBase, typeName)
+	return codegen.RelativeCompanionImport(registerCompanionPath, dtoCompanion)
+}
+
+// projectReturn fills the ReturnX fields on a MintRouteInfo from the analyzer's
+// return-type metadata.
+func projectReturn(route *codegen.MintRouteInfo, ret *metadata.Metadata, registry *metadata.TypeRegistry, registerCompanionPath string) {
+	if ret == nil {
+		return
+	}
+	switch ret.Kind {
+	case metadata.KindVoid:
+		route.ReturnVoid = true
+	case metadata.KindAtomic:
+		route.ReturnAtomic = ret.Atomic
+	case metadata.KindArray:
+		if ret.ElementType == nil {
+			return
+		}
+		// Pull the element's named type.
+		elemName := elementNamedType(ret.ElementType)
+		if elemName == "" {
+			return
+		}
+		if companionImport := companionImportForType(elemName, registry, registerCompanionPath); companionImport != "" {
+			route.ReturnTypeName = elemName
+			route.ReturnCompanionImport = companionImport
+			route.ReturnIsArray = true
+		}
+	case metadata.KindObject, metadata.KindRef, metadata.KindUnion, metadata.KindIntersection:
+		name := namedReturnType(ret)
+		if name == "" {
+			return
+		}
+		if companionImport := companionImportForType(name, registry, registerCompanionPath); companionImport != "" {
+			route.ReturnTypeName = name
+			route.ReturnCompanionImport = companionImport
+		}
+	}
+}
+
+func namedReturnType(m *metadata.Metadata) string {
+	if m == nil {
+		return ""
+	}
+	if m.Name != "" {
+		return m.Name
+	}
+	if m.Ref != "" {
+		return m.Ref
+	}
+	return ""
+}
+
+func elementNamedType(m *metadata.Metadata) string {
+	if m == nil {
+		return ""
+	}
+	if m.Name != "" {
+		return m.Name
+	}
+	if m.Ref != "" {
+		return m.Ref
+	}
+	return ""
 }

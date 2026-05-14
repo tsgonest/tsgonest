@@ -30,6 +30,11 @@ const (
 	FieldMaxItems    FieldName = "maxItems"
 	FieldUniqueItems FieldName = "uniqueItems"
 
+	// File upload constraints
+	FieldMaxSize   FieldName = "maxSize"
+	FieldMinSize   FieldName = "minSize"
+	FieldMimeTypes FieldName = "mimeTypes"
+
 	// String case validation
 	FieldUppercase FieldName = "uppercase"
 	FieldLowercase FieldName = "lowercase"

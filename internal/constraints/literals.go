@@ -51,3 +51,35 @@ func LiteralBool(m *metadata.Metadata) (bool, bool) {
 	}
 	return false, false
 }
+
+// collectStringLiterals flattens a metadata that may be a single string literal
+// or a union of string literals into a deduplicated slice. Returns nil when no
+// string literals are present. Used by file-upload constraints like MimeTypes<U>
+// where U may be 'image/png' or 'image/png' | 'image/jpeg'.
+func collectStringLiterals(m *metadata.Metadata) []string {
+	if m == nil {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	var out []string
+	add := func(s string) {
+		if _, ok := seen[s]; ok {
+			return
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
+	}
+	switch m.Kind {
+	case metadata.KindLiteral:
+		if s, ok := LiteralString(m); ok {
+			add(s)
+		}
+	case metadata.KindUnion:
+		for i := range m.UnionMembers {
+			if s, ok := LiteralString(&m.UnionMembers[i]); ok {
+				add(s)
+			}
+		}
+	}
+	return out
+}
