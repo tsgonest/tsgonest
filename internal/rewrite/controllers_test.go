@@ -2022,3 +2022,419 @@ func TestRewriteController_BodyThirdParam_Destructured(t *testing.T) {
 		t.Errorf("expected destructuring reconstruction, got:\n%s", result)
 	}
 }
+
+// --- Gap A: named scalar @Param/@Query constraint emit (regex/length/numeric bounds) ---
+//
+// These tests pin the rewriter's responsibility to translate
+// metadata.Constraints captured by the analyzer (see
+// internal/analyzer/nestjs_test.go around line 4135) into runtime checks for
+// named scalar @Param('id') / @Query('q') parameters. Today the rewriter at
+// internal/rewrite/controllers.go only emits coercion when the atomic type is
+// number or boolean and never reads param.Type.Constraints, so a path param
+// declared as `string & Pattern<"...">` produces zero runtime validation.
+//
+// The emit shape mirrors the companion validator codegen in
+// internal/codegen/validate_constraints.go (e.g. `!/PATTERN/.test(id)`,
+// `id.length < N`, `id.length > N`).
+
+func strPtr(s string) *string { return &s }
+
+func intPtr(n int) *int { return &n }
+
+func floatPtr(f float64) *float64 { return &f }
+
+func TestRewriteController_StringParamWithPattern_EmitsRegexCheck(t *testing.T) {
+	input := `class UserController {
+    async findOne(id) {
+        return this.service.findOne(id);
+    }
+}`
+
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name:       "UserController",
+			SourceFile: "/src/user.controller.ts",
+			Routes: []analyzer.Route{
+				{
+					OperationID: "findOne",
+					MethodName:  "findOne",
+					Parameters: []analyzer.RouteParameter{
+						{
+							Category:  "param",
+							Name:      "id",
+							LocalName: "id",
+							Type: metadata.Metadata{
+								Kind:   metadata.KindAtomic,
+								Atomic: "string",
+								Constraints: &metadata.Constraints{
+									Pattern: strPtr("^[0-9a-fA-F]{24}$"),
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	companionMap := map[string]string{}
+
+	result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm", nil)
+
+	if !strings.Contains(result, `/^[0-9a-fA-F]{24}$/.test(id)`) {
+		t.Errorf("expected regex pattern test for @Param('id'), got:\n%s", result)
+	}
+	if !strings.Contains(result, "throw new __e(") {
+		t.Errorf("expected validation-error throw for @Param('id') pattern, got:\n%s", result)
+	}
+	if !strings.Contains(result, "TsgonestValidationError as __e") {
+		t.Errorf("expected helpers import for scalar constraint emit, got:\n%s", result)
+	}
+}
+
+func TestRewriteController_StringQueryWithPattern_EmitsRegexCheck(t *testing.T) {
+	input := `class SearchController {
+    async search(q) {
+        return this.service.search(q);
+    }
+}`
+
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name:       "SearchController",
+			SourceFile: "/src/search.controller.ts",
+			Routes: []analyzer.Route{
+				{
+					OperationID: "search",
+					MethodName:  "search",
+					Parameters: []analyzer.RouteParameter{
+						{
+							Category:  "query",
+							Name:      "q",
+							LocalName: "q",
+							Type: metadata.Metadata{
+								Kind:   metadata.KindAtomic,
+								Atomic: "string",
+								Constraints: &metadata.Constraints{
+									Pattern: strPtr("^[a-z0-9-]+$"),
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	companionMap := map[string]string{}
+
+	result := rewriteController(input, "/dist/search.controller.js", controllers, companionMap, "esm", nil)
+
+	if !strings.Contains(result, `/^[a-z0-9-]+$/.test(q)`) {
+		t.Errorf("expected regex pattern test for @Query('q'), got:\n%s", result)
+	}
+	if !strings.Contains(result, "throw new __e(") {
+		t.Errorf("expected validation-error throw for @Query('q') pattern, got:\n%s", result)
+	}
+}
+
+func TestRewriteController_StringParamWithMaxLength_EmitsLengthCheck(t *testing.T) {
+	input := `class UserController {
+    async findOne(id) {
+        return this.service.findOne(id);
+    }
+}`
+
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name:       "UserController",
+			SourceFile: "/src/user.controller.ts",
+			Routes: []analyzer.Route{
+				{
+					OperationID: "findOne",
+					MethodName:  "findOne",
+					Parameters: []analyzer.RouteParameter{
+						{
+							Category:  "param",
+							Name:      "id",
+							LocalName: "id",
+							Type: metadata.Metadata{
+								Kind:   metadata.KindAtomic,
+								Atomic: "string",
+								Constraints: &metadata.Constraints{
+									MaxLength: intPtr(24),
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	companionMap := map[string]string{}
+
+	result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm", nil)
+
+	if !strings.Contains(result, "id.length > 24") {
+		t.Errorf("expected MaxLength check for @Param('id'), got:\n%s", result)
+	}
+	if !strings.Contains(result, "throw new __e(") {
+		t.Errorf("expected validation-error throw for @Param('id') MaxLength, got:\n%s", result)
+	}
+}
+
+func TestRewriteController_StringParamWithMinLength_EmitsLengthCheck(t *testing.T) {
+	input := `class UserController {
+    async findOne(id) {
+        return this.service.findOne(id);
+    }
+}`
+
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name:       "UserController",
+			SourceFile: "/src/user.controller.ts",
+			Routes: []analyzer.Route{
+				{
+					OperationID: "findOne",
+					MethodName:  "findOne",
+					Parameters: []analyzer.RouteParameter{
+						{
+							Category:  "param",
+							Name:      "id",
+							LocalName: "id",
+							Type: metadata.Metadata{
+								Kind:   metadata.KindAtomic,
+								Atomic: "string",
+								Constraints: &metadata.Constraints{
+									MinLength: intPtr(1),
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	companionMap := map[string]string{}
+
+	result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm", nil)
+
+	if !strings.Contains(result, "id.length < 1") {
+		t.Errorf("expected MinLength check for @Param('id'), got:\n%s", result)
+	}
+	if !strings.Contains(result, "throw new __e(") {
+		t.Errorf("expected validation-error throw for @Param('id') MinLength, got:\n%s", result)
+	}
+}
+
+func TestRewriteController_NumberParamWithMinMax_CoerceAndCheck(t *testing.T) {
+	input := `class UserController {
+    async findByAge(age) {
+        return this.service.findByAge(age);
+    }
+}`
+
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name:       "UserController",
+			SourceFile: "/src/user.controller.ts",
+			Routes: []analyzer.Route{
+				{
+					OperationID: "findByAge",
+					MethodName:  "findByAge",
+					Parameters: []analyzer.RouteParameter{
+						{
+							Category:  "param",
+							Name:      "age",
+							LocalName: "age",
+							Type: metadata.Metadata{
+								Kind:   metadata.KindAtomic,
+								Atomic: "number",
+								Constraints: &metadata.Constraints{
+									Minimum: floatPtr(0),
+									Maximum: floatPtr(120),
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	companionMap := map[string]string{}
+
+	result := rewriteController(input, "/dist/user.controller.js", controllers, companionMap, "esm", nil)
+
+	if !strings.Contains(result, "age = +age") {
+		t.Errorf("expected number coercion to remain for constrained @Param('age'), got:\n%s", result)
+	}
+	if !strings.Contains(result, "Number.isNaN(age)") {
+		t.Errorf("expected NaN guard for constrained @Param('age'), got:\n%s", result)
+	}
+	if !strings.Contains(result, "age < 0") {
+		t.Errorf("expected Minimum check for @Param('age'), got:\n%s", result)
+	}
+	if !strings.Contains(result, "age > 120") {
+		t.Errorf("expected Maximum check for @Param('age'), got:\n%s", result)
+	}
+	if !strings.Contains(result, "throw new __e(") {
+		t.Errorf("expected validation-error throw for numeric bounds, got:\n%s", result)
+	}
+}
+
+// SCOPE-PROBE: pins today's behavior that named scalar @Headers() short-circuits
+// before constraint emit (controllers.go:161 has `param.Category != "headers"`).
+// This test PASSES today and documents the boundary of the Gap A fix: header
+// scalar constraints are future work and intentionally not emitted yet.
+func TestRewriteController_StringHeaderWithPattern_EmitsRegexCheck_OR_RemainsUnvalidatedDocumented(t *testing.T) {
+	input := `class TraceController {
+    async ping(trace) {
+        return this.service.ping(trace);
+    }
+}`
+
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name:       "TraceController",
+			SourceFile: "/src/trace.controller.ts",
+			Routes: []analyzer.Route{
+				{
+					OperationID: "ping",
+					MethodName:  "ping",
+					Parameters: []analyzer.RouteParameter{
+						{
+							Category:  "headers",
+							Name:      "x-trace",
+							LocalName: "trace",
+							Type: metadata.Metadata{
+								Kind:   metadata.KindAtomic,
+								Atomic: "string",
+								Constraints: &metadata.Constraints{
+									Pattern: strPtr("^[0-9a-f]{32}$"),
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	companionMap := map[string]string{}
+
+	result := rewriteController(input, "/dist/trace.controller.js", controllers, companionMap, "esm", nil)
+
+	// Future work: when Gap A is extended to headers, this test should be flipped
+	// to assert the regex emit (mirroring TestRewriteController_StringParamWithPattern_EmitsRegexCheck).
+	// Until then, named scalar @Headers() should remain unchanged.
+	if result != input {
+		t.Errorf("named scalar @Headers() should remain unchanged today, got:\n%s", result)
+	}
+}
+
+// TestRewriteController_StringParamWithPatternContainingQuote_EscapesSafely pins
+// the Item-1 escape fix: a @pattern value containing a `"` must not break the
+// emitted JS by terminating the `expected: "pattern …"` string literal early.
+// Without jsStringEscape on the embedded pattern, the emit would be invalid JS.
+func TestRewriteController_StringParamWithPatternContainingQuote_EscapesSafely(t *testing.T) {
+	input := `class UserController {
+    async findByLabel(label) {
+        return this.service.findByLabel(label);
+    }
+}`
+
+	pattern := `^a"b$` // contains a literal double-quote — the danger case
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name:       "UserController",
+			SourceFile: "/src/user.controller.ts",
+			Routes: []analyzer.Route{
+				{
+					OperationID: "findByLabel",
+					MethodName:  "findByLabel",
+					Parameters: []analyzer.RouteParameter{
+						{
+							Category:  "param",
+							Name:      "label",
+							LocalName: "label",
+							Type: metadata.Metadata{
+								Kind:        metadata.KindAtomic,
+								Atomic:      "string",
+								Constraints: &metadata.Constraints{Pattern: strPtr(pattern)},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	result := rewriteController(input, "/dist/user.controller.js", controllers, map[string]string{}, "esm", nil)
+
+	// The escaped pattern in the error message must read `^a\"b$`, not `^a"b$`.
+	// If unescaped, the JS string literal terminates after `^a` and the rest is garbage.
+	if !strings.Contains(result, `expected:"pattern ^a\"b$"`) {
+		t.Errorf("expected escaped pattern in error message (`expected:\"pattern ^a\\\"b$\"`), got:\n%s", result)
+	}
+	// The regex literal itself is fine with an unescaped `"` (regex literals allow quotes).
+	if !strings.Contains(result, `/^a"b$/.test(label)`) {
+		t.Errorf("expected regex literal /^a\"b$/ in test call, got:\n%s", result)
+	}
+	// Sanity: validation-error throw is still present.
+	if !strings.Contains(result, "throw new __e(") {
+		t.Errorf("expected throw new __e( in emit, got:\n%s", result)
+	}
+}
+
+// TestRewriteController_StringParamWithPatternContainingBackslash_EscapesSafely
+// covers the related escaping case where a pattern ends with a backslash. An
+// unescaped trailing `\` would cause the emitted JS string literal to continue
+// past its closing quote, breaking the surrounding object literal.
+func TestRewriteController_StringParamWithPatternContainingBackslash_EscapesSafely(t *testing.T) {
+	input := `class UserController {
+    async find(id) {
+        return this.service.find(id);
+    }
+}`
+
+	pattern := `\d+` // contains backslash + a control-char-like sequence
+	controllers := []analyzer.ControllerInfo{
+		{
+			Name:       "UserController",
+			SourceFile: "/src/user.controller.ts",
+			Routes: []analyzer.Route{
+				{
+					OperationID: "find",
+					MethodName:  "find",
+					Parameters: []analyzer.RouteParameter{
+						{
+							Category:  "param",
+							Name:      "id",
+							LocalName: "id",
+							Type: metadata.Metadata{
+								Kind:        metadata.KindAtomic,
+								Atomic:      "string",
+								Constraints: &metadata.Constraints{Pattern: strPtr(pattern)},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	result := rewriteController(input, "/dist/user.controller.js", controllers, map[string]string{}, "esm", nil)
+
+	// In the JS string literal, `\` must be doubled: `pattern \\d+`.
+	if !strings.Contains(result, `expected:"pattern \\d+"`) {
+		t.Errorf("expected doubled backslash in error message (`expected:\"pattern \\\\d+\"`), got:\n%s", result)
+	}
+	// Regex literal preserves the single backslash: /\d+/
+	if !strings.Contains(result, `/\d+/.test(id)`) {
+		t.Errorf("expected regex literal /\\d+/ in test call, got:\n%s", result)
+	}
+}
