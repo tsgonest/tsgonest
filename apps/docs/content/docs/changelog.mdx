@@ -5,6 +5,69 @@ description: All notable changes to tsgonest.
 
 
 ### Bug Fixes
+- Wrap npx via cmd /C on Windows and use forward-slash glob *(sdkgen)*  ([`f556d5c`](https://github.com/tsgonest/tsgonest/commit/f556d5c9a79823b86d7aebe8939952a87c00db87))
+- Normalize backslashes in cross-companion import paths ([#140](https://github.com/tsgonest/tsgonest/issues/140)) *(codegen)*  ([`033069a`](https://github.com/tsgonest/tsgonest/commit/033069a2604b81ea4cfd331fe14847e0d7347a54))
+- Compute relative import for Validate<typeof fn> validator path *(codegen)*  ([`7cb8f90`](https://github.com/tsgonest/tsgonest/commit/7cb8f9056f2be6351f3972fa23248b686654310c))
+- Windows recipe correctness and launcher binary discovery ([#158](https://github.com/tsgonest/tsgonest/issues/158)) *(justfile,launcher)*  ([`832063f`](https://github.com/tsgonest/tsgonest/commit/832063f62da968a221ac9d41f9d5d9432b903506))
+- Treat transient stat errors as skip-this-poll, not delete *(configpoller)*  ([`e257223`](https://github.com/tsgonest/tsgonest/commit/e257223e4eb8cd4d6cbcb98be48e9b4648c1744b))
+- Support ** glob patterns in --assets via doublestar *(build)*  ([`51c00d4`](https://github.com/tsgonest/tsgonest/commit/51c00d4a88085f9c2592657a4cc645729a7588e7))
+- Refuse to clean Windows drive roots and other dangerous paths *(build)*  ([`be45860`](https://github.com/tsgonest/tsgonest/commit/be45860f878b30148017dcbc43c23423b5fa2aff))
+- Retry rename on transient failure and invalidate stale cache *(buildcache)*  ([`59fc483`](https://github.com/tsgonest/tsgonest/commit/59fc48390b4ccda00f0c7d7ce42dfe20725bbc7c))
+- Suppress deleteOutDir on watch rebuilds to fix node-startup race *(dev)*  ([`8833abf`](https://github.com/tsgonest/tsgonest/commit/8833abfcfafcb8eec608f35faf9737a680707c1e))
+- Normalize separators in shouldSkipPath for cross-shell compat *(watcher)*  ([`7a395c6`](https://github.com/tsgonest/tsgonest/commit/7a395c62e04396598dab15a81cd1dd511215db16))
+- Resolve symlinks/junctions at watch root *(watcher)*  ([`2cf7b69`](https://github.com/tsgonest/tsgonest/commit/2cf7b696f5e24f461af74ac5496c79d672d6e0ce))
+- Detect watched-root rename/remove and surface error *(watcher)*  ([`87edd7e`](https://github.com/tsgonest/tsgonest/commit/87edd7e76f553c1dcabe3f65a8831d5678348bb8))
+- Synthesize Create events for files in atomically-populated subdirs *(watcher)*  ([`8298e1c`](https://github.com/tsgonest/tsgonest/commit/8298e1c6cdc711709cf8cac4652e95e79682ac8f))
+- Track Running() via atomic.Bool to eliminate data race *(runner)*  ([`bd52e8b`](https://github.com/tsgonest/tsgonest/commit/bd52e8baa9d836bef725d42ddf1353f7a993faa7))
+- Reap suspended child and clear r.cmd on Start error paths *(runner)*  ([`df91796`](https://github.com/tsgonest/tsgonest/commit/df917966a47f183586ec0ee28449fbeb19d4a524))
+- Skip 5s wait when CTRL_BREAK signal can't be delivered *(runner)*  ([`e26f2d1`](https://github.com/tsgonest/tsgonest/commit/e26f2d146b12e905547b727e90ce8d10e696f7ca))
+- Join rebuild goroutine and gate Restart on shutdown *(dev)*  ([`7324aad`](https://github.com/tsgonest/tsgonest/commit/7324aadfdf543b9c97c144aaed5a865298fe2443))
+- Pick shell by GOOS for --exec to support Windows *(dev)*  ([`c976767`](https://github.com/tsgonest/tsgonest/commit/c97676700271e3abc0697c42a2f7cf51c531588c))
+- Normalize entryPoint separators before dist/ prefix check *(dev)*  ([`481bee6`](https://github.com/tsgonest/tsgonest/commit/481bee60772f2d884a70afcb09d108a506757005))
+- Allocate r.done after error-prone setup to prevent Wait() hang *(runner)*  ([`a05a7f1`](https://github.com/tsgonest/tsgonest/commit/a05a7f175a5ff12daee526eeae577cfafede6f6d))
+- Try CREATE_BREAKAWAY_FROM_JOB and fall back when denied *(runner)*  ([`7cdb2ba`](https://github.com/tsgonest/tsgonest/commit/7cdb2baeb4e69c29c0d541539ac19700a78ab3ef))
+- Surface ResumeThread failures in resumeProcessThreads *(runner)*  ([`e907eca`](https://github.com/tsgonest/tsgonest/commit/e907eca4b498fe30a6a682e714bb7dafae53cabb))
+- Hoist stdin scanner above runDevLoop to prevent goroutine leak *(dev)*  ([`26fa704`](https://github.com/tsgonest/tsgonest/commit/26fa704ce7bc6d0cd8283feeb7dd624926e98175))
+- Case-insensitive extension and skip-dir comparisons (#145 #147 #149) *(watcher,build)*  ([`d866b75`](https://github.com/tsgonest/tsgonest/commit/d866b75e8b4f573041c71ace12dce73bb1711594))
+- Release r.mu during 5s graceful-stop wait *(runner)*  ([`af126c8`](https://github.com/tsgonest/tsgonest/commit/af126c8345e12b66b775a42ad09f8d6b0d353c81))
+- Recover from fsnotify overflow via snapshot diff and polling fallback *(watcher)*  ([`98d9437`](https://github.com/tsgonest/tsgonest/commit/98d94379959c1a35d7aa6208dede466b82637b80))
+- Serialize rs restart through change channel to prevent double restart *(dev)*  ([`9c402ba`](https://github.com/tsgonest/tsgonest/commit/9c402bae335bd920923560de049ee9354d7e02d4))
+- Use symlink-resolved paths in roots map *(watcher)*  ([`f4fbbe7`](https://github.com/tsgonest/tsgonest/commit/f4fbbe768618a41e33e8af4586d754b123856642))
+- Poll watch roots on Windows to detect rename/remove *(watcher)*  ([`ff6223c`](https://github.com/tsgonest/tsgonest/commit/ff6223c910e08f63172ec47f8e7159709623be22))
+- Await spawned dev process exit before deleting temp dir *(e2e)*  ([`4ced031`](https://github.com/tsgonest/tsgonest/commit/4ced031552a77bc81daef2d6c12f3b246f0bf955))
+- Quote pnpm filter pattern with double quotes for Windows ([#203](https://github.com/tsgonest/tsgonest/issues/203)) *(scripts)*  ([`0f1b038`](https://github.com/tsgonest/tsgonest/commit/0f1b038875429ccf24db2e62b282650a8855c0c6))
+- Chdir to opts.cwd before globbing source files ([#205](https://github.com/tsgonest/tsgonest/issues/205)) *(migrate)*  ([`78dc094`](https://github.com/tsgonest/tsgonest/commit/78dc094b6851cf53e473cf8c36cebfbe4017c188))
+- Propagate JSDoc on type-alias declarations through imports and arrays *(analyzer)*  ([`9bcc4fc`](https://github.com/tsgonest/tsgonest/commit/9bcc4fcac82b6580254776c9674fd8f6c4231c53))
+- Emit per-element constraint checks in array iteration loops *(codegen)*  ([`113adf2`](https://github.com/tsgonest/tsgonest/commit/113adf26da9aa9245141a44772031050760fb533))
+- Runtime constraint checks for named scalar @Param/@Query params *(rewrite)*  ([`a295ab8`](https://github.com/tsgonest/tsgonest/commit/a295ab81cd1ec001cfbaf5dcbcf9d8cfe2f51da1))
+
+
+### Internal
+- Gofmt ([`a576095`](https://github.com/tsgonest/tsgonest/commit/a576095972ffa4ff64ba72e247afd7ec24351a2f))
+- Run e2e suite on windows-latest + fix harness path ([#151](https://github.com/tsgonest/tsgonest/issues/151)) ([`4411d8a`](https://github.com/tsgonest/tsgonest/commit/4411d8af7a1bf2a1bd31f269f4f68d7d1da1dfbf))
+- Add macos-latest to test matrix ([`d65809f`](https://github.com/tsgonest/tsgonest/commit/d65809fa245e5fddf6e3a958fed4dd6416cf0797))
+- Drop runner-tests job ([`94fdeac`](https://github.com/tsgonest/tsgonest/commit/94fdeac0b19b8ddcb8978a6ee3b0adc6d324c8cc))
+- Drop benchmark workflow ([`b346862`](https://github.com/tsgonest/tsgonest/commit/b3468622b57450c291d0b6da4bc6dc9f453ca745))
+- Depend on CI workflow + add concurrency guard *(release)*  ([`78bee9c`](https://github.com/tsgonest/tsgonest/commit/78bee9c33e4977809d15eaa5d0da6f35c3335195))
+- Call CI as a reusable workflow from release.yml ([`8b78f32`](https://github.com/tsgonest/tsgonest/commit/8b78f32759f0956aee6eff957b512f6f1a9f975f))
+- Run e2e suite on windows-latest + fix harness path ([#151](https://github.com/tsgonest/tsgonest/issues/151)) ([#172](https://github.com/tsgonest/tsgonest/issues/172)) ([`f5f6e75`](https://github.com/tsgonest/tsgonest/commit/f5f6e756542eca408f1b02c7731c97aa95d30e34))
+- Update typescript-go submodule to 092b34f534 ([`9e1b862`](https://github.com/tsgonest/tsgonest/commit/9e1b86219294e7f36e92f5750241653a7b50799c))
+- Add .gitattributes for cross-platform line endings ([`713e3c4`](https://github.com/tsgonest/tsgonest/commit/713e3c4db27fe896dd7eb474822fc726b22405f4))
+- Scope dependabot to consumer-facing packages *(deps)*  ([`df1398f`](https://github.com/tsgonest/tsgonest/commit/df1398fd3d695da296afc9020ca3c52228c65ac1))
+- Use pnpm --dir for e2e to avoid PowerShell && incompatibility *(justfile)*  ([`b3af939`](https://github.com/tsgonest/tsgonest/commit/b3af9391e8ec7de9a69ec74d679784baf9808db1))
+- Use pnpm --dir for e2e to fix Windows CI parser error *(justfile)*  ([`6d9d5aa`](https://github.com/tsgonest/tsgonest/commit/6d9d5aa45bb3c37e17dac79a7956ca880a5c1e5b))
+- Bump SchemaVersion to 2 for new analysis output format *(cache)*  ([`3251e1b`](https://github.com/tsgonest/tsgonest/commit/3251e1bb06b0c3b94002b365fefe5956d28bec37))
+
+
+### Testing
+- Add KNOWN ISSUE doc-tests for the May 2026 dev/watch audit ([#142](https://github.com/tsgonest/tsgonest/issues/142)) ([`f05cb00`](https://github.com/tsgonest/tsgonest/commit/f05cb009dfe2391b760aa2817473222a97271d4f))
+- Normalize path separators for Windows *(buildcache,pathalias)*  ([`8e4a9ed`](https://github.com/tsgonest/tsgonest/commit/8e4a9edb51a5ed4066037b914f0bbcac99828479))
+- Build integration fixture once via globalSetup with stderr capture *(e2e)*  ([`539e520`](https://github.com/tsgonest/tsgonest/commit/539e520162ff0b45c88c46a646853d403ce22a70))
+- Invoke tsc via node tsc.js to avoid Windows .cmd spawn restriction ([#204](https://github.com/tsgonest/tsgonest/issues/204)) *(sdk)*  ([`fb5eb2b`](https://github.com/tsgonest/tsgonest/commit/fb5eb2b403e86764df6eb8ae5f8aaec8e7b706d8))
+
+## [0.14.0] - 2026-04-27
+
+### Bug Fixes
 - Locate chained-assignment classes and surface load-bearing rewrite misses *(rewrite)*  ([`1c77253`](https://github.com/tsgonest/tsgonest/commit/1c77253a19b1c01c02443dae4dacaaa357263418))
 
 
