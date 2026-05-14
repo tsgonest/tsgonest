@@ -1,0 +1,46 @@
+{
+  "name": "@mintkit/core",
+  "version": "0.0.1",
+  "description": "Mint — a tiny Bun-targeted web framework with compile-time decorators",
+  "main": "dist/index.cjs",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.mts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.mts",
+        "default": "./dist/index.mjs"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsdown",
+    "test": "vitest --run"
+  },
+  "keywords": [
+    "mint",
+    "mintkit",
+    "bun",
+    "web",
+    "framework",
+    "tsgonest"
+  ],
+  "devDependencies": {
+    "@types/node": "^25.5.0",
+    "tsdown": "^0.21.7",
+    "typescript": "^5.7.0",
+    "vitest": "^4.1.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tsgonest/tsgonest"
+  }
+}

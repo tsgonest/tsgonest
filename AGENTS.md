@@ -386,3 +386,17 @@ pnpm add -D tsgonest@latest
 26. **deriveTypeArgName resolution order**: typeIdToName cache → array element recursion → symbol name → Type_alias recovery → literal union members (≤4). Each step has specific guards for internal names (`__type`, `__object`, `\xfe` prefix).
 27. **Walker warnings are deduplicated**: `warnedGenericNames` map prevents flooding output. Each generic base name warns at most once. Warnings surface through `build.go` alongside controller analyzer warnings.
 28. **OpenAPI is deliberately flat — no generics**: OpenAPI 3.2 has no concept of generics. Do NOT add `x-` extensions to reconstruct generic types in SDK output. Flat schemas (`PaginatedResponse_UserDto`) work with all tooling (Swagger UI, Redocly, third-party generators). This is an intentional design decision.
+
+## Agent skills
+
+### Issue tracker
+
+Issues and PRDs live as markdown files under `.scratch/<feature-slug>/` in this repo. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Canonical role strings (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`) used as-is. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context layout: one `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.

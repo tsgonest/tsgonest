@@ -53,6 +53,23 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 			report(d)
 		}
 	}
+
+	// Mint controllers register routes through generated registerXxxController
+	// helpers; validation/serialization runs inside that wrapper, not at method
+	// boundaries. The NestJS-shaped injections below (UseInterceptors imports,
+	// JSON.stringify return wraps, @Body asserts) would corrupt the emit.
+	if filtered := controllers[:0:0]; true {
+		for _, c := range controllers {
+			if c.Framework != "mint" {
+				filtered = append(filtered, c)
+			}
+		}
+		controllers = filtered
+		if len(controllers) == 0 {
+			return text
+		}
+	}
+
 	// ── Phase 1: Collect transform specifications (unchanged metadata logic) ──
 
 	type bodyValidation struct {

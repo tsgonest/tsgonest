@@ -5,3 +5,4 @@ packages:
   - 'benchmarks'
   - 'benchmarks/http'
   - 'testdata/integration'
+  - 'testdata/mint-hello'

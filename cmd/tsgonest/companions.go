@@ -371,3 +371,57 @@ func generateCompanionsInMemory(program *shimcompiler.Program, cfg *config.Confi
 
 	return allCompanions, typesByFile, nil
 }
+
+// generateMintRegisterCompanions emits a `register{Controller}(app)` companion
+// file for every controller whose @Controller decorator came from @mintkit/*.
+// The companion sits next to the controller's emitted JS and is generated
+// regardless of whether the controller has any DTO types — Phase 1 hello-world
+// controllers have no @Body/@Query/@Param and thus produce no type companions.
+func generateMintRegisterCompanions(controllers []analyzer.ControllerInfo, sourceToOutput map[string]string, moduleFormat string) []codegen.CompanionFile {
+	var out []codegen.CompanionFile
+	isCJS := moduleFormat == "cjs"
+
+	for _, ctrl := range controllers {
+		if ctrl.Framework != "mint" {
+			continue
+		}
+		outputBase, ok := sourceToOutput[ctrl.SourceFile]
+		if !ok {
+			continue
+		}
+
+		// Strip .ts to get the controller's emitted-JS base path (e.g. dist/hello.controller).
+		controllerBase := strings.TrimSuffix(outputBase, ".ts")
+		importPath := "./" + filepath.Base(controllerBase)
+
+		routes := make([]codegen.MintRouteInfo, 0, len(ctrl.Routes))
+		for _, r := range ctrl.Routes {
+			routes = append(routes, codegen.MintRouteInfo{
+				Method:     r.Method,
+				Path:       r.Path,
+				MethodName: r.MethodName,
+			})
+		}
+
+		input := codegen.MintRegisterInput{
+			ControllerName:       ctrl.Name,
+			ControllerImportPath: importPath,
+			Routes:               routes,
+		}
+
+		jsPath := codegen.MintRegisterPath(outputBase, ctrl.Name)
+		jsContent := codegen.GenerateMintRegister(input)
+		dtsPath := strings.TrimSuffix(jsPath, ".js") + ".d.ts"
+		dtsContent := codegen.GenerateMintRegisterTypes(ctrl.Name)
+
+		if isCJS {
+			jsContent = codegen.ConvertToCommonJS(jsContent)
+			dtsContent = codegen.ConvertDtsToCommonJS(dtsContent)
+		}
+
+		out = append(out, codegen.CompanionFile{Path: jsPath, Content: jsContent})
+		out = append(out, codegen.CompanionFile{Path: dtsPath, Content: dtsContent})
+	}
+
+	return out
+}

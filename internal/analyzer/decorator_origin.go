@@ -180,3 +180,10 @@ func IsTsgonestModule(moduleSpecifier string) bool {
 		moduleSpecifier == "@tsgonest/runtime" ||
 		len(moduleSpecifier) > 10 && moduleSpecifier[:10] == "@tsgonest/"
 }
+
+// IsMintkitModule checks if a module specifier refers to a Mint framework package.
+// Matches "@mintkit/core" exactly (Phase 1 scope) and any "@mintkit/*" scoped package.
+func IsMintkitModule(moduleSpecifier string) bool {
+	return moduleSpecifier == "@mintkit/core" ||
+		(len(moduleSpecifier) > 9 && moduleSpecifier[:9] == "@mintkit/")
+}

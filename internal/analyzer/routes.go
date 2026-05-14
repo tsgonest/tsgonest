@@ -32,6 +32,11 @@ type ControllerInfo struct {
 	// IgnoreOpenAPI is true when the controller should be excluded from OpenAPI generation.
 	// Set by @tsgonest-ignore openapi, @hidden, or @exclude JSDoc on the class.
 	IgnoreOpenAPI bool
+	// Framework identifies which framework's @Controller decorator was used.
+	// Values: "" (default/NestJS), "mint" (@mintkit/core). The analyzer recognizes
+	// @Controller by name; this field is populated by resolving the decorator's
+	// import origin when present.
+	Framework string
 }
 
 // Route represents a single HTTP route extracted from a controller method.
@@ -305,6 +310,7 @@ func (a *ControllerAnalyzer) analyzeClass(classNode *ast.Node, sourceFile string
 	var controllerPaths []string
 	controllerVersion := ""
 	isController := false
+	framework := ""
 	for _, dec := range classNode.Decorators() {
 		info := ParseDecorator(dec)
 		if info == nil {
@@ -327,6 +333,9 @@ func (a *ControllerAnalyzer) analyzeClass(classNode *ast.Node, sourceFile string
 				controllerPaths = pathArgs
 			}
 			controllerVersion = extractControllerVersion(dec)
+			if origin := ResolveDecoratorOrigin(dec, a.checker); origin != nil && IsMintkitModule(origin.ModuleSpecifier) {
+				framework = "mint"
+			}
 			break
 		}
 	}
@@ -430,6 +439,7 @@ func (a *ControllerAnalyzer) analyzeClass(classNode *ast.Node, sourceFile string
 			Routes:        routes,
 			SourceFile:    sourceFile,
 			IgnoreOpenAPI: classInfo.IgnoreOpenAPI,
+			Framework:     framework,
 		})
 	}
 
