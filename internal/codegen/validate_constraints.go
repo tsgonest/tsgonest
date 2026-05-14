@@ -318,6 +318,79 @@ func generateConstraintChecksInner(e *Emitter, accessor string, path string, pro
 	}
 }
 
+// generateValidateConstraintChecksDynamicPath emits validate-side per-element
+// constraint checks where the error path is a JS expression (e.g.
+// `"input" + ".userIds" + "[" + i1 + "]"`) rather than a static string.
+//
+// Mirrors generateAssertConstraintChecks but pushes into the shared `errors`
+// array instead of throwing. Used by the KindArray loop to enforce constraints
+// declared on the element type (alias-site JSDoc or branded tags).
+//
+// Type guards (`typeof X === "string"` / `=== "number"`) are kept inside the
+// conditions so the emitted check is correct even though the element type was
+// already verified earlier in the loop — a tiny double-guard for safety.
+// Coerce/Transforms are intentionally skipped: those run before the type check,
+// not per element.
+func generateValidateConstraintChecksDynamicPath(e *Emitter, accessor string, pathExpr string, c *metadata.Constraints) {
+	if c == nil {
+		return
+	}
+
+	errMsg := func(constraintKey string, defaultMsg string) string {
+		if c.Errors != nil {
+			if msg, ok := c.Errors[constraintKey]; ok {
+				return jsStringEscape(msg)
+			}
+		}
+		if c.ErrorMessage != nil {
+			return jsStringEscape(*c.ErrorMessage)
+		}
+		return defaultMsg
+	}
+
+	if c.Minimum != nil {
+		e.Block("if (typeof %s === \"number\" && %s < %v)", accessor, accessor, *c.Minimum)
+		e.Line("errors.push({ path: %s, expected: \"%s\", received: \"\" + %s });", pathExpr, errMsg("minimum", fmt.Sprintf("minimum %v", *c.Minimum)), accessor)
+		e.EndBlock()
+	}
+	if c.Maximum != nil {
+		e.Block("if (typeof %s === \"number\" && %s > %v)", accessor, accessor, *c.Maximum)
+		e.Line("errors.push({ path: %s, expected: \"%s\", received: \"\" + %s });", pathExpr, errMsg("maximum", fmt.Sprintf("maximum %v", *c.Maximum)), accessor)
+		e.EndBlock()
+	}
+	if c.MinLength != nil {
+		e.Block("if (typeof %s === \"string\" && %s.length < %d)", accessor, accessor, *c.MinLength)
+		e.Line("errors.push({ path: %s, expected: \"%s\", received: \"length \" + %s.length });", pathExpr, errMsg("minLength", fmt.Sprintf("minLength %d", *c.MinLength)), accessor)
+		e.EndBlock()
+	}
+	if c.MaxLength != nil {
+		e.Block("if (typeof %s === \"string\" && %s.length > %d)", accessor, accessor, *c.MaxLength)
+		e.Line("errors.push({ path: %s, expected: \"%s\", received: \"length \" + %s.length });", pathExpr, errMsg("maxLength", fmt.Sprintf("maxLength %d", *c.MaxLength)), accessor)
+		e.EndBlock()
+	}
+	if c.Pattern != nil {
+		escapedPattern := escapeForRegexLiteral(*c.Pattern)
+		e.Block("if (typeof %s === \"string\" && !/%s/.test(%s))", accessor, escapedPattern, accessor)
+		e.Line("errors.push({ path: %s, expected: \"%s\", received: %s });", pathExpr, errMsg("pattern", fmt.Sprintf("pattern %s", *c.Pattern)), accessor)
+		e.EndBlock()
+	}
+	if c.Format != nil {
+		pattern, ok := formatRegexes[*c.Format]
+		if ok && pattern != "" {
+			flags := formatFlags[*c.Format]
+			var regexLiteral string
+			if flags != "" {
+				regexLiteral = fmt.Sprintf("/%s/%s", pattern, flags)
+			} else {
+				regexLiteral = fmt.Sprintf("/%s/", pattern)
+			}
+			e.Block("if (typeof %s === \"string\" && !%s.test(%s))", accessor, regexLiteral, accessor)
+			e.Line("errors.push({ path: %s, expected: \"%s\", received: %s });", pathExpr, errMsg("format", fmt.Sprintf("format %s", *c.Format)), accessor)
+			e.EndBlock()
+		}
+	}
+}
+
 // generateNumericTypeCheck emits validation for @type int32/uint32/int64/uint64/float/double.
 // Checks perConstraintErrors["type"] first, then customError (global), then default.
 func generateNumericTypeCheck(e *Emitter, accessor string, path string, numType string, customError *string, perConstraintErrors map[string]string, typeVerified bool) {

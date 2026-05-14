@@ -669,6 +669,10 @@ func generateTypeCheckWithPathInner(e *Emitter, accessor string, pathExpr string
 			elemAccessor := fmt.Sprintf("%s[%s]", accessor, idx)
 			elemPathExpr := fmt.Sprintf("%s + \"[\" + %s + \"]\"", pathExpr, idx)
 			generateTypeCheckWithPath(e, elemAccessor, elemPathExpr, meta.ElementType, registry, depth+1, ctx)
+			// Per-element constraint checks from alias-site JSDoc or branded tags.
+			if meta.ElementType.Constraints != nil {
+				generateValidateConstraintChecksDynamicPath(e, elemAccessor, elemPathExpr, meta.ElementType.Constraints)
+			}
 			e.EndBlock()
 		}
 		e.indent--

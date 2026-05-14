@@ -83,11 +83,19 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 		paramName  string
 		atomic     string // "number" or "boolean"
 	}
+	type scalarConstraintCheck struct {
+		className   string
+		methodName  string
+		paramName   string
+		atomic      string // "string" or "number"
+		constraints *metadata.Constraints
+	}
 
 	var validations []bodyValidation
 	var transforms []returnTransform
 	var primitiveTransforms []primitiveReturnTransform
 	var scalarCoercions []scalarCoercion
+	var scalarConstraintChecks []scalarConstraintCheck
 	var sseTransforms []sseTransform
 	neededTypes := make(map[string]bool)
 	neededTransformTypes := make(map[string]bool)
@@ -169,6 +177,25 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 								methodName: route.MethodName,
 								paramName:  paramName,
 								atomic:     param.Type.Atomic,
+							})
+							needsHelpersImport = true
+						}
+						// Constraint-based runtime checks for named scalar string/number
+						// params. Strings get checks even without coercion; numbers get
+						// checks layered on top of coercion (priority 32 > 31) so the
+						// numeric bounds run against the coerced numeric value.
+						if param.Type.Kind == metadata.KindAtomic && param.Type.Constraints != nil &&
+							(param.Type.Atomic == "string" || param.Type.Atomic == "number") {
+							paramName := param.LocalName
+							if paramName == "" {
+								paramName = param.Name
+							}
+							scalarConstraintChecks = append(scalarConstraintChecks, scalarConstraintCheck{
+								className:   ctrl.Name,
+								methodName:  route.MethodName,
+								paramName:   paramName,
+								atomic:      param.Type.Atomic,
+								constraints: param.Type.Constraints,
 							})
 							needsHelpersImport = true
 						}
@@ -256,7 +283,7 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 		}
 	}
 
-	if len(validations) == 0 && len(transforms) == 0 && len(primitiveTransforms) == 0 && len(scalarCoercions) == 0 && len(sseTransforms) == 0 && !needsSseInterceptor {
+	if len(validations) == 0 && len(transforms) == 0 && len(primitiveTransforms) == 0 && len(scalarCoercions) == 0 && len(scalarConstraintChecks) == 0 && len(sseTransforms) == 0 && !needsSseInterceptor {
 		return text
 	}
 
@@ -268,6 +295,9 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 		controllersWithWork[v.className] = true
 	}
 	for _, sc := range scalarCoercions {
+		controllersWithWork[sc.className] = true
+	}
+	for _, sc := range scalarConstraintChecks {
 		controllersWithWork[sc.className] = true
 	}
 	for _, tr := range transforms {
@@ -410,6 +440,27 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 				newText:  coercionCode,
 			})
 		}
+	}
+
+	// (b2) Inline constraint checks for named scalar @Param/@Query params.
+	// Runs at priority 32 — after scalar coercion (31) so number bounds are
+	// evaluated against the coerced numeric value, never the original string.
+	for _, sc := range scalarConstraintChecks {
+		ml := lookupMethod(sc.className, sc.methodName)
+		if ml == nil {
+			warnMethodMissing(sc.className, sc.methodName, "query/param scalar constraint check")
+			continue
+		}
+		checkCode := buildScalarConstraintCheck(sc.paramName, sc.atomic, sc.constraints)
+		if checkCode == "" {
+			continue
+		}
+		edits = append(edits, prioritizedEdit{
+			pos:      ml.BodyOpenBrace + 1,
+			end:      ml.BodyOpenBrace + 1,
+			priority: 32,
+			newText:  checkCode,
+		})
 	}
 
 	// (c) Return expression wrapping for DTO transforms
@@ -1036,4 +1087,140 @@ func injectAtMethodStart(text string, methodName string, line string) string {
 		}
 	}
 	return text
+}
+
+// jsStringEscape makes a Go string safe to embed inside a JS double-quoted
+// string literal. Mirrors internal/codegen/validate_util.go jsStringEscape —
+// kept local to avoid an internal/codegen → internal/rewrite import cycle.
+//
+// Omits U+2028/U+2029 escapes intentionally: those only matter when the emit
+// is embedded inside an HTML <script> tag (ES5 line-terminator parsing). Our
+// emit is consumed by Node, and JSDoc @pattern values don't realistically
+// contain these characters.
+func jsStringEscape(s string) string {
+	var buf strings.Builder
+	buf.Grow(len(s))
+	for _, r := range s {
+		switch r {
+		case '\\':
+			buf.WriteString(`\\`)
+		case '"':
+			buf.WriteString(`\"`)
+		case '\n':
+			buf.WriteString(`\n`)
+		case '\r':
+			buf.WriteString(`\r`)
+		case '\t':
+			buf.WriteString(`\t`)
+		case '\b':
+			buf.WriteString(`\b`)
+		case '\f':
+			buf.WriteString(`\f`)
+		default:
+			if r < 0x20 {
+				buf.WriteString(fmt.Sprintf(`\x%02x`, r))
+			} else {
+				buf.WriteRune(r)
+			}
+		}
+	}
+	return buf.String()
+}
+
+// escapeForRegexLiteral escapes forward slashes for safe embedding in a JS
+// regex literal /…/. Mirrors internal/codegen/validate_util.go escapeForRegexLiteral —
+// kept local to avoid an internal/codegen → internal/rewrite import cycle.
+func escapeForRegexLiteral(pattern string) string {
+	var buf strings.Builder
+	escaped := false
+	for _, r := range pattern {
+		if escaped {
+			buf.WriteRune(r)
+			escaped = false
+			continue
+		}
+		if r == '\\' {
+			buf.WriteRune(r)
+			escaped = true
+			continue
+		}
+		if r == '/' {
+			buf.WriteString(`\/`)
+			continue
+		}
+		buf.WriteRune(r)
+	}
+	return buf.String()
+}
+
+// buildScalarConstraintCheck composes the inline JS for runtime constraint
+// checks on a single named scalar @Param/@Query parameter. All applicable
+// checks for the param are concatenated into one returned string so the caller
+// can emit them as a single prioritized edit. Order: Pattern → MinLength →
+// MaxLength → Minimum → Maximum → MultipleOf. Constraints that don't apply to
+// the atomic are silently skipped (defensive — analyzer shouldn't produce
+// them, but we never want a misapplied check to slip through).
+func buildScalarConstraintCheck(paramName, atomic string, c *metadata.Constraints) string {
+	if c == nil {
+		return ""
+	}
+	var b strings.Builder
+
+	if atomic == "string" {
+		if c.Pattern != nil {
+			raw := *c.Pattern
+			// raw lands in two slots with different escaping rules:
+			//   - regex literal /…/ — `/` must be escaped
+			//   - JS string literal "pattern …" — `"`, `\`, control chars must be escaped
+			// Without jsStringEscape, a pattern containing `"` would terminate the JS
+			// string mid-emit and corrupt the surrounding object literal.
+			b.WriteString(fmt.Sprintf("\n    if (!/%s/.test(%s)) throw new __e([{path:%q,expected:\"pattern %s\",received:%s}]);",
+				escapeForRegexLiteral(raw), paramName, paramName, jsStringEscape(raw), paramName))
+		}
+		if c.MinLength != nil {
+			n := *c.MinLength
+			b.WriteString(fmt.Sprintf("\n    if (%s.length < %d) throw new __e([{path:%q,expected:\"minLength %d\",received:\"length \"+%s.length}]);",
+				paramName, n, paramName, n, paramName))
+		}
+		if c.MaxLength != nil {
+			n := *c.MaxLength
+			b.WriteString(fmt.Sprintf("\n    if (%s.length > %d) throw new __e([{path:%q,expected:\"maxLength %d\",received:\"length \"+%s.length}]);",
+				paramName, n, paramName, n, paramName))
+		}
+	}
+
+	if atomic == "number" {
+		if c.Minimum != nil {
+			v := formatNumber(*c.Minimum)
+			b.WriteString(fmt.Sprintf("\n    if (%s < %s) throw new __e([{path:%q,expected:\"minimum %s\",received:\"\"+%s}]);",
+				paramName, v, paramName, v, paramName))
+		}
+		if c.Maximum != nil {
+			v := formatNumber(*c.Maximum)
+			b.WriteString(fmt.Sprintf("\n    if (%s > %s) throw new __e([{path:%q,expected:\"maximum %s\",received:\"\"+%s}]);",
+				paramName, v, paramName, v, paramName))
+		}
+		if c.MultipleOf != nil {
+			v := *c.MultipleOf
+			// Only emit the simple integer modulo form. Non-integer multipleOf
+			// requires an epsilon comparison (see validate_constraints.go) and
+			// is out of scope for this scalar fast-path — skipped silently.
+			if v == float64(int64(v)) {
+				vs := formatNumber(v)
+				b.WriteString(fmt.Sprintf("\n    if (%s %% %s !== 0) throw new __e([{path:%q,expected:\"multipleOf %s\",received:\"\"+%s}]);",
+					paramName, vs, paramName, vs, paramName))
+			}
+		}
+	}
+
+	return b.String()
+}
+
+// formatNumber renders a float64 as the shortest JS-equivalent literal: integers
+// print without a trailing ".0", non-integers use %g.
+func formatNumber(f float64) string {
+	if f == float64(int64(f)) {
+		return fmt.Sprintf("%d", int64(f))
+	}
+	return fmt.Sprintf("%g", f)
 }

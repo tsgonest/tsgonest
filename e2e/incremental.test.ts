@@ -122,7 +122,7 @@ describe("tsgonest incremental post-processing cache", () => {
 
     expect(existsSync(cacheFile)).toBe(true);
     const cache = JSON.parse(readFileSync(cacheFile, "utf-8"));
-    expect(cache.v).toBe(1);
+    expect(cache.v).toBe(2);
     expect(cache.configHash).toBeTruthy();
     expect(cache.outputs).toBeInstanceOf(Array);
     expect(cache.outputs.length).toBeGreaterThanOrEqual(1);
@@ -218,7 +218,7 @@ describe("tsgonest incremental post-processing cache", () => {
     expect(stderr).toContain("companion");
     const cacheContent = readFileSync(cacheFile, "utf-8");
     const cache = JSON.parse(cacheContent);
-    expect(cache.v).toBe(1);
+    expect(cache.v).toBe(2);
   });
 
   it("--clean flag should force full rebuild", () => {
@@ -254,7 +254,7 @@ describe("tsgonest incremental post-processing cache", () => {
     expect(stderr).toContain("companion");
 
     const newCache = JSON.parse(readFileSync(cacheFile, "utf-8"));
-    expect(newCache.v).toBe(1);
+    expect(newCache.v).toBe(2);
   });
 
   it("successive warm builds should all skip consistently", () => {

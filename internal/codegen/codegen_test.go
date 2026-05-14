@@ -4154,3 +4154,100 @@ func TestExternalRecursive_NoSourceFile_AllHelperCallsResolve(t *testing.T) {
 		}
 	}
 }
+
+// --- GAP-2: per-element constraints on array of aliased atomic types ---
+
+// intPtr is a small file-local helper for building Constraints fields that take
+// *int. Kept here instead of metadata-side so it stays test-only.
+func intPtrLocal(n int) *int { return &n }
+
+func TestValidateArrayElementWithPattern_EmitsRegexInLoop(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+	pattern := "^[0-9a-fA-F]{24}$"
+	elem := metadata.Metadata{
+		Kind:        metadata.KindAtomic,
+		Atomic:      "string",
+		Constraints: &metadata.Constraints{Pattern: &pattern},
+	}
+	meta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Name: "AddParticipantsDTO",
+		Properties: []metadata.Property{
+			{Name: "userIds", Type: metadata.Metadata{Kind: metadata.KindArray, ElementType: &elem, Optional: true}, Required: false},
+		},
+	}
+
+	code := GenerateCompanionSelective("AddParticipantsDTO", meta, reg, true, false)
+
+	// Sanity baseline — array shape is recognised
+	assertContains(t, code, "Array.isArray(input.userIds)")
+	// Real fix — per-element regex inside the array loop
+	assertContains(t, code, "/^[0-9a-fA-F]{24}$/.test(input.userIds[i1])")
+}
+
+func TestValidateArrayElementWithMaxLength_EmitsLengthCheckInLoop(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+	elem := metadata.Metadata{
+		Kind:   metadata.KindAtomic,
+		Atomic: "string",
+		Constraints: &metadata.Constraints{
+			MaxLength: intPtrLocal(24),
+		},
+	}
+	meta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Name: "IdsDTO",
+		Properties: []metadata.Property{
+			{Name: "ids", Type: metadata.Metadata{Kind: metadata.KindArray, ElementType: &elem, Optional: true}, Required: false},
+		},
+	}
+
+	code := GenerateCompanionSelective("IdsDTO", meta, reg, true, false)
+
+	assertContains(t, code, "Array.isArray(input.ids)")
+	assertContains(t, code, "input.ids[i1].length > 24")
+}
+
+func TestAssertArrayElementWithPattern_EmitsRegexInLoop(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+	pattern := "^[0-9a-fA-F]{24}$"
+	elem := metadata.Metadata{
+		Kind:        metadata.KindAtomic,
+		Atomic:      "string",
+		Constraints: &metadata.Constraints{Pattern: &pattern},
+	}
+	meta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Name: "AddParticipantsDTO",
+		Properties: []metadata.Property{
+			{Name: "userIds", Type: metadata.Metadata{Kind: metadata.KindArray, ElementType: &elem, Optional: true}, Required: false},
+		},
+	}
+
+	code := GenerateCompanionSelective("AddParticipantsDTO", meta, reg, true, false)
+
+	// Sanity — assert function is emitted into the same string
+	assertContains(t, code, "function assertAddParticipantsDTO(input)")
+	// Real fix — regex appears at all in the combined validate+assert output
+	assertContains(t, code, "/^[0-9a-fA-F]{24}$/.test(input.userIds[i1])")
+}
+
+func TestValidate_AliasArrayMongoIdEndToEnd_EmitsRegex(t *testing.T) {
+	reg := metadata.NewTypeRegistry()
+	pattern := "^[0-9a-fA-F]{24}$"
+	elemType := metadata.Metadata{
+		Kind:        metadata.KindAtomic,
+		Atomic:      "string",
+		Constraints: &metadata.Constraints{Pattern: &pattern},
+	}
+	meta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Name: "AddParticipantsDTO",
+		Properties: []metadata.Property{
+			{Name: "userIds", Type: metadata.Metadata{Kind: metadata.KindArray, ElementType: &elemType, Optional: true}, Required: false},
+		},
+	}
+
+	code := GenerateCompanionSelective("AddParticipantsDTO", meta, reg, true, false)
+	assertContains(t, code, "/^[0-9a-fA-F]{24}$/.test(input.userIds[i1])")
+}

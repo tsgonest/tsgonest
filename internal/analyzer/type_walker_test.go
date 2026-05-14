@@ -7198,3 +7198,307 @@ type Container = {
 		t.Errorf("expected a type-name-collision warning for LeaderboardResponse, got warnings: %v", warnings)
 	}
 }
+
+// --- JSDoc on type alias declarations must propagate to property constraints ---
+//
+// extractJSDocConstraints is currently invoked only against prop.ValueDeclaration
+// (the property-line declaration), never against a TypeAliasDeclaration. JSDoc
+// tags placed on `type Alias = ...` are silently dropped at every reference site.
+
+func TestWalkJSDocOnTypeAlias_PatternPropagatesToProperty(t *testing.T) {
+	env := setupWalker(t, `
+/** @pattern ^[0-9a-fA-F]{24}$ */
+type MongoId = string;
+
+interface User {
+  id: MongoId;
+}
+`)
+	defer env.release()
+
+	m := env.walkExportedType(t, "User")
+	if m.Kind == metadata.KindRef {
+		reg := env.walkExportedTypeWithRegistryOnly(t, "User")
+		if resolved := reg.Types[m.Ref]; resolved != nil {
+			m = *resolved
+		}
+	}
+
+	idProp := findProperty(t, m.Properties, "id")
+	if idProp.Constraints == nil {
+		t.Fatal("id should have constraints from alias-site JSDoc @pattern")
+	}
+	if idProp.Constraints.Pattern == nil || *idProp.Constraints.Pattern != "^[0-9a-fA-F]{24}$" {
+		t.Errorf("expected pattern '^[0-9a-fA-F]{24}$', got %v", idProp.Constraints.Pattern)
+	}
+}
+
+func TestWalkJSDocOnTypeAlias_FormatPropagatesToProperty(t *testing.T) {
+	env := setupWalker(t, `
+/** @format email */
+type EmailString = string;
+
+interface Account {
+  email: EmailString;
+}
+`)
+	defer env.release()
+
+	m := env.walkExportedType(t, "Account")
+	if m.Kind == metadata.KindRef {
+		reg := env.walkExportedTypeWithRegistryOnly(t, "Account")
+		if resolved := reg.Types[m.Ref]; resolved != nil {
+			m = *resolved
+		}
+	}
+
+	emailProp := findProperty(t, m.Properties, "email")
+	if emailProp.Constraints == nil {
+		t.Fatal("email should have constraints from alias-site JSDoc @format")
+	}
+	if emailProp.Constraints.Format == nil || *emailProp.Constraints.Format != "email" {
+		t.Errorf("expected format 'email', got %v", emailProp.Constraints.Format)
+	}
+}
+
+func TestWalkJSDocOnTypeAlias_MinMaxLengthPropagateToProperty(t *testing.T) {
+	env := setupWalker(t, `
+/**
+ * @minLength 1
+ * @maxLength 32
+ */
+type ShortString = string;
+
+interface Slug {
+  value: ShortString;
+}
+`)
+	defer env.release()
+
+	m := env.walkExportedType(t, "Slug")
+	if m.Kind == metadata.KindRef {
+		reg := env.walkExportedTypeWithRegistryOnly(t, "Slug")
+		if resolved := reg.Types[m.Ref]; resolved != nil {
+			m = *resolved
+		}
+	}
+
+	valueProp := findProperty(t, m.Properties, "value")
+	if valueProp.Constraints == nil {
+		t.Fatal("value should have constraints from alias-site JSDoc @minLength/@maxLength")
+	}
+	if valueProp.Constraints.MinLength == nil || *valueProp.Constraints.MinLength != 1 {
+		t.Errorf("expected minLength 1, got %v", valueProp.Constraints.MinLength)
+	}
+	if valueProp.Constraints.MaxLength == nil || *valueProp.Constraints.MaxLength != 32 {
+		t.Errorf("expected maxLength 32, got %v", valueProp.Constraints.MaxLength)
+	}
+}
+
+func TestWalkJSDocOnTypeAlias_PropertyJSDocOverridesAliasJSDoc(t *testing.T) {
+	env := setupWalker(t, `
+/** @pattern ^[0-9a-fA-F]{24}$ */
+type MongoId = string;
+
+interface Foo {
+  /** @pattern ^[a-z]+$ */
+  id: MongoId;
+}
+`)
+	defer env.release()
+
+	m := env.walkExportedType(t, "Foo")
+	if m.Kind == metadata.KindRef {
+		reg := env.walkExportedTypeWithRegistryOnly(t, "Foo")
+		if resolved := reg.Types[m.Ref]; resolved != nil {
+			m = *resolved
+		}
+	}
+
+	idProp := findProperty(t, m.Properties, "id")
+	if idProp.Constraints == nil {
+		t.Fatal("id should have constraints (property JSDoc at minimum)")
+	}
+	// Property-site JSDoc must win over alias-site JSDoc — same precedence
+	// rule as branded-vs-JSDoc at type_walker.go:1238.
+	if idProp.Constraints.Pattern == nil || *idProp.Constraints.Pattern != "^[a-z]+$" {
+		t.Errorf("expected property JSDoc pattern '^[a-z]+$' to override alias JSDoc, got %v", idProp.Constraints.Pattern)
+	}
+}
+
+func TestWalkJSDocOnTypeAlias_AliasUsedAsParameterType_ConstraintsOnMetadata(t *testing.T) {
+	env := setupWalker(t, `
+/** @pattern ^[0-9a-fA-F]{24}$ */
+type MongoId = string;
+
+declare const __probe: MongoId;
+`)
+	defer env.release()
+
+	// Walk the alias via its referencing AST position — mirrors production
+	// (parameter/return-type walks call WalkTypeNode on the type annotation).
+	m := env.walkAliasType(t, "MongoId")
+
+	if m.Kind != metadata.KindAtomic || m.Atomic != "string" {
+		t.Fatalf("expected atomic string, got kind=%v atomic=%q", m.Kind, m.Atomic)
+	}
+	if m.Constraints == nil {
+		t.Fatal("MongoId metadata should carry constraints from alias-site JSDoc @pattern")
+	}
+	if m.Constraints.Pattern == nil || *m.Constraints.Pattern != "^[0-9a-fA-F]{24}$" {
+		t.Errorf("expected pattern '^[0-9a-fA-F]{24}$', got %v", m.Constraints.Pattern)
+	}
+}
+
+// TestWalkJSDocOnTypeAlias_NoCrossContaminationBetweenPrimitiveAliases pins
+// that primitive aliases sharing the same underlying type (e.g. multiple
+// `type X = string` declarations) do not leak each other's alias-JSDoc.
+// Resolving by AST position via GetSymbolAtLocation gives an unambiguous
+// answer even though Type.Id() is identical across these aliases.
+func TestWalkJSDocOnTypeAlias_NoCrossContaminationBetweenPrimitiveAliases(t *testing.T) {
+	env := setupWalker(t, `
+/** @pattern ^[0-9a-fA-F]{24}$ */
+type MongoId = string;
+
+/** @format email */
+type EmailStr = string;
+
+declare const __mongo: MongoId;
+declare const __email: EmailStr;
+`)
+	defer env.release()
+
+	mongo := env.walkProbeType(t, "__mongo", "MongoId")
+	if mongo.Constraints == nil || mongo.Constraints.Pattern == nil || *mongo.Constraints.Pattern != "^[0-9a-fA-F]{24}$" {
+		t.Errorf("MongoId pattern lost or wrong: %+v", mongo.Constraints)
+	}
+	if mongo.Constraints != nil && mongo.Constraints.Format != nil {
+		t.Errorf("MongoId leaked Format=%v from another alias", *mongo.Constraints.Format)
+	}
+
+	email := env.walkProbeType(t, "__email", "EmailStr")
+	if email.Constraints == nil || email.Constraints.Format == nil || *email.Constraints.Format != "email" {
+		t.Errorf("EmailStr format lost or wrong: %+v", email.Constraints)
+	}
+	if email.Constraints != nil && email.Constraints.Pattern != nil {
+		t.Errorf("EmailStr leaked Pattern=%v from another alias", *email.Constraints.Pattern)
+	}
+}
+
+// TestWalkJSDocOnTypeAlias_CrossFileImport_PropagatesToProperty verifies that
+// alias-site JSDoc constraints survive a cross-file `import { MongoId } from './utils'`.
+// The reporter's main scenario: the alias is declared in one module and consumed
+// in another via an import specifier. GetSymbolAtLocation on the type-reference
+// identifier returns an import-alias symbol whose Declarations are ImportSpecifier
+// nodes — not the original TypeAliasDeclaration. The alias must be resolved through
+// GetAliasedSymbol (see internal/analyzer/decorator_origin.go for the precedent).
+func TestWalkJSDocOnTypeAlias_CrossFileImport_PropagatesToProperty(t *testing.T) {
+	env := setupWalkerMultiFile(t, map[string]string{
+		"utils.ts": `
+/** @pattern ^[0-9a-fA-F]{24}$ */
+export type MongoId = string;
+`,
+		"consumer.ts": `
+import { MongoId } from './utils';
+export interface User { id: MongoId; }
+`,
+	}, "consumer.ts")
+	defer env.release()
+
+	m := env.walkExportedType(t, "User")
+	if m.Kind == metadata.KindRef {
+		reg := env.walkExportedTypeWithRegistryOnly(t, "User")
+		if resolved := reg.Types[m.Ref]; resolved != nil {
+			m = *resolved
+		}
+	}
+
+	idProp := findProperty(t, m.Properties, "id")
+	if idProp.Constraints == nil {
+		t.Fatal("id should have constraints from cross-file alias-site JSDoc @pattern")
+	}
+	if idProp.Constraints.Pattern == nil || *idProp.Constraints.Pattern != "^[0-9a-fA-F]{24}$" {
+		t.Errorf("expected pattern '^[0-9a-fA-F]{24}$', got %v", idProp.Constraints.Pattern)
+	}
+}
+
+// TestWalkJSDocOnTypeAlias_ArrayElement_PropagatesToElement verifies that
+// alias-site JSDoc constraints reach the per-element metadata when the alias
+// is used as an array element type (`items: MongoId[]`). The property's type
+// annotation is a KindArrayType, not a KindTypeReference, so the alias-JSDoc
+// extraction must walk into the array's element type node.
+func TestWalkJSDocOnTypeAlias_ArrayElement_PropagatesToElement(t *testing.T) {
+	env := setupWalker(t, `
+/** @pattern ^[0-9a-fA-F]{24}$ */
+type MongoId = string;
+export interface Bag { items: MongoId[]; }
+`)
+	defer env.release()
+
+	m := env.walkExportedType(t, "Bag")
+	if m.Kind == metadata.KindRef {
+		reg := env.walkExportedTypeWithRegistryOnly(t, "Bag")
+		if resolved := reg.Types[m.Ref]; resolved != nil {
+			m = *resolved
+		}
+	}
+
+	itemsProp := findProperty(t, m.Properties, "items")
+	if itemsProp.Type.Kind != metadata.KindArray {
+		t.Fatalf("expected items.Type.Kind == KindArray, got %q", itemsProp.Type.Kind)
+	}
+	if itemsProp.Type.ElementType == nil {
+		t.Fatal("items.Type.ElementType is nil — array element metadata missing")
+	}
+	if itemsProp.Type.ElementType.Constraints == nil {
+		t.Fatal("items.Type.ElementType.Constraints is nil — alias-site JSDoc did not reach array element")
+	}
+	if itemsProp.Type.ElementType.Constraints.Pattern == nil {
+		t.Fatalf("items.Type.ElementType.Constraints.Pattern is nil, got %+v", itemsProp.Type.ElementType.Constraints)
+	}
+	if *itemsProp.Type.ElementType.Constraints.Pattern != "^[0-9a-fA-F]{24}$" {
+		t.Errorf("expected element pattern '^[0-9a-fA-F]{24}$', got %q", *itemsProp.Type.ElementType.Constraints.Pattern)
+	}
+}
+
+// TestWalkJSDocOnTypeAlias_CrossFileImport_ArrayElement_PropagatesToElement
+// combines the cross-file import gap and the array-element gap. This is the
+// exact AddParticipantsDTO.userIds scenario the reporter hit in production.
+func TestWalkJSDocOnTypeAlias_CrossFileImport_ArrayElement_PropagatesToElement(t *testing.T) {
+	env := setupWalkerMultiFile(t, map[string]string{
+		"utils.ts": `
+/** @pattern ^[0-9a-fA-F]{24}$ */
+export type MongoId = string;
+`,
+		"consumer.ts": `
+import { MongoId } from './utils';
+export interface Bag { items: MongoId[]; }
+`,
+	}, "consumer.ts")
+	defer env.release()
+
+	m := env.walkExportedType(t, "Bag")
+	if m.Kind == metadata.KindRef {
+		reg := env.walkExportedTypeWithRegistryOnly(t, "Bag")
+		if resolved := reg.Types[m.Ref]; resolved != nil {
+			m = *resolved
+		}
+	}
+
+	itemsProp := findProperty(t, m.Properties, "items")
+	if itemsProp.Type.Kind != metadata.KindArray {
+		t.Fatalf("expected items.Type.Kind == KindArray, got %q", itemsProp.Type.Kind)
+	}
+	if itemsProp.Type.ElementType == nil {
+		t.Fatal("items.Type.ElementType is nil — array element metadata missing")
+	}
+	if itemsProp.Type.ElementType.Constraints == nil {
+		t.Fatal("items.Type.ElementType.Constraints is nil — cross-file alias-site JSDoc did not reach array element")
+	}
+	if itemsProp.Type.ElementType.Constraints.Pattern == nil {
+		t.Fatalf("items.Type.ElementType.Constraints.Pattern is nil, got %+v", itemsProp.Type.ElementType.Constraints)
+	}
+	if *itemsProp.Type.ElementType.Constraints.Pattern != "^[0-9a-fA-F]{24}$" {
+		t.Errorf("expected element pattern '^[0-9a-fA-F]{24}$', got %q", *itemsProp.Type.ElementType.Constraints.Pattern)
+	}
+}
