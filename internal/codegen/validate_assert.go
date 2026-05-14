@@ -153,6 +153,17 @@ func generateAssertChecksInner(e *Emitter, accessor string, pathExpr string, met
 			elemAccessor := fmt.Sprintf("%s[%s]", accessor, idx)
 			elemPathExpr := fmt.Sprintf("%s + \"[\" + %s + \"]\"", pathExpr, idx)
 			generateAssertChecks(e, elemAccessor, elemPathExpr, meta.ElementType, registry, depth+1, ctx, isRecursive)
+			// Per-element constraint checks from alias-site JSDoc or branded tags.
+			// generateAssertConstraintChecks already accepts a JS pathExpr, so dynamic
+			// element paths produce correct error.path values like "input.userIds[0]".
+			if meta.ElementType.Constraints != nil {
+				elemProp := metadata.Property{
+					Name:        "",
+					Type:        *meta.ElementType,
+					Constraints: meta.ElementType.Constraints,
+				}
+				generateAssertConstraintChecks(e, elemAccessor, elemPathExpr, &elemProp)
+			}
 			e.EndBlock()
 		}
 		e.indent--
