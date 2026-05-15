@@ -43,6 +43,14 @@ func WatchFiles(paths []string, pollInterval time.Duration, onChange func(path s
 				return
 			case <-ticker.C:
 				for _, path := range paths {
+					// Re-check stop between paths so a stop() that lands
+					// after the tick is honored before the next onChange.
+					select {
+					case <-stopCh:
+						return
+					default:
+					}
+
 					info, err := stat(path)
 
 					oldTime := snapshot[path]
