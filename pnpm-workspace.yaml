@@ -5,3 +5,7 @@ packages:
   - 'benchmarks'
   - 'benchmarks/http'
   - 'testdata/integration'
+allowBuilds:
+  '@nestjs/core': true
+  esbuild: true
+  sharp: true

@@ -2,7 +2,7 @@
   "name": "tsgonest-monorepo",
   "private": true,
   "version": "0.0.1",
-  "description": "tsgonest monorepo — native-speed TypeScript compiler + NestJS runtime tooling",
+  "description": "native-speed TypeScript compiler + NestJS runtime tooling",
   "repository": {
     "type": "git",
     "url": "https://github.com/tsgonest/tsgonest"
@@ -22,5 +22,6 @@
   },
   "devDependencies": {
     "tsdown": "^0.21.7"
-  }
+  },
+  "packageManager": "pnpm@11.2.2"
 }
