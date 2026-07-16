@@ -18,6 +18,9 @@ export interface UploadDto {
   title: string;
   /** @minimum 1 */
   category: number;
+  // Optional boolean field — over multipart it arrives as the string "true"/"false"
+  // and must be coerced to boolean by the generated assert (issue #213).
+  isLegacy?: boolean;
 }
 
 // Multi-file upload DTO

@@ -1,4 +1,4 @@
-import { Body, Controller, Post, UseInterceptors } from "@nestjs/common";
+import { Controller, Post, UseInterceptors } from "@nestjs/common";
 import { FormDataBody, FormDataInterceptor } from "@tsgonest/runtime";
 import multer from "multer";
 import type { UploadDto, GalleryUploadDto } from "./dto";
@@ -13,12 +13,13 @@ export class UploadController {
   @Post("single")
   @UseInterceptors(FormDataInterceptor)
   uploadSingle(
-    @Body() @FormDataBody(() => createMulter()) body: UploadDto
-  ): { fileName: string; title: string; category: number } {
+    @FormDataBody(() => createMulter()) body: UploadDto
+  ): { fileName: string; title: string; category: number; isLegacy: boolean } {
     return {
       fileName: body.file instanceof File ? body.file.name : "unknown",
       title: body.title,
       category: body.category,
+      isLegacy: body.isLegacy ?? false,
     };
   }
 
@@ -26,7 +27,7 @@ export class UploadController {
   @Post("gallery")
   @UseInterceptors(FormDataInterceptor)
   uploadGallery(
-    @Body() @FormDataBody(() => createMulter()) body: GalleryUploadDto
+    @FormDataBody(() => createMulter()) body: GalleryUploadDto
   ): { fileCount: number; albumName: string } {
     return {
       fileCount: Array.isArray(body.images) ? body.images.length : 0,
@@ -38,7 +39,7 @@ export class UploadController {
   @Post("validate")
   @UseInterceptors(FormDataInterceptor)
   uploadValidate(
-    @Body() @FormDataBody(() => createMulter()) body: UploadDto
+    @FormDataBody(() => createMulter()) body: UploadDto
   ): { ok: boolean } {
     return { ok: true };
   }

@@ -30,6 +30,7 @@ function uploadTests(getUrl: () => string) {
     );
     formData.append("title", "My Upload");
     formData.append("category", "42");
+    formData.append("isLegacy", "true");
 
     const res = await fetch(`${getUrl()}/upload/single`, {
       method: "POST",
@@ -42,6 +43,8 @@ function uploadTests(getUrl: () => string) {
     expect(body.title).toBe("My Upload");
     // category should be coerced from string "42" to number 42
     expect(body.category).toBe(42);
+    // isLegacy should be coerced from string "true" to boolean true (issue #213)
+    expect(body.isLegacy).toBe(true);
   });
 
   it("should upload multiple files", async () => {
