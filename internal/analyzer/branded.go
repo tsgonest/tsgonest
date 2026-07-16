@@ -9,25 +9,26 @@ import (
 )
 
 // tryDetectBranded checks if an intersection is a branded type pattern like
-// `string & { __brand: 'Email' }`. Returns the atomic type if detected,
-// otherwise nil. Also extracts validation constraints from phantom properties
-// with the `__tsgonest_` prefix (from @tsgonest/types branded types) and
-// the `__typia_tag_` prefix (for typia migration compatibility).
+// `string & { __brand: 'Email' }` or `string[] & tags.MaxItems<100>`. Returns
+// the base type if detected, otherwise nil. Also extracts validation
+// constraints from phantom properties with the `__tsgonest_` prefix (from
+// @tsgonest/types branded types) and the `__typia_tag_` prefix (for typia
+// migration compatibility).
 // rawTypes are the original shimchecker types corresponding to members, used for
 // function type resolution (Validate<typeof fn>).
 func (w *TypeWalker) tryDetectBranded(rawTypes []*shimchecker.Type, members []metadata.Metadata) *metadata.Metadata {
-	var atomicMember *metadata.Metadata
+	var baseMember *metadata.Metadata
 	var phantomMembers []*metadata.Metadata
 	var rawPhantomTypes []*shimchecker.Type
 	phantomCount := 0
 
 	for i := range members {
 		m := &members[i]
-		if m.Kind == metadata.KindAtomic || m.Kind == metadata.KindLiteral {
-			if atomicMember != nil {
-				return nil // Multiple atomics/literals — not a branded type
+		if isBrandableBase(m.Kind) {
+			if baseMember != nil {
+				return nil // Multiple base candidates — not a branded type
 			}
-			atomicMember = m
+			baseMember = m
 		} else if m.Kind == metadata.KindObject && isPhantomObject(m) {
 			phantomMembers = append(phantomMembers, m)
 			if i < len(rawTypes) {
@@ -35,23 +36,37 @@ func (w *TypeWalker) tryDetectBranded(rawTypes []*shimchecker.Type, members []me
 			}
 			phantomCount++
 		} else {
-			return nil // Non-atomic, non-phantom member — not a branded type
+			return nil // Non-base, non-phantom member — not a branded type
 		}
 	}
 
-	if atomicMember != nil && phantomCount > 0 {
-		// Return the atomic type, stripping the phantom objects
-		result := *atomicMember
+	if baseMember != nil && phantomCount > 0 {
+		// Return the base type, stripping the phantom objects
+		result := *baseMember
 
 		// Extract constraints from __tsgonest_* and __typia_tag_* phantom properties
 		constraints := w.extractBrandedConstraints(rawPhantomTypes, phantomMembers)
 		if constraints != nil {
-			result.Constraints = constraints
+			if result.Constraints != nil {
+				merged := *result.Constraints
+				mergeConstraints(&merged, constraints)
+				result.Constraints = &merged
+			} else {
+				result.Constraints = constraints
+			}
 		}
 
 		return &result
 	}
 	return nil
+}
+
+// isBrandableBase reports whether a metadata kind can carry branded phantom
+// tags: atomics/literals (string formats, numeric bounds) and arrays/tuples
+// (MinItems/MaxItems/UniqueItems).
+func isBrandableBase(kind metadata.Kind) bool {
+	return kind == metadata.KindAtomic || kind == metadata.KindLiteral ||
+		kind == metadata.KindArray || kind == metadata.KindTuple
 }
 
 // extractBrandedConstraints inspects phantom object members for constraint info:
