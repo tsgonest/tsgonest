@@ -49,6 +49,8 @@ func GetFileEmitKind(options *core.CompilerOptions) incremental.FileEmitKind
 //go:linkname GetMTime github.com/microsoft/typescript-go/internal/execute/incremental.GetMTime
 func GetMTime(host compiler.CompilerHost, fileName string) time.Time
 type Host = incremental.Host
+//go:linkname IsBuildInfoFileNameDefaultLibrary github.com/microsoft/typescript-go/internal/execute/incremental.IsBuildInfoFileNameDefaultLibrary
+func IsBuildInfoFileNameDefaultLibrary(fileName string) bool
 //go:linkname NewBuildInfoReader github.com/microsoft/typescript-go/internal/execute/incremental.NewBuildInfoReader
 func NewBuildInfoReader(host compiler.CompilerHost) incremental.BuildInfoReader
 //go:linkname NewProgram github.com/microsoft/typescript-go/internal/execute/incremental.NewProgram

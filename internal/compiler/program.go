@@ -258,7 +258,7 @@ func UpdateProgram(oldProgram *shimcompiler.Program, changedFilePath string, cwd
 	// Convert to tspath.Path — the canonicalized format used by program internals.
 	canonPath := tspath.ToPath(changedFilePath, cwd, oldProgram.UseCaseSensitiveFileNames())
 
-	newProgram, reused := oldProgram.UpdateProgram(canonPath, host, nil)
+	newProgram, _, reused := oldProgram.UpdateProgram(canonPath, host, nil)
 	if newProgram != nil {
 		newProgram.BindSourceFiles()
 	}

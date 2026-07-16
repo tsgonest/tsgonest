@@ -266,7 +266,7 @@ func (m *OrderedMap[K, V]) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
 	if err != nil {
 		return err
 	}
-	if token.Kind() == 'n' { // jsontext.Null.Kind()
+	if token.Kind() == 'n' { // json.Null.Kind()
 		// By convention, to approximate the behavior of Unmarshal itself,
 		// Unmarshalers implement UnmarshalJSON([]byte("null")) as a no-op.
 		// https://pkg.go.dev/encoding/json#Unmarshaler
