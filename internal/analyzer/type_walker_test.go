@@ -2162,6 +2162,59 @@ interface User {
 	assertKind(t, nameProp.Type, metadata.KindAtomic)
 }
 
+func TestWalkBrandedArrayConstraints(t *testing.T) {
+	env := setupWalker(t, `
+type MinItems<N extends number> = { readonly __tsgonest_minItems?: N };
+type MaxItems<N extends number> = { readonly __tsgonest_maxItems?: N };
+interface Request {
+  members: string[] & MinItems<1> & MaxItems<500>;
+}
+`)
+	defer env.release()
+
+	m := env.walkExportedType(t, "Request")
+	if m.Kind == metadata.KindRef {
+		reg := env.walkExportedTypeWithRegistryOnly(t, "Request")
+		if resolved := reg.Types[m.Ref]; resolved != nil {
+			m = *resolved
+		}
+	}
+
+	membersProp := findProperty(t, m.Properties, "members")
+	assertKind(t, membersProp.Type, metadata.KindArray)
+	if membersProp.Constraints == nil {
+		t.Fatal("members should have constraints from branded array tags")
+	}
+	if membersProp.Constraints.MinItems == nil || *membersProp.Constraints.MinItems != 1 {
+		t.Errorf("expected minItems 1, got %v", membersProp.Constraints.MinItems)
+	}
+	if membersProp.Constraints.MaxItems == nil || *membersProp.Constraints.MaxItems != 500 {
+		t.Errorf("expected maxItems 500, got %v", membersProp.Constraints.MaxItems)
+	}
+}
+
+func TestWalkArrayIntersectRealObjectNotBranded(t *testing.T) {
+	env := setupWalker(t, `
+interface Request {
+  weird: string[] & { realProp: number };
+}
+`)
+	defer env.release()
+
+	m := env.walkExportedType(t, "Request")
+	if m.Kind == metadata.KindRef {
+		reg := env.walkExportedTypeWithRegistryOnly(t, "Request")
+		if resolved := reg.Types[m.Ref]; resolved != nil {
+			m = *resolved
+		}
+	}
+
+	weirdProp := findProperty(t, m.Properties, "weird")
+	if weirdProp.Type.Kind == metadata.KindArray {
+		t.Error("array & real object must not collapse to a bare array")
+	}
+}
+
 func TestWalkBrandedNumericConstraints(t *testing.T) {
 	env := setupWalker(t, `
 type Minimum<N extends number> = { readonly __tsgonest_minimum: N };
