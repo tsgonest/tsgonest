@@ -84,6 +84,7 @@ type CompositeSignature = checker.CompositeSignature
 type CompositeSymbolIdentity = checker.CompositeSymbolIdentity
 type CompositeTypeCacheIdentity = checker.CompositeTypeCacheIdentity
 type CompositeTypeMapper = checker.CompositeTypeMapper
+type ComputedNameNodeLinks = checker.ComputedNameNodeLinks
 type ConditionalRoot = checker.ConditionalRoot
 type ConditionalType = checker.ConditionalType
 type ConstrainedType = checker.ConstrainedType
@@ -152,6 +153,33 @@ const ExpandingFlagsTarget = checker.ExpandingFlagsTarget
 type ExportCollision = checker.ExportCollision
 type ExportCollisionTable = checker.ExportCollisionTable
 type ExportTypeLinks = checker.ExportTypeLinks
+type ExternalEmitHelpers = checker.ExternalEmitHelpers
+const ExternalEmitHelpersAddDisposableResourceAndDisposeResources = checker.ExternalEmitHelpersAddDisposableResourceAndDisposeResources
+const ExternalEmitHelpersAsyncDelegator = checker.ExternalEmitHelpersAsyncDelegator
+const ExternalEmitHelpersAsyncDelegatorIncludes = checker.ExternalEmitHelpersAsyncDelegatorIncludes
+const ExternalEmitHelpersAsyncGenerator = checker.ExternalEmitHelpersAsyncGenerator
+const ExternalEmitHelpersAsyncGeneratorIncludes = checker.ExternalEmitHelpersAsyncGeneratorIncludes
+const ExternalEmitHelpersAsyncValues = checker.ExternalEmitHelpersAsyncValues
+const ExternalEmitHelpersAwait = checker.ExternalEmitHelpersAwait
+const ExternalEmitHelpersAwaiter = checker.ExternalEmitHelpersAwaiter
+const ExternalEmitHelpersClassPrivateFieldGet = checker.ExternalEmitHelpersClassPrivateFieldGet
+const ExternalEmitHelpersClassPrivateFieldIn = checker.ExternalEmitHelpersClassPrivateFieldIn
+const ExternalEmitHelpersClassPrivateFieldSet = checker.ExternalEmitHelpersClassPrivateFieldSet
+const ExternalEmitHelpersDecorate = checker.ExternalEmitHelpersDecorate
+const ExternalEmitHelpersESDecorateAndRunInitializers = checker.ExternalEmitHelpersESDecorateAndRunInitializers
+const ExternalEmitHelpersExportStar = checker.ExternalEmitHelpersExportStar
+const ExternalEmitHelpersFirstEmitHelper = checker.ExternalEmitHelpersFirstEmitHelper
+const ExternalEmitHelpersForAwaitOfIncludes = checker.ExternalEmitHelpersForAwaitOfIncludes
+const ExternalEmitHelpersImportDefault = checker.ExternalEmitHelpersImportDefault
+const ExternalEmitHelpersImportStar = checker.ExternalEmitHelpersImportStar
+const ExternalEmitHelpersLastEmitHelper = checker.ExternalEmitHelpersLastEmitHelper
+const ExternalEmitHelpersMakeTemplateObject = checker.ExternalEmitHelpersMakeTemplateObject
+const ExternalEmitHelpersMetadata = checker.ExternalEmitHelpersMetadata
+const ExternalEmitHelpersParam = checker.ExternalEmitHelpersParam
+const ExternalEmitHelpersPropKey = checker.ExternalEmitHelpersPropKey
+const ExternalEmitHelpersRest = checker.ExternalEmitHelpersRest
+const ExternalEmitHelpersRewriteRelativeImportExtension = checker.ExternalEmitHelpersRewriteRelativeImportExtension
+const ExternalEmitHelpersSetFunctionName = checker.ExternalEmitHelpersSetFunctionName
 type FeatureMapEntry = checker.FeatureMapEntry
 type FlowLoopInfo = checker.FlowLoopInfo
 type FlowLoopKey = checker.FlowLoopKey
@@ -162,8 +190,12 @@ func FormatTypeFlags(flags checker.TypeFlags) []string
 type FunctionTypeMapper = checker.FunctionTypeMapper
 //go:linkname GetDeclarationModifierFlagsFromSymbol github.com/microsoft/typescript-go/internal/checker.GetDeclarationModifierFlagsFromSymbol
 func GetDeclarationModifierFlagsFromSymbol(s *ast.Symbol) ast.ModifierFlags
+//go:linkname GetPropertyNameFromType github.com/microsoft/typescript-go/internal/checker.GetPropertyNameFromType
+func GetPropertyNameFromType(t *checker.Type) string
 //go:linkname GetResolvedSignatureForSignatureHelp github.com/microsoft/typescript-go/internal/checker.GetResolvedSignatureForSignatureHelp
 func GetResolvedSignatureForSignatureHelp(node *ast.Node, argumentCount int, c *checker.Checker) (*checker.Signature, []*checker.Signature)
+//go:linkname GetSetAccessorValueParameter github.com/microsoft/typescript-go/internal/checker.GetSetAccessorValueParameter
+func GetSetAccessorValueParameter(accessor *ast.Node) *ast.Node
 //go:linkname GetSingleVariableOfVariableStatement github.com/microsoft/typescript-go/internal/checker.GetSingleVariableOfVariableStatement
 func GetSingleVariableOfVariableStatement(node *ast.Node) *ast.Node
 type Host = checker.Host
@@ -236,6 +268,8 @@ func IsPrivateIdentifierSymbol(symbol *ast.Symbol) bool
 func IsTupleType(t *checker.Type) bool
 //go:linkname IsTypeAny github.com/microsoft/typescript-go/internal/checker.IsTypeAny
 func IsTypeAny(t *checker.Type) bool
+//go:linkname IsTypeUsableAsPropertyName github.com/microsoft/typescript-go/internal/checker.IsTypeUsableAsPropertyName
+func IsTypeUsableAsPropertyName(t *checker.Type) bool
 type IterationTypeKind = checker.IterationTypeKind
 const IterationTypeKindNext = checker.IterationTypeKindNext
 const IterationTypeKindReturn = checker.IterationTypeKindReturn
@@ -454,6 +488,7 @@ const SignatureFlagsIsSignatureCandidateForOverloadFailure = checker.SignatureFl
 const SignatureFlagsIsUntypedSignatureInJSFile = checker.SignatureFlagsIsUntypedSignatureInJSFile
 const SignatureFlagsNone = checker.SignatureFlagsNone
 const SignatureFlagsPropagatingFlags = checker.SignatureFlagsPropagatingFlags
+type SignatureId = checker.SignatureId
 var SignatureKeyBase = checker.SignatureKeyBase
 var SignatureKeyCanonical = checker.SignatureKeyCanonical
 var SignatureKeyErased = checker.SignatureKeyErased

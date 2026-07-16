@@ -218,6 +218,10 @@ type EqualsGreaterThanToken = ast.EqualsGreaterThanToken
 type EqualsToken = ast.EqualsToken
 //go:linkname EscapeAllInternalSymbolNames github.com/microsoft/typescript-go/internal/ast.EscapeAllInternalSymbolNames
 func EscapeAllInternalSymbolNames(name string) string
+//go:linkname EscapeInternalSymbolName github.com/microsoft/typescript-go/internal/ast.EscapeInternalSymbolName
+func EscapeInternalSymbolName(name string) string
+//go:linkname EscapeSymbolName github.com/microsoft/typescript-go/internal/ast.EscapeSymbolName
+func EscapeSymbolName(name string) string
 type ExclamationToken = ast.ExclamationToken
 type ExponentiationOperator = ast.ExponentiationOperator
 type ExportAssignment = ast.ExportAssignment
@@ -257,6 +261,8 @@ const FindAncestorTrue = ast.FindAncestorTrue
 func FindConstructorDeclaration(node *ast.ClassLikeDeclaration) *ast.Node
 //go:linkname FindLastVisibleNode github.com/microsoft/typescript-go/internal/ast.FindLastVisibleNode
 func FindLastVisibleNode(nodes []*ast.Node) *ast.Node
+//go:linkname FindManyAncestors github.com/microsoft/typescript-go/internal/ast.FindManyAncestors
+func FindManyAncestors(node *ast.Node, callbacks ...func(*ast.Node) bool) []*ast.Node
 type FlowFlags = ast.FlowFlags
 const FlowFlagsArrayMutation = ast.FlowFlagsArrayMutation
 const FlowFlagsAssignment = ast.FlowFlagsAssignment
@@ -876,8 +882,8 @@ func IsIdentifier(node *ast.Node) bool
 func IsIdentifierName(node *ast.Node) bool
 //go:linkname IsIfStatement github.com/microsoft/typescript-go/internal/ast.IsIfStatement
 func IsIfStatement(node *ast.Node) bool
-//go:linkname IsImplicitlyExportedJSTypeAlias github.com/microsoft/typescript-go/internal/ast.IsImplicitlyExportedJSTypeAlias
-func IsImplicitlyExportedJSTypeAlias(node *ast.Node) bool
+//go:linkname IsImplicitlyExportedJSDocDeclaration github.com/microsoft/typescript-go/internal/ast.IsImplicitlyExportedJSDocDeclaration
+func IsImplicitlyExportedJSDocDeclaration(node *ast.Node) bool
 //go:linkname IsImportAttribute github.com/microsoft/typescript-go/internal/ast.IsImportAttribute
 func IsImportAttribute(node *ast.Node) bool
 //go:linkname IsImportAttributes github.com/microsoft/typescript-go/internal/ast.IsImportAttributes
@@ -1170,6 +1176,8 @@ func IsModuleWithStringLiteralName(node *ast.Node) bool
 func IsMultiplicativeOperator(kind ast.Kind) bool
 //go:linkname IsMultiplicativeOperatorOrHigher github.com/microsoft/typescript-go/internal/ast.IsMultiplicativeOperatorOrHigher
 func IsMultiplicativeOperatorOrHigher(kind ast.Kind) bool
+//go:linkname IsNamedEvaluationSource github.com/microsoft/typescript-go/internal/ast.IsNamedEvaluationSource
+func IsNamedEvaluationSource(node *ast.Node) bool
 //go:linkname IsNamedExports github.com/microsoft/typescript-go/internal/ast.IsNamedExports
 func IsNamedExports(node *ast.Node) bool
 //go:linkname IsNamedImports github.com/microsoft/typescript-go/internal/ast.IsNamedImports
@@ -1294,6 +1302,8 @@ func IsPropertyName(node *ast.Node) bool
 func IsPropertyNameLiteral(node *ast.Node) bool
 //go:linkname IsPropertySignatureDeclaration github.com/microsoft/typescript-go/internal/ast.IsPropertySignatureDeclaration
 func IsPropertySignatureDeclaration(node *ast.Node) bool
+//go:linkname IsProtoSetter github.com/microsoft/typescript-go/internal/ast.IsProtoSetter
+func IsProtoSetter(node *ast.Node) bool
 //go:linkname IsPrototypeAccess github.com/microsoft/typescript-go/internal/ast.IsPrototypeAccess
 func IsPrototypeAccess(node *ast.Node) bool
 //go:linkname IsPseudoLiteralKind github.com/microsoft/typescript-go/internal/ast.IsPseudoLiteralKind
@@ -1528,6 +1538,7 @@ type JSDocComment = ast.JSDocComment
 type JSDocCommentBase = ast.JSDocCommentBase
 type JSDocDeprecatedTag = ast.JSDocDeprecatedTag
 type JSDocDeprecatedTagNode = ast.JSDocDeprecatedTagNode
+type JSDocFullName = ast.JSDocFullName
 type JSDocImplementsTag = ast.JSDocImplementsTag
 type JSDocImplementsTagNode = ast.JSDocImplementsTagNode
 type JSDocImportTag = ast.JSDocImportTag
@@ -2184,11 +2195,13 @@ const NodeFlagsHasExplicitReturn = ast.NodeFlagsHasExplicitReturn
 const NodeFlagsHasImplicitReturn = ast.NodeFlagsHasImplicitReturn
 const NodeFlagsHasJSDoc = ast.NodeFlagsHasJSDoc
 const NodeFlagsIdentifierHasExtendedUnicodeEscape = ast.NodeFlagsIdentifierHasExtendedUnicodeEscape
+const NodeFlagsIdentifierIsInJSDocNamespace = ast.NodeFlagsIdentifierIsInJSDocNamespace
 const NodeFlagsInWithStatement = ast.NodeFlagsInWithStatement
 const NodeFlagsJSDoc = ast.NodeFlagsJSDoc
 const NodeFlagsJavaScriptFile = ast.NodeFlagsJavaScriptFile
 const NodeFlagsJsonFile = ast.NodeFlagsJsonFile
 const NodeFlagsLet = ast.NodeFlagsLet
+const NodeFlagsNestedNamespace = ast.NodeFlagsNestedNamespace
 const NodeFlagsNone = ast.NodeFlagsNone
 const NodeFlagsOptionalChain = ast.NodeFlagsOptionalChain
 const NodeFlagsPermanentlySetIncrementalFlags = ast.NodeFlagsPermanentlySetIncrementalFlags
@@ -2198,6 +2211,7 @@ const NodeFlagsPossiblyContainsImportMeta = ast.NodeFlagsPossiblyContainsImportM
 const NodeFlagsReachabilityAndEmitFlags = ast.NodeFlagsReachabilityAndEmitFlags
 const NodeFlagsReachabilityCheckFlags = ast.NodeFlagsReachabilityCheckFlags
 const NodeFlagsReparsed = ast.NodeFlagsReparsed
+const NodeFlagsReparserTransformedLiteral = ast.NodeFlagsReparserTransformedLiteral
 const NodeFlagsSynthesized = ast.NodeFlagsSynthesized
 const NodeFlagsThisNodeHasError = ast.NodeFlagsThisNodeHasError
 const NodeFlagsThisNodeOrAnySubNodesHasError = ast.NodeFlagsThisNodeOrAnySubNodesHasError
@@ -2237,8 +2251,12 @@ type NumericLiteral = ast.NumericLiteral
 type NumericLiteralNode = ast.NumericLiteralNode
 type NumericOrStringLikeLiteral = ast.NumericOrStringLikeLiteral
 const OEKAll = ast.OEKAll
+const OEKAllExceptAssertionsOrExpressionsWithTypeArguments = ast.OEKAllExceptAssertionsOrExpressionsWithTypeArguments
 const OEKAssertions = ast.OEKAssertions
+const OEKAssignments = ast.OEKAssignments
+const OEKComma = ast.OEKComma
 const OEKExcludeJSDocTypeAssertion = ast.OEKExcludeJSDocTypeAssertion
+const OEKExpressionTypePassthrough = ast.OEKExpressionTypePassthrough
 const OEKExpressionsWithTypeArguments = ast.OEKExpressionsWithTypeArguments
 const OEKNonNullAssertions = ast.OEKNonNullAssertions
 const OEKParentheses = ast.OEKParentheses
@@ -2402,6 +2420,7 @@ func SkipPartiallyEmittedExpressions(node *ast.Expression) *ast.Expression
 //go:linkname SkipTypeParentheses github.com/microsoft/typescript-go/internal/ast.SkipTypeParentheses
 func SkipTypeParentheses(node *ast.Node) *ast.Node
 type SourceFile = ast.SourceFile
+type SourceFileDataKey[T any] = ast.SourceFileDataKey[T]
 type SourceFileLike = ast.SourceFileLike
 type SourceFileMetaData = ast.SourceFileMetaData
 type SourceFileNode = ast.SourceFileNode
