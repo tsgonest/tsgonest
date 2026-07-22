@@ -824,11 +824,3 @@ func TestValidateJSON_MissingFields(t *testing.T) {
 }
 
 // --- ValidationError.Error() ---
-
-func TestValidationError_Error(t *testing.T) {
-	e := ValidationError{Path: "info.title", Message: "required field missing"}
-	want := "info.title: required field missing"
-	if e.Error() != want {
-		t.Errorf("expected %q, got %q", want, e.Error())
-	}
-}

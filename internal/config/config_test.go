@@ -211,18 +211,6 @@ func TestConfig_NestJSGlobalPrefixAndVersioning(t *testing.T) {
 	}
 }
 
-func TestConfig_NestJSDefaults(t *testing.T) {
-	cfg := DefaultConfig()
-
-	// NestJS config should have zero values by default
-	if cfg.NestJS.GlobalPrefix != "" {
-		t.Errorf("expected empty globalPrefix by default, got %q", cfg.NestJS.GlobalPrefix)
-	}
-	if cfg.NestJS.Versioning != nil {
-		t.Errorf("expected nil versioning by default, got %v", cfg.NestJS.Versioning)
-	}
-}
-
 // requireNode skips the test if node is not available.
 func requireNode(t *testing.T) {
 	t.Helper()

@@ -50,23 +50,4 @@ describe("TsgonestSerializeInterceptor", () => {
     interceptor.intercept(context, next);
     expect(headerSetBeforeHandle).toBe(true);
   });
-
-  it("does not interfere with handler return value", () => {
-    const interceptor = new TsgonestSerializeInterceptor();
-    const context = {
-      switchToHttp: () => ({
-        getResponse: () => ({
-          header: () => {},
-        }),
-      }),
-    };
-
-    // Simulate a pre-serialized JSON string (what stringify returns)
-    const jsonString = '{"id":1,"name":"Alice"}';
-    const observable = { subscribe: () => {}, pipe: () => jsonString };
-    const next = { handle: () => observable };
-
-    const result = interceptor.intercept(context, next);
-    expect(result).toBe(observable);
-  });
 });

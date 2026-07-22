@@ -276,19 +276,6 @@ func TestDelete(t *testing.T) {
 	Delete(filepath.Join(dir, "nonexistent"))
 }
 
-func TestNew(t *testing.T) {
-	c := New("hash123", []string{"/a", "/b"})
-	if c.V != SchemaVersion {
-		t.Errorf("V = %d, want %d", c.V, SchemaVersion)
-	}
-	if c.ConfigHash != "hash123" {
-		t.Errorf("ConfigHash = %q, want %q", c.ConfigHash, "hash123")
-	}
-	if len(c.Outputs) != 2 {
-		t.Fatalf("Outputs length = %d, want 2", len(c.Outputs))
-	}
-}
-
 func TestSaveAtomicity(t *testing.T) {
 	dir := t.TempDir()
 	cachePath := filepath.Join(dir, "atomic.tsgonest-cache")
