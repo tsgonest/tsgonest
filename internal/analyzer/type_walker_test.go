@@ -3273,11 +3273,11 @@ type MixedDto = {
 	}
 }
 
-// --- Type Alias Sub-field Registration via Type_alias ---
+// --- Type Alias Sub-field Registration via Type.Alias() ---
 
 func TestWalkNamedType_SubFieldTypeAliasRegistered(t *testing.T) {
 	// When a type alias (e.g., Address) is used as a sub-field of another
-	// type, the Type_alias mechanism should register it so it becomes a $ref.
+	// type, the Type.Alias() mechanism should register it so it becomes a $ref.
 	env := setupWalker(t, `
 type Address = { street: string; city: string; };
 type User = { name: string; address: Address; };
@@ -3292,7 +3292,7 @@ type User = { name: string; address: Address; };
 		t.Error("top-level type 'User' should be registered")
 	}
 	if !reg.Has("Address") {
-		t.Error("sub-field type alias 'Address' should be registered via Type_alias")
+		t.Error("sub-field type alias 'Address' should be registered via Type.Alias()")
 	}
 
 	// User's address property should be KindRef pointing to Address
@@ -4253,7 +4253,7 @@ type ProductResponse = TypedOmit<Product, 'internalSku' | 'imageMetadata'> & {
 }
 
 func TestComplexType_SubFieldNamedTypeRegistration(t *testing.T) {
-	// Named types used as sub-fields (depth > 1) should be registered via Type_alias
+	// Named types used as sub-fields (depth > 1) should be registered via Type.Alias()
 	env := setupWalker(t, `
 interface Address { street: string; city: string; zip: string; }
 interface ContactInfo { phone: string; fax: string; }
@@ -4296,7 +4296,7 @@ type OrderDetail = {
 }
 
 func TestComplexType_SubFieldNamedUnionRegistration(t *testing.T) {
-	// Named union types used as sub-fields should be registered via Type_alias
+	// Named union types used as sub-fields should be registered via Type.Alias()
 	// and become $ref in the parent object
 	env := setupWalker(t, `
 type OrderStatus = 'pending' | 'shipped' | 'delivered' | 'cancelled';

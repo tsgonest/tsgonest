@@ -9,3 +9,9 @@ allowBuilds:
   '@nestjs/core': true
   esbuild: true
   sharp: true
+overrides:
+  "esbuild@<0.28.1": ">=0.28.1"
+  "vite": "^7.3.5"
+  "sharp@<0.35.0": ">=0.35.0"
+  "postcss@<8.5.10": ">=8.5.10"
+  "uuid@<11.1.1": ">=11.1.1"

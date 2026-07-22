@@ -93,8 +93,10 @@ jobs:
         run: |
           {
             printf -- '---\ntitle: Changelog\ndescription: All notable changes to tsgonest.\n---\n\n'
-            # Strip the top-level "# Changelog" header — Fumadocs renders its own
-            tail -n +6 CHANGELOG.md
+            # Strip the top-level "# Changelog" header — Fumadocs renders its own.
+            # Escape < and { so commit messages with generics or braces
+            # (e.g. Validate<typeof fn>) don't parse as JSX and break the build.
+            tail -n +6 CHANGELOG.md | sed -e 's/</\\</g' -e 's/{/\\{/g'
           } > apps/docs/content/docs/changelog.mdx
 
       - name: Commit changelog to main

@@ -213,7 +213,7 @@ func generateCompanionsInMemory(program *shimcompiler.Program, cfg *config.Confi
 				// Only walk types referenced by controllers or marker calls.
 				// Sub-field type aliases (e.g., Address inside UserDto) are
 				// discovered and registered on-the-fly by the walker's
-				// Type_alias recovery at depth > 1 — no blanket pre-walk needed.
+				// Type.Alias() recovery at depth > 1 — no blanket pre-walk needed.
 				if neededTypes != nil && !neededTypes[name] {
 					continue
 				}

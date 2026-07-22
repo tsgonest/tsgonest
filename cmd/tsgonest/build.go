@@ -369,7 +369,7 @@ func runBuildWithIncrAndProgram(args []string, oldIncrProgram *shimincremental.P
 
 		// ── Step 1: Analyze controllers to discover needed types ─────────
 		// No blanket pre-registration pass — the walker discovers and registers
-		// sub-field type aliases on-the-fly via Type_alias recovery (depth > 1).
+		// sub-field type aliases on-the-fly via Type.Alias() recovery (depth > 1).
 		// This keeps the walk scope controller-driven: only types reachable from
 		// the API surface are walked, preventing transitive crawls into
 		// node_modules (e.g., Zod, AI SDK, React types).
