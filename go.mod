@@ -23,7 +23,6 @@ require golang.org/x/tools v0.47.0
 
 require (
 	github.com/klauspost/cpuid/v2 v2.2.10 // indirect
-	github.com/microsoft/typescript-go v0.0.0-20260721214542-01cbcdd8643c // indirect
 	github.com/zeebo/xxh3 v1.1.0 // indirect
 	golang.org/x/mod v0.37.0 // indirect
 	golang.org/x/sync v0.21.0 // indirect
@@ -32,6 +31,7 @@ require (
 require (
 	github.com/bmatcuk/doublestar/v4 v4.10.0
 	github.com/go-json-experiment/json v0.0.0-20260623181947-01eb4420fa68
+	github.com/microsoft/typescript-go v0.0.0-20260721214542-01cbcdd8643c
 	github.com/microsoft/typescript-go/shim/ast v0.0.0-00010101000000-000000000000
 	github.com/microsoft/typescript-go/shim/bundled v0.0.0-00010101000000-000000000000
 	github.com/microsoft/typescript-go/shim/checker v0.0.0-00010101000000-000000000000

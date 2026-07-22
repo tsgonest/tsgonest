@@ -14,7 +14,7 @@ Update the typescript-go submodule to the latest upstream commit on `origin/main
 
 5. **Regenerate shims**: `go run tools/gen_shims/main.go`
 
-6. **Copy collections** (excluding test files): `mkdir -p internal/collections && find ./typescript-go/internal/collections -type f ! -name '*_test.go' -exec cp {} internal/collections/ \;`
+6. **Copy collections** (excluding test files): `mkdir -p internal/collections && find ./typescript-go/internal/collections -type f ! -name '*_test.go' -exec cp {} internal/collections/ \;` then `just _patch-collections` (rewrites the internal/json import to go-json-experiment; skipping it breaks the build)
 
 7. **Update Go modules**: Run `go mod tidy` for the root module and all `shim/*/` submodules.
 

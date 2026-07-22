@@ -1,11 +1,7 @@
 module github.com/microsoft/typescript-go/shim/fswatch
 
-go 1.25.0
+go 1.26
 
-require github.com/microsoft/typescript-go v0.0.0-20260207160609-5597f4c8ecf4
+require github.com/microsoft/typescript-go v0.0.0-20260721214542-01cbcdd8643c
 
-require (
-	github.com/dlclark/regexp2 v1.11.5 // indirect
-	github.com/go-json-experiment/json v0.0.0-20251027170946-4849db3c2f7e // indirect
-	golang.org/x/sync v0.19.0 // indirect
-)
+require golang.org/x/sys v0.46.0 // indirect
