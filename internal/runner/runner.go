@@ -20,6 +20,13 @@ type Runner struct {
 	// manual restart ("rs") commands without the child consuming input.
 	DisableStdin bool
 
+	// OnUnexpectedExit is invoked from the wait goroutine when the child
+	// exits without Stop or Restart having initiated it (a crash, a clean
+	// self-exit, or an external kill). The exit code is -1 when the child
+	// was terminated by a signal. Set it before the first Start; it is not
+	// synchronized against later mutation.
+	OnUnexpectedExit func(exitCode int)
+
 	mu      sync.Mutex
 	cmd     *exec.Cmd
 	done    chan struct{}
@@ -103,4 +110,26 @@ func (r *Runner) Wait() {
 // Running returns true if the child process is running.
 func (r *Runner) Running() bool {
 	return r.alive.Load()
+}
+
+// reportExit classifies a child exit after cmd.Wait returns. Exits initiated
+// by Stop or Restart are expected (stop() sets stopped and stopFinished under
+// r.mu before signaling the child); anything else fires OnUnexpectedExit.
+// The callback runs without holding r.mu.
+func (r *Runner) reportExit(cmd *exec.Cmd) {
+	cb := r.OnUnexpectedExit
+	if cb == nil {
+		return
+	}
+	r.mu.Lock()
+	expected := r.stopped || r.stopFinished != nil
+	r.mu.Unlock()
+	if expected {
+		return
+	}
+	code := -1
+	if cmd.ProcessState != nil {
+		code = cmd.ProcessState.ExitCode()
+	}
+	cb(code)
 }

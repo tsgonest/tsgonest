@@ -31,6 +31,19 @@ type devBuilder struct {
 	baseProgram *shimcompiler.Program // retained for UpdateProgram fast path
 	buildArgs   []string
 	cwd         string
+	entryPoint  string // dist sentinel; empty disables the wipe check
+}
+
+// outputsWiped reports whether dist/ was cleaned out from under us (e.g. a
+// `tsgonest build` with deleteOutDir ran in another terminal while dev was
+// running). The in-memory incremental program would then skip re-emitting
+// "unchanged" files into the now-empty dist, leaving the app unrunnable.
+func (b *devBuilder) outputsWiped() bool {
+	if b.entryPoint == "" {
+		return false
+	}
+	_, err := os.Stat(b.entryPoint)
+	return err != nil
 }
 
 // Build runs a full build cycle with in-memory incremental reuse.
@@ -49,7 +62,7 @@ func (b *devBuilder) BuildSingleFile(changedFile string) int {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	if b.baseProgram == nil {
+	if b.baseProgram == nil || b.outputsWiped() {
 		return b.fullBuild()
 	}
 
@@ -66,7 +79,18 @@ func (b *devBuilder) BuildSingleFile(changedFile string) int {
 }
 
 func (b *devBuilder) fullBuild() int {
-	code := runBuildWithIncr(b.buildArgs, b.incrProgram, &b.incrProgram)
+	args := b.buildArgs
+	if b.outputsWiped() {
+		// Drop all incremental state and force --clean: dist is already gone,
+		// and --clean also removes a stale .tsbuildinfo that would otherwise
+		// convince the fresh incremental program the outputs are current.
+		// --clean wins over the --no-clean already present in buildArgs.
+		printStatus(os.Stderr, compiler.IsPrettyOutput(), "◆", "output directory was removed externally, forcing full rebuild...")
+		b.incrProgram = nil
+		b.baseProgram = nil
+		args = append(append([]string{}, b.buildArgs...), "--clean")
+	}
+	code := runBuildWithIncr(args, b.incrProgram, &b.incrProgram)
 	// Extract the base program from the incremental program for next UpdateProgram call
 	if b.incrProgram != nil {
 		b.baseProgram = b.incrProgram.Program()
@@ -222,18 +246,17 @@ func runDevLoop(flags *devFlags, sigCh chan os.Signal, rsCh <-chan struct{}) dev
 	}
 
 	manualRestart := cfg != nil && cfg.ManualRestart
-	deleteOutDir := cfg != nil && cfg.DeleteOutDir
 
 	resolvedConfigPath := flags.configPath
 	if resolvedConfigPath == "" && cfgResult.Path != "" {
 		resolvedConfigPath = cfgResult.Path
 	}
 
-	// Build args for watch rebuilds (no --clean).
-	// --no-clean suppresses cfg.DeleteOutDir — incremental rebuilds must NOT
-	// wipe dist/ or .tsbuildinfo, otherwise (a) the incremental fast path is
-	// defeated and (b) a freshly restarted node racing on lazy require() can
-	// land in an empty dist/ during the next rebuild's clean window.
+	// Dev never cleans dist. --no-clean suppresses cfg.DeleteOutDir on every
+	// build (initial and watch rebuilds). Wiping dist/ or .tsbuildinfo would
+	// (a) defeat the incremental fast path and (b) let a freshly restarted
+	// node racing on lazy require() land in an empty dist/ during the clean
+	// window. deleteOutDir remains a `tsgonest build` concern.
 	watchBuildArgs := []string{"--no-clean"}
 	if resolvedConfigPath != "" {
 		watchBuildArgs = append(watchBuildArgs, "--config", resolvedConfigPath)
@@ -245,13 +268,8 @@ func runDevLoop(flags *devFlags, sigCh chan os.Signal, rsCh <-chan struct{}) dev
 
 	// Initial build
 	printStatus(os.Stderr, pretty, "◆", "performing initial build...")
-	initialBuildArgs := append([]string{}, watchBuildArgs...)
-	if deleteOutDir {
-		initialBuildArgs = append(initialBuildArgs, "--clean")
-	}
-
 	builder.mu.Lock()
-	buildResult := runBuildWithIncr(initialBuildArgs, nil, &builder.incrProgram)
+	buildResult := runBuildWithIncr(watchBuildArgs, nil, &builder.incrProgram)
 	builder.mu.Unlock()
 	if buildResult != 0 {
 		printStatus(os.Stderr, pretty, "✗", "initial build failed, watching for changes...")
@@ -269,11 +287,34 @@ func runDevLoop(flags *devFlags, sigCh chan os.Signal, rsCh <-chan struct{}) dev
 		}
 		entryPoint = resolveEntryPoint(entryPoint, cwd, sourceRoot, os.Stat)
 	}
+	builder.entryPoint = entryPoint
 
 	// Resolve runtime: CLI flag > config > default "node"
 	runtimeName := resolveRuntime(flags.runtime, cfg)
 
 	// Build runtime args
+	// done is closed when runDevLoop returns, so helper goroutines can exit
+	// cleanly. wg tracks the rebuild goroutine so we can join it before
+	// proc.Stop runs; otherwise an in-flight rebuild can complete and call
+	// proc.Restart() after Stop, spawning an orphan child.
+	//
+	// Channel-based rebuild loop: the watcher pushes debounced event batches
+	// into triggerCh as file-change triggers, while the manual-restart "rs"
+	// listener pushes restart triggers onto the same channel. A single
+	// goroutine processes them sequentially, draining any triggers that
+	// arrived during a build before restarting the process. This prevents
+	// the race where rapid multi-file saves cause a premature restart with
+	// a partially built dist/, AND serializes every proc.Restart() through
+	// one path so a manual "rs" racing with a file-change rebuild collapses
+	// into a single restart instead of firing twice (issue #131).
+	//
+	// Both are created before the child process starts so the crash watchdog
+	// callback below can safely reference them even if the child dies
+	// immediately after its first Start.
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	triggerCh := make(chan rebuildTrigger, 16)
+
 	var proc *runner.Runner
 	if flags.execCmd != "" {
 		shell, shellArgs := pickExecShell(flags.execCmd)
@@ -285,6 +326,30 @@ func runDevLoop(flags *devFlags, sigCh chan os.Signal, rsCh <-chan struct{}) dev
 
 	if proc != nil {
 		proc.DisableStdin = true
+		// Crash watchdog. A missing dist entry point means an external
+		// build --clean wiped the outputs while dev was running, so push
+		// a crash trigger and let the rebuild loop heal it (the loop is
+		// the only goroutine allowed to call proc.Restart, issue #131).
+		// Any other unexpected exit reports and waits for a file change,
+		// nodemon-style, so a crashing app never enters a restart loop.
+		proc.OnUnexpectedExit = func(code int) {
+			if builder.outputsWiped() {
+				printStatus(os.Stderr, pretty, "✗", "app exited and the output directory is missing, scheduling rebuild...")
+				select {
+				case triggerCh <- rebuildTrigger{crashed: true}:
+				case <-done:
+				}
+				return
+			}
+			switch {
+			case code == 0:
+				printStatus(os.Stderr, pretty, "✗", "app exited cleanly, waiting for file changes before restart...")
+			case code < 0:
+				printStatus(os.Stderr, pretty, "✗", "app was killed, waiting for file changes before restart...")
+			default:
+				printStatus(os.Stderr, pretty, "✗", "app crashed (exit code %d), waiting for file changes before restart...", code)
+			}
+		}
 	}
 
 	if proc != nil && buildResult == 0 {
@@ -333,25 +398,8 @@ func runDevLoop(flags *devFlags, sigCh chan os.Signal, rsCh <-chan struct{}) dev
 		printStatus(os.Stderr, pretty, "◇", "watching extensions: %v", []string{".ts", ".tsx", ".mts", ".cts"})
 	}
 
-	// done is closed when runDevLoop returns, so helper goroutines can exit cleanly.
-	// wg tracks the rebuild goroutine so we can join it before proc.Stop runs;
-	// otherwise an in-flight rebuild can complete and call proc.Restart() after
-	// Stop, spawning an orphan child.
-	done := make(chan struct{})
-	var wg sync.WaitGroup
 	defer wg.Wait()
 	defer close(done)
-
-	// Channel-based rebuild loop: the watcher pushes debounced event batches
-	// into triggerCh as file-change triggers, while the manual-restart "rs"
-	// listener pushes restart triggers onto the same channel. A single
-	// goroutine processes them sequentially, draining any triggers that
-	// arrived during a build before restarting the process. This prevents
-	// the race where rapid multi-file saves cause a premature restart with
-	// a partially built dist/, AND serializes every proc.Restart() through
-	// one path so a manual "rs" racing with a file-change rebuild collapses
-	// into a single restart instead of firing twice (issue #131).
-	triggerCh := make(chan rebuildTrigger, 16)
 
 	w := watcher.New(
 		[]string{srcDir},
@@ -501,13 +549,15 @@ type rebuildRestarter interface {
 }
 
 // rebuildTrigger is the unit of work consumed by the rebuild loop.
-// File-change batches set events; the manual "rs" command sets rs=true.
-// Routing both through one channel lets the drain logic serialize them
-// against an in-flight build so a "rs" racing a file change collapses
-// into a single proc.Restart() (issue #131).
+// File-change batches set events; the manual "rs" command sets rs=true;
+// the crash watchdog sets crashed=true when the child died because the
+// output directory was wiped externally. Routing all three through one
+// channel lets the drain logic serialize them against an in-flight build
+// so concurrent triggers collapse into a single proc.Restart() (issue #131).
 type rebuildTrigger struct {
-	events []watcher.Event
-	rs     bool
+	events  []watcher.Event
+	rs      bool
+	crashed bool
 }
 
 // rebuildLoopDeps bundles the inputs to rebuildLoop. It exists to keep the
@@ -533,6 +583,8 @@ type rebuildLoopDeps struct {
 //   - file-change trigger: build (single-file fast path or full), then drain.
 //   - "rs" trigger: skip the build (the user asked for a restart, not a
 //     recompile), then drain.
+//   - crash trigger: full build (the output directory was wiped under the
+//     running app; the builder forces a clean rebuild), then drain.
 //
 // In either case, if the drain finds queued file changes, the restart is
 // deferred so the next debounced batch gets a clean build + single restart.
@@ -545,77 +597,99 @@ type rebuildLoopDeps struct {
 // after the dev loop began shutting down and spawn a fresh child after
 // proc.Stop, leaking an orphan (issue #129).
 func rebuildLoop(d rebuildLoopDeps) {
+	// carried holds file-change events drained during a build whose watcher
+	// debounce already flushed. Nothing will re-deliver them, so the loop
+	// must consume them itself instead of blocking on a fresh trigger;
+	// otherwise the watcher wedges after "debouncing..." (issue #228).
+	var carried []watcher.Event
 	for {
-		select {
-		case trig := <-d.triggerCh:
-			result := 0
-			if trig.rs {
-				fmt.Fprintln(os.Stderr, "\nmanual restart triggered...")
-			} else {
-				if !d.preserveWatchOutput {
-					fmt.Fprint(os.Stderr, "\033[2J\033[H")
-				}
-				printStatus(os.Stderr, d.pretty, "◆", "detected %d change(s), rebuilding...", len(trig.events))
-				if d.verbose {
-					for _, ev := range trig.events {
-						fmt.Fprintf(os.Stderr, "  [%s] %s\n", ev.Op, ev.Path)
-					}
-				}
-				if len(trig.events) == 1 && trig.events[0].Op == "write" {
-					result = d.builder.BuildSingleFile(trig.events[0].Path)
-				} else {
-					result = d.builder.Build()
-				}
-			}
-
-			// Drain: collapse any further triggers (file changes or rs)
-			// that arrived during this iteration. Pending file changes
-			// in the channel or the watcher's debounce buffer mean the
-			// source tree is still settling; defer the restart so the
-			// next debounced batch gets a clean build + single restart.
-			// Extra rs signals just collapse into this one restart.
-			fileChangeQueued := false
-		drainLoop:
-			for {
-				select {
-				case t2 := <-d.triggerCh:
-					if !t2.rs {
-						fileChangeQueued = true
-					}
-				default:
-					break drainLoop
-				}
-			}
-			if d.pending != nil && d.pending() {
-				fileChangeQueued = true
-			}
-
-			if fileChangeQueued {
-				printStatus(os.Stderr, d.pretty, "↻", "changes detected during build, debouncing...")
-				continue
-			}
-
+		var trig rebuildTrigger
+		if len(carried) > 0 && (d.pending == nil || !d.pending()) {
+			trig = rebuildTrigger{events: carried}
+			carried = nil
+		} else {
 			select {
+			case trig = <-d.triggerCh:
 			case <-d.done:
 				return
-			default:
 			}
+			// A fresh batch arriving while events are carried means the
+			// watcher flushed its remaining debounce buffer; merge so one
+			// rebuild sees the full set.
+			if !trig.rs && len(carried) > 0 {
+				trig.events = append(carried, trig.events...)
+				carried = nil
+			}
+		}
 
-			if !trig.rs && result != 0 {
-				printStatus(os.Stderr, d.pretty, "✗", "build failed, watching for changes...")
-			} else if d.proc != nil {
-				printStatus(os.Stderr, d.pretty, "▶", "restarting...")
-				if err := d.proc.Restart(); err != nil {
-					fmt.Fprintf(os.Stderr, "error restarting: %v\n", err)
+		result := 0
+		if trig.rs {
+			fmt.Fprintln(os.Stderr, "\nmanual restart triggered...")
+		} else if trig.crashed {
+			// Watchdog trigger: the output directory vanished under the
+			// running app. Always a full build; the builder detects the
+			// wipe and forces a clean rebuild.
+			printStatus(os.Stderr, d.pretty, "◆", "output directory was removed while the app was running, rebuilding...")
+			result = d.builder.Build()
+		} else {
+			if !d.preserveWatchOutput {
+				fmt.Fprint(os.Stderr, "\033[2J\033[H")
+			}
+			printStatus(os.Stderr, d.pretty, "◆", "detected %d change(s), rebuilding...", len(trig.events))
+			if d.verbose {
+				for _, ev := range trig.events {
+					fmt.Fprintf(os.Stderr, "  [%s] %s\n", ev.Op, ev.Path)
 				}
 			}
-
-			if d.manualRestart {
-				fmt.Fprintln(os.Stderr, "To restart at any time, enter \"rs\".")
+			if len(trig.events) == 1 && trig.events[0].Op == "write" {
+				result = d.builder.BuildSingleFile(trig.events[0].Path)
+			} else {
+				result = d.builder.Build()
 			}
+		}
 
+		// Drain: collapse any further triggers (file changes or rs)
+		// that arrived during this iteration. Pending file changes
+		// in the channel or the watcher's debounce buffer mean the
+		// source tree is still settling; defer the restart so the
+		// next batch gets a clean build + single restart. Drained
+		// events are carried: their watcher debounce already flushed,
+		// so discarding them would wedge the loop (issue #228). Extra
+		// rs signals just collapse into this one restart.
+	drainLoop:
+		for {
+			select {
+			case t2 := <-d.triggerCh:
+				if !t2.rs {
+					carried = append(carried, t2.events...)
+				}
+			default:
+				break drainLoop
+			}
+		}
+
+		if len(carried) > 0 || (d.pending != nil && d.pending()) {
+			printStatus(os.Stderr, d.pretty, "↻", "changes detected during build, debouncing...")
+			continue
+		}
+
+		select {
 		case <-d.done:
 			return
+		default:
+		}
+
+		if !trig.rs && result != 0 {
+			printStatus(os.Stderr, d.pretty, "✗", "build failed, watching for changes...")
+		} else if d.proc != nil {
+			printStatus(os.Stderr, d.pretty, "▶", "restarting...")
+			if err := d.proc.Restart(); err != nil {
+				fmt.Fprintf(os.Stderr, "error restarting: %v\n", err)
+			}
+		}
+
+		if d.manualRestart {
+			fmt.Fprintln(os.Stderr, "To restart at any time, enter \"rs\".")
 		}
 	}
 }

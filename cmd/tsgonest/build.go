@@ -347,6 +347,7 @@ func runBuildWithIncrAndProgram(args []string, oldIncrProgram *shimincremental.P
 	var controllerRegistry *metadata.TypeRegistry
 	var controllerWarnings []analyzer.Warning
 	var rewriteCtx *rewrite.RewriteContext
+	var rewriteWarnings []string
 
 	// Only do pre-emit analysis if no errors (type checker data may be unreliable)
 	if !hasPreEmitErrors && (needCompanions || needControllers) {
@@ -387,10 +388,11 @@ func runBuildWithIncrAndProgram(args []string, oldIncrProgram *shimincremental.P
 			if sf.IsDeclarationFile {
 				continue
 			}
-			calls := rewrite.ExtractMarkerCalls(sf, sharedChecker)
+			calls, markerWarnings := rewrite.ExtractMarkerCalls(sf, sharedChecker)
 			if len(calls) > 0 {
 				markerCalls[sf.FileName()] = calls
 			}
+			rewriteWarnings = append(rewriteWarnings, markerWarnings...)
 		}
 
 		// ── Step 3: Collect the set of type names that actually need companions ─
@@ -536,7 +538,6 @@ func runBuildWithIncrAndProgram(args []string, oldIncrProgram *shimincremental.P
 	// Errors are load-bearing — silent miss = unvalidated input hits handlers
 	// (issue #114). Warnings are recoverable degradations on individual methods.
 	var rewriteErrors []rewrite.RewriteDiagnostic
-	var rewriteWarnings []string
 	if rewriteCtx != nil {
 		for _, d := range rewriteCtx.Diagnostics() {
 			if d.IsError() {
