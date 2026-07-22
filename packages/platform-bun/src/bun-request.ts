@@ -28,11 +28,18 @@ export class BunRequest {
   readonly raw: Request;
 
   /**
-   * Stub socket for NestJS SSE compatibility.
-   * SseStream calls req.socket.setKeepAlive/setNoDelay/setTimeout —
-   * Bun manages TCP settings internally, so these are no-ops.
+   * Per-request socket facade for NestJS SSE compatibility.
+   * SseStream calls req.socket.setKeepAlive/setNoDelay/setTimeout (no-ops,
+   * Bun manages TCP internally) and NestJS >=11.1.20 uses req.socket as the
+   * disconnect source: socket.once('close') / socket.removeListener('close').
+   * Event methods delegate to this request's close-listener list.
    */
-  readonly socket = sseSocketStub;
+  get socket(): BunSocket {
+    if (this._socket === null) this._socket = new BunSocket(this);
+    return this._socket;
+  }
+
+  private _socket: BunSocket | null = null;
 
   // Lazily initialized backing fields
   private _headers: Record<string, string> | null = null;
@@ -49,7 +56,10 @@ export class BunRequest {
     // NestJS SSE does: (req as any).raw || req → gets this.raw
     // SseStream expects req.socket and req.on('close', ...)
     const self = this;
-    (request as any).socket = sseSocketStub;
+    Object.defineProperty(request, 'socket', {
+      get: () => self.socket,
+      configurable: true,
+    });
     (request as any).on = (event: string, listener: Function) => {
       if (event === 'close') self.on('close', listener as any);
       return request;
@@ -129,7 +139,16 @@ export class BunRequest {
   once(event: string, listener: (...args: any[]) => void): this {
     return this.on(event, listener);
   }
-  off(_event: string, _listener: (...args: any[]) => void): this { return this; }
+  off(event: string, listener: (...args: any[]) => void): this {
+    if (event === 'close' && this._closeListeners) {
+      const i = this._closeListeners.indexOf(listener);
+      if (i !== -1) this._closeListeners.splice(i, 1);
+    }
+    return this;
+  }
+  removeListener(event: string, listener: (...args: any[]) => void): this {
+    return this.off(event, listener);
+  }
   emit(_event: string, ..._args: any[]): boolean { return false; }
 
   /**
@@ -148,9 +167,29 @@ export class BunRequest {
 /** Shared empty params object — avoids allocation when route has no params. */
 const emptyParams: Record<string, string> = Object.freeze(Object.create(null));
 
-/** Shared stub socket for SSE compatibility — no-op TCP methods. */
-const sseSocketStub = Object.freeze({
-  setKeepAlive() {},
-  setNoDelay() {},
-  setTimeout() {},
-});
+/** Socket facade: no-op TCP methods plus close events delegated to the request. */
+class BunSocket {
+  constructor(private readonly req: BunRequest) {}
+  setKeepAlive(): void {}
+  setNoDelay(): void {}
+  setTimeout(): void {}
+  on(event: string, listener: (...args: any[]) => void): this {
+    this.req.on(event, listener);
+    return this;
+  }
+  once(event: string, listener: (...args: any[]) => void): this {
+    this.req.once(event, listener);
+    return this;
+  }
+  off(event: string, listener: (...args: any[]) => void): this {
+    this.req.off(event, listener);
+    return this;
+  }
+  removeListener(event: string, listener: (...args: any[]) => void): this {
+    this.req.off(event, listener);
+    return this;
+  }
+  emit(_event: string, ..._args: any[]): boolean {
+    return false;
+  }
+}
