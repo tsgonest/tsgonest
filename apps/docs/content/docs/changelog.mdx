@@ -4,6 +4,35 @@ description: All notable changes to tsgonest.
 ---
 
 
+### Bug Fixes
+- Resolve open issues #210, #223, #224, #225, #226, #227 ([`7984265`](https://github.com/tsgonest/tsgonest/commit/798426514f15e7c92b198c584283d883ced8e83b))
+- Support NestJS >=11.1.20 SSE disconnect source *(platform-bun)*  ([`d8af3d4`](https://github.com/tsgonest/tsgonest/commit/d8af3d4673647a1441c459859eafc69efd196b7c))
+- Escape MDX-hostile characters in the docs changelog page *(release)*  ([`eb6bdd8`](https://github.com/tsgonest/tsgonest/commit/eb6bdd84bb80b04b4e3f5ff9de03eeb6d1610980))
+
+
+### Documentation
+- Add just _patch-collections to the update-tsgo command steps ([`2e0235c`](https://github.com/tsgonest/tsgonest/commit/2e0235caebd823a355cb049dca8c2ae04a3d8860))
+
+
+### Features
+- Replace fsnotify with typescript-go's fswatch backend *(watcher)*  ([`3e0a6f1`](https://github.com/tsgonest/tsgonest/commit/3e0a6f1ce6d8a962886abb2f44eb26c09dd5d98a))
+- Harden against external clean and add crash watchdog *(dev)*  ([`8aed12e`](https://github.com/tsgonest/tsgonest/commit/8aed12e5b155a2eb1abab154825674c48bedeb07))
+
+
+### Internal
+- Update typescript-go submodule to 01cbcdd864 ([`7903ee8`](https://github.com/tsgonest/tsgonest/commit/7903ee859f53a26f65411bd9a77894945007157a))
+- Apply dependabot bumps and clear all audit findings *(deps)*  ([`e977ffb`](https://github.com/tsgonest/tsgonest/commit/e977ffb3de1bb02642e3571dda348c5d09ecd090))
+
+
+### Refactoring
+- Use upstream Type.Alias() getter, drop alias field shim *(analyzer)*  ([`a7f3250`](https://github.com/tsgonest/tsgonest/commit/a7f32509ce9e4be1a6568e3af7a80e54efbb25a8))
+
+
+### Testing
+- Remove unit tests made redundant by the compiler or mocks ([`a80ed28`](https://github.com/tsgonest/tsgonest/commit/a80ed286b2035cc767d21dbbe0804c7accb3d567))
+
+## [0.16.0] - 2026-07-16
+
 ### Features
 - Branded constraints on arrays + multipart boolean coverage ([#221](https://github.com/tsgonest/tsgonest/issues/221)) *(analyzer)*  ([`72bd1ee`](https://github.com/tsgonest/tsgonest/commit/72bd1ee7bce33ecfe8bd79ff5e921949875b0244))
 
