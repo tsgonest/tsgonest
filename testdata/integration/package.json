@@ -2,19 +2,19 @@
   "name": "tsgonest-integration-fixture",
   "private": true,
   "dependencies": {
-    "@nestjs/common": "^11.1.17",
-    "@nestjs/core": "^11.1.17",
-    "@nestjs/platform-express": "^11.1.17",
-    "@nestjs/platform-fastify": "^11.1.17",
+    "@nestjs/common": "^11.1.19",
+    "@nestjs/core": "^11.1.19",
+    "@nestjs/platform-express": "^11.1.19",
+    "@nestjs/platform-fastify": "^11.1.19",
     "@tsgonest/platform-bun": "workspace:*",
     "@tsgonest/runtime": "workspace:*",
-    "multer": "^2.1.1",
+    "multer": "^2.2.0",
     "reflect-metadata": "^0.2.2",
-    "rxjs": "^7.8.0"
+    "rxjs": "^7.8.2"
   },
   "devDependencies": {
-    "@types/multer": "^2.1.0",
-    "@types/node": "^25.5.0",
-    "typescript": "^5.7.0"
+    "@types/multer": "^2.2.0",
+    "@types/node": "^25.9.5",
+    "typescript": "^5.9.3"
   }
 }
