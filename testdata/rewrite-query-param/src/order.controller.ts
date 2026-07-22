@@ -50,3 +50,20 @@ export class OrderController {
     return {} as OrderResponse;
   }
 }
+
+type UuidFormat = { readonly __tsgonest_format?: "uuid" };
+type OrdPrefix = { readonly __tsgonest_startsWith?: "ord_" };
+
+@Controller("shipments")
+export class ShipmentController {
+  // Scalar @Param with Format constraint — runtime check must be emitted (issue #210)
+  @Get(":id")
+  async findOne(@Param("id") id: string & UuidFormat): Promise<OrderResponse> {
+    return {} as OrderResponse;
+  }
+
+  @Get("by-ref/:ref")
+  async findByRef(@Param("ref") ref: string & OrdPrefix): Promise<OrderResponse> {
+    return {} as OrderResponse;
+  }
+}

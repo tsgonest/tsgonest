@@ -151,7 +151,14 @@ func (ctx *RewriteContext) MakeWriteFile() shimcompiler.WriteFile {
 			// 2. Marker call rewriting
 			sourcePath := ctx.OutputToSource[normalizeSlashes(fileName)]
 			if markers, ok := ctx.MarkerCalls[sourcePath]; ok && len(markers) > 0 {
-				text = rewriteMarkers(text, fileName, markers, ctx.CompanionMap, ctx.ModuleFormat)
+				warn := func(reason string) {
+					ctx.addDiagnostic(RewriteDiagnostic{
+						Severity:   DiagnosticWarning,
+						OutputFile: fileName,
+						Reason:     reason,
+					})
+				}
+				text = rewriteMarkers(text, fileName, markers, ctx.CompanionMap, ctx.ModuleFormat, warn)
 			}
 
 			// 3. Controller body validation injection

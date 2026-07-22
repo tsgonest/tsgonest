@@ -193,23 +193,31 @@ func ParseOpenAPIBytesWithOptions(data []byte, opts *GenerateOptions) (*SDKDocum
 			if op.RequestBody != nil {
 				contentType := "application/json"
 				var schemaRaw json.RawMessage
+				// Media type parameters (e.g. "; charset=utf-8") are stripped
+				// before matching AND in the emitted ContentType — a
+				// parameterized key must still resolve through the JSON branch
+				// (issue #227). First matching raw key wins deterministically.
+				normalized := make(map[string]string) // normalized → raw key
+				var sortedCTs []string
+				for ct := range op.RequestBody.Content {
+					sortedCTs = append(sortedCTs, ct)
+				}
+				sort.Strings(sortedCTs)
+				for _, ct := range sortedCTs {
+					n := normalizeMediaType(ct)
+					if _, ok := normalized[n]; !ok {
+						normalized[n] = ct
+					}
+				}
 				// Priority: multipart/form-data > application/json > first available
-				if ct, ok := op.RequestBody.Content["multipart/form-data"]; ok {
+				if raw, ok := normalized["multipart/form-data"]; ok {
 					contentType = "multipart/form-data"
-					schemaRaw = ct.Schema
-				} else if ct, ok := op.RequestBody.Content["application/json"]; ok {
-					schemaRaw = ct.Schema
-				} else {
-					// Deterministic: pick the lexicographically first content type
-					var sortedCTs []string
-					for ct := range op.RequestBody.Content {
-						sortedCTs = append(sortedCTs, ct)
-					}
-					sort.Strings(sortedCTs)
-					if len(sortedCTs) > 0 {
-						contentType = sortedCTs[0]
-						schemaRaw = op.RequestBody.Content[sortedCTs[0]].Schema
-					}
+					schemaRaw = op.RequestBody.Content[raw].Schema
+				} else if raw, ok := normalized["application/json"]; ok {
+					schemaRaw = op.RequestBody.Content[raw].Schema
+				} else if len(sortedCTs) > 0 {
+					contentType = normalizeMediaType(sortedCTs[0])
+					schemaRaw = op.RequestBody.Content[sortedCTs[0]].Schema
 				}
 				tsType := resolver.schemaToTS(schemaRaw)
 				sdkMethod.Body = &SDKBody{
@@ -314,7 +322,9 @@ func resolveControllerName(op openAPIOperation, pathStr, version string) string 
 		return op.XTsgonestController
 	}
 	if len(op.Tags) > 0 && op.Tags[0] != "" {
-		return op.Tags[0] + "Controller"
+		if name := sanitizeIdentifier(op.Tags[0]); name != "" {
+			return name + "Controller"
+		}
 	}
 	// Fallback: first meaningful path segment (skip version prefix)
 	trimmed := pathStr
@@ -323,9 +333,43 @@ func resolveControllerName(op openAPIOperation, pathStr, version string) string 
 	}
 	segments := strings.Split(strings.TrimPrefix(trimmed, "/"), "/")
 	if len(segments) > 0 && segments[0] != "" {
-		return capitalize(segments[0]) + "Controller"
+		if name := sanitizeIdentifier(segments[0]); name != "" {
+			return capitalize(name) + "Controller"
+		}
 	}
 	return "DefaultController"
+}
+
+// sanitizeIdentifier turns an arbitrary string (OpenAPI tag, path segment)
+// into a valid TypeScript identifier: characters outside [A-Za-z0-9_$] split
+// the string and each following part is capitalized ("token/session" →
+// "tokenSession"), and a leading digit gets a "_" prefix. Returns "" when
+// nothing survives.
+func sanitizeIdentifier(s string) string {
+	var b strings.Builder
+	capitalizeNext := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !isIdentChar(c) {
+			if b.Len() > 0 {
+				capitalizeNext = true
+			}
+			continue
+		}
+		if capitalizeNext && c >= 'a' && c <= 'z' {
+			c = c - 'a' + 'A'
+		}
+		capitalizeNext = false
+		b.WriteByte(c)
+	}
+	out := b.String()
+	if out == "" {
+		return ""
+	}
+	if out[0] >= '0' && out[0] <= '9' {
+		out = "_" + out
+	}
+	return out
 }
 
 func resolveMethodName(op openAPIOperation, httpMethod, pathStr string) string {
@@ -333,7 +377,9 @@ func resolveMethodName(op openAPIOperation, httpMethod, pathStr string) string {
 		return op.XTsgonestMethod
 	}
 	if op.OperationID != "" {
-		return op.OperationID
+		if name := sanitizeIdentifier(op.OperationID); name != "" {
+			return name
+		}
 	}
 	// Synthesize from method + path: GET /users/{id} → getUsers_id
 	cleaned := strings.NewReplacer(
@@ -953,6 +999,13 @@ func capitalize(s string) string {
 		return s
 	}
 	return strings.ToUpper(s[:1]) + s[1:]
+}
+
+// normalizeMediaType strips media type parameters and lowercases:
+// "Application/JSON; charset=utf-8" → "application/json".
+func normalizeMediaType(ct string) string {
+	base, _, _ := strings.Cut(ct, ";")
+	return strings.ToLower(strings.TrimSpace(base))
 }
 
 // parseSchemaNode parses a raw JSON schema into a SchemaNode.

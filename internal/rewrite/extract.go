@@ -5,10 +5,13 @@
 package rewrite
 
 import (
+	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/microsoft/typescript-go/shim/ast"
 	shimchecker "github.com/microsoft/typescript-go/shim/checker"
+	shimscanner "github.com/microsoft/typescript-go/shim/scanner"
 )
 
 // MarkerCall represents a detected call to a tsgonest marker function
@@ -33,24 +36,27 @@ var markerFunctions = map[string]bool{
 // nodes using those imports with type arguments, and resolves the type
 // argument to a named type via the checker.
 //
-// Returns nil if the file has no tsgonest imports.
-func ExtractMarkerCalls(sf *ast.SourceFile, checker *shimchecker.Checker) []MarkerCall {
+// Returns nil calls if the file has no tsgonest imports. Warnings name marker
+// calls whose type argument could not be resolved to a named type — those
+// calls stay unrewritten (runtime no-op) so users must not be left guessing.
+func ExtractMarkerCalls(sf *ast.SourceFile, checker *shimchecker.Checker) ([]MarkerCall, []string) {
 	// Step 1: Find tsgonest import and collect imported names
 	importedNames := findTsgonestImports(sf)
 	if len(importedNames) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	// Step 2: Walk AST to find call expressions using imported marker names
 	var calls []MarkerCall
-	walkNode(sf.AsNode(), importedNames, checker, &calls)
+	var warnings []string
+	walkNode(sf, sf.AsNode(), importedNames, checker, &calls, &warnings)
 
 	// Step 3: Sort by source position for deterministic ordering
 	sort.Slice(calls, func(i, j int) bool {
 		return calls[i].SourcePos < calls[j].SourcePos
 	})
 
-	return calls
+	return calls, warnings
 }
 
 // findTsgonestImports scans top-level statements for import declarations
@@ -112,7 +118,7 @@ func findTsgonestImports(sf *ast.SourceFile) map[string]string {
 
 // walkNode recursively walks the AST looking for CallExpression nodes
 // that match marker function calls with type arguments.
-func walkNode(node *ast.Node, importedNames map[string]string, checker *shimchecker.Checker, calls *[]MarkerCall) {
+func walkNode(sf *ast.SourceFile, node *ast.Node, importedNames map[string]string, checker *shimchecker.Checker, calls *[]MarkerCall, warnings *[]string) {
 	if node == nil {
 		return
 	}
@@ -133,6 +139,11 @@ func walkNode(node *ast.Node, importedNames map[string]string, checker *shimchec
 							TypeName:     typeName,
 							SourcePos:    node.Pos(),
 						})
+					} else {
+						line := shimscanner.GetECMALineOfPosition(sf, node.Pos())
+						*warnings = append(*warnings, fmt.Sprintf(
+							"%s:%d — %s<T>() type argument is not a named type; call left as a no-op (validation skipped). Use a named interface or type alias.",
+							sf.FileName(), line+1, origName))
 					}
 				}
 			}
@@ -141,23 +152,42 @@ func walkNode(node *ast.Node, importedNames map[string]string, checker *shimchec
 
 	// Recurse into children
 	node.ForEachChild(func(child *ast.Node) bool {
-		walkNode(child, importedNames, checker, calls)
+		walkNode(sf, child, importedNames, checker, calls, warnings)
 		return false // continue visiting
 	})
 }
 
+// isAnonymousTypeName reports checker-internal symbol names that never
+// correspond to a declared type the companion generator can find.
+func isAnonymousTypeName(name string) bool {
+	return name == "" || name == "__type" || name == "__object" || strings.HasPrefix(name, "\xfe")
+}
+
 // resolveTypeArgName resolves a type argument node to a named type string.
-// Uses the checker to get the type, then extracts the symbol name.
+//
+// The syntactic reference name is preferred: for `assert<Foo>(x)` where Foo is
+// a type alias to an object literal, the resolved type's symbol is the
+// anonymous `__type`, but the reference identifier still names the alias.
+// Import aliases are skipped so `import { Foo as Bar }` resolves to "Foo".
 func resolveTypeArgName(typeNode *ast.Node, checker *shimchecker.Checker) string {
+	if typeNode.Kind == ast.KindTypeReference {
+		ref := typeNode.AsTypeReferenceNode()
+		if ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier {
+			if sym := checker.GetSymbolAtLocation(ref.TypeName); sym != nil {
+				if resolved := shimchecker.SkipAlias(sym, checker); resolved != nil && !isAnonymousTypeName(resolved.Name) {
+					return resolved.Name
+				}
+			}
+		}
+	}
+
 	resolvedType := checker.GetTypeFromTypeNode(typeNode)
 	if resolvedType == nil {
 		return ""
 	}
-
 	sym := resolvedType.Symbol()
-	if sym == nil {
+	if sym == nil || isAnonymousTypeName(sym.Name) {
 		return ""
 	}
-
 	return sym.Name
 }

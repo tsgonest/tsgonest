@@ -128,3 +128,57 @@ describe("tsgonest @Query/@Param validation + coercion", () => {
     expect(() => assertPaginationQuery({ page: "abc", limit: "10" })).toThrow();
   });
 });
+
+describe("scalar @Param constraint enforcement (issue #210)", () => {
+  const distDir = resolve(FIXTURES_DIR, "rewrite-query-param", "dist");
+
+  it("emits a runtime format check for string & Format<'uuid'>", () => {
+    const content = readFileSync(resolve(distDir, "order.controller.js"), "utf-8");
+    expect(content).toContain('expected:"format uuid"');
+    expect(content).toMatch(/if \(!\/.*urn:uuid.*\/i\.test\(id\)\) throw new __e\(/);
+  });
+
+  it("emits a runtime startsWith check", () => {
+    const content = readFileSync(resolve(distDir, "order.controller.js"), "utf-8");
+    expect(content).toContain('if (!ref.startsWith("ord_")) throw new __e(');
+  });
+
+  it("rejects a non-uuid at runtime and accepts a valid one", async () => {
+    const content = readFileSync(resolve(distDir, "order.controller.js"), "utf-8");
+    // Execute the emitted classes in isolation: strip all imports and stub
+    // the imported bindings (only __e is exercised by ShipmentController).
+    const src = content
+      .replace(/^import .*$/gm, "")
+      .replace(/^export \{.*$/gm, "")
+      .replace(/export class/g, "class");
+    const factory = new Function(
+      "__e",
+      "assertPaginationQuery",
+      "assertOrderResponse",
+      "stringifyOrderResponse",
+      "serializeOrderResponse",
+      "TsgonestSerializeInterceptor",
+      "common_1",
+      `${src}; return ShipmentController;`
+    );
+    class FakeErr extends Error {
+      constructor(public issues: unknown) { super("validation"); }
+    }
+    const noopDecorator = () => () => {};
+    const identity = (x: unknown) => x;
+    const Ctrl = factory(
+      FakeErr,
+      identity,
+      identity,
+      JSON.stringify,
+      JSON.stringify,
+      class {},
+      { UseInterceptors: noopDecorator }
+    );
+    const ctrl = new Ctrl();
+    await expect(
+      ctrl.findOne("2f1cc95b-9f6c-4a3f-9a1d-3f4b5c6d7e8f")
+    ).resolves.toBeDefined();
+    await expect(ctrl.findOne("not-a-uuid")).rejects.toThrow("validation");
+  });
+});

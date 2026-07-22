@@ -854,3 +854,51 @@ describe("SDK write-if-changed behavior", () => {
     cleanup();
   });
 });
+
+// ─── Group: third-party specs (issues #226, #227) ──────────────────────────
+
+describe("tsgonest sdk third-party spec handling", () => {
+  it("sanitizes tags with slashes into valid TypeScript identifiers (issue #226)", () => {
+    const { exitCode, outputDir, cleanup } = generateSdk(
+      "testdata/sdkgen/thirdparty.openapi.json",
+      "slashtags"
+    );
+    expect(exitCode).toBe(0);
+
+    const files = readFileSync(resolve(outputDir, "index.ts"), "utf-8");
+    for (const file of ["index.ts", "token-session/index.ts"]) {
+      const content = readFileSync(resolve(outputDir, file), "utf-8");
+      expect(content).not.toContain("token/session_");
+    }
+    // The slashed tag becomes a camelCased identifier in a kebab-cased dir
+    const controller = readFileSync(
+      resolve(outputDir, "token-session/index.ts"),
+      "utf-8"
+    );
+    expect(controller).toMatch(/tokenSession_\w+/);
+    expect(files).toContain("tokenSession");
+
+    cleanup();
+  });
+
+  it("normalizes parameterized JSON content types so bodies are JSON-encoded (issue #227)", () => {
+    const { exitCode, outputDir, cleanup } = generateSdk(
+      "testdata/sdkgen/thirdparty.openapi.json",
+      "charset"
+    );
+    expect(exitCode).toBe(0);
+
+    // The generated client must match JSON content types by regex (not ===)
+    // and must never String() an object body in the fallback branch.
+    const client = readFileSync(resolve(outputDir, "client.ts"), "utf-8");
+    expect(client).toContain("/^application\\/json\\s*(;|$)/i.test(contentType)");
+    expect(client).not.toContain("String(options.body)");
+
+    // The controller should carry the normalized content type (no charset
+    // parameter) so the client's JSON branch matches.
+    const customer = readFileSync(resolve(outputDir, "customer/index.ts"), "utf-8");
+    expect(customer).not.toContain("charset");
+
+    cleanup();
+  });
+});

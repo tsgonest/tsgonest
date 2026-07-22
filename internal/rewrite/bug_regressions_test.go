@@ -419,7 +419,7 @@ const ok = is(body);`
 			"CreateUserDto": "/dist/user.dto.CreateUserDto.tsgonest.js",
 		}
 
-		result := rewriteMarkers(input, "/dist/test.js", calls, companionMap, "cjs")
+		result := rewriteMarkers(input, "/dist/test.js", calls, companionMap, "cjs", nil)
 
 		// "use strict" must remain first (before sentinel and imports)
 		if !strings.HasPrefix(result, `"use strict";`) {
