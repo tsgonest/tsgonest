@@ -6,7 +6,7 @@ package watcher
 //   D. Renaming a watched root silently stops events (no error, no recovery).
 //   E. Atomically populating a new subdirectory races against addRecursive,
 //      so some files inside don't trigger events.
-//   Leak. AfterFunc/fsnotify goroutines surviving start/stop cycles.
+//   Leak. AfterFunc/backend goroutines surviving start/stop cycles.
 //
 // Tests marked KnownIssue are documented bugs that pass against the broken
 // behavior. When a fix lands, these tests should be flipped to assert
@@ -56,7 +56,7 @@ func drainEvents(ch <-chan []Event, timeout time.Duration) []Event {
 
 // TestWatch_RootRename_SurfacesError verifies that when the watched root is
 // renamed out from under the watcher, Watch returns an *ErrWatchRootGone
-// instead of silently going deaf. Before the fix, fsnotify dropped events
+// instead of silently going deaf. Before the fix, the backend dropped events
 // without any signal: macOS (kqueue) stopped delivering events, Linux
 // (inotify) auto-removed the watch — either way `tsgonest dev` appeared to
 // keep running but never rebuilt again.
@@ -110,7 +110,7 @@ func TestWatch_RootRename_SurfacesError(t *testing.T) {
 // TestWatch_RootRemove_SurfacesError verifies that removing (rmdir) the
 // watched root is also detected and surfaces the same ErrWatchRootGone
 // instead of silently dropping events. Same root-cause as the rename case
-// — both Remove and Rename fsnotify ops on a watch root must terminate
+// : root removal and rename must terminate
 // the watch loop with a clear error.
 func TestWatch_RootRemove_SurfacesError(t *testing.T) {
 	parent := t.TempDir()
@@ -150,14 +150,14 @@ func TestWatch_RootRemove_SurfacesError(t *testing.T) {
 
 // TestWatch_AtomicSubdirPopulation_FilesAreSynthesized exercises the
 // `git checkout`/`git pull` scenario: a fully-populated directory is renamed
-// into the watch root in one syscall. fsnotify reports a Create on the
+// into the watch root in one syscall. the backend reports an event for the
 // directory; the watcher attaches via addRecursive but the kernel never
 // generated Create events for files that existed inside the dir before the
 // watch was attached. The fix walks the freshly-attached tree and synthesizes
 // Create events for every file matching the configured extensions.
 func TestWatch_AtomicSubdirPopulation_FilesAreSynthesized(t *testing.T) {
 	root := t.TempDir()
-	// fsnotify reports events with EvalSymlinks-resolved paths (addRecursive
+	// the backend delivers events under the caller-visible root (fswatch
 	// resolves the watch root before adding). On macOS, t.TempDir() returns
 	// /var/folders/... which resolves to /private/var/folders/... — assertions
 	// must use the resolved form to match the synthesizer's emitted paths.
@@ -295,26 +295,43 @@ func TestWatch_AtomicSubdirPopulation_DeeplyNested(t *testing.T) {
 
 // TestWatch_GoroutineCountStableAcrossRestarts repeatedly creates and stops
 // watchers, asserting that the goroutine count returns to baseline. Catches
-// regressions where Stop() forgets to release the fsnotify backend goroutine,
-// or where pending AfterFunc timers never get reaped.
+// regressions where Stop() forgets to release backend goroutines, or where
+// pending AfterFunc timers never get reaped.
 func TestWatch_GoroutineCountStableAcrossRestarts(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "app.ts"), []byte("x"), 0644)
 
-	baseline := goroutineCount()
-
-	const iterations = 50
-	for range iterations {
+	cycle := func() {
 		w := New([]string{dir}, []string{".ts"}, 20*time.Millisecond, func(events []Event) {})
 		go w.Watch()
-		// Let the fsnotify backend spin up.
+		// Let the backend spin up.
 		time.Sleep(20 * time.Millisecond)
 		w.Stop()
 		// Brief gap so Stop's stopCh propagates before the next iter.
 		time.Sleep(20 * time.Millisecond)
 	}
 
-	final := goroutineCount()
+	// Warm-up: the fswatch runtime lazily starts persistent package-level
+	// goroutines (backend event loop, debouncer) on first use. Those are a
+	// one-time cost, not a per-cycle leak. Take the baseline after them.
+	cycle()
+	time.Sleep(100 * time.Millisecond)
+	baseline := goroutineCount()
+
+	const iterations = 50
+	for range iterations {
+		cycle()
+	}
+
+	// Backend teardown goroutines can lag Stop; wait for the count to settle.
+	var final int
+	for range 20 {
+		final = goroutineCount()
+		if final-baseline <= 5 {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 	delta := final - baseline
 
 	// Allow some slack for Go runtime housekeeping. Anything more than ~5 is
@@ -503,7 +520,7 @@ func TestShouldSkipPath_SeparatorNormalization(t *testing.T) {
 		descriptor string
 	}{
 		// Forward-slash paths: the primary regression target.
-		// On Windows, Git Bash (and some fsnotify builds) deliver "C:/..." paths.
+		// On Windows, Git Bash (and some backends) deliver "C:/..." paths.
 		// On Linux/macOS, all paths are already forward-slash.
 		{`C:/proj/src/node_modules/foo.ts`, true, "forward-slash: mid-path node_modules"},
 		{`C:/proj/node_modules`, true, "forward-slash: node_modules at end (no trailing slash)"},
@@ -581,7 +598,7 @@ func TestShouldSkipPath_CaseInsensitive(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // TestIsOverflowError_RecognizesKernelSignals locks in the detection contract
-// across all backends so a backend swap or fsnotify upgrade can't silently
+// across all backends so a backend swap or upstream upgrade can't silently
 // make the watcher stop recovering from bursts.
 func TestIsOverflowError_RecognizesKernelSignals(t *testing.T) {
 	cases := []struct {
@@ -591,7 +608,7 @@ func TestIsOverflowError_RecognizesKernelSignals(t *testing.T) {
 	}{
 		{"nil", nil, false},
 		{"unrelated", fmt.Errorf("permission denied"), false},
-		{"fsnotify sentinel", fmtErrf("%w", fsnotifyOverflowSentinel()), true},
+		{"fswatch sentinel", fmtErrf("%w", overflowSentinel()), true},
 		{"enospc wrapped", fmtErrf("inotify: %w", syscallENOSPC()), true},
 		{"windows-style string", fmt.Errorf("ReadDirectoryChangesW: notify_enum_dir overflow"), true},
 		{"raw 1022 string", fmt.Errorf("system call returned error 1022"), true},
@@ -607,7 +624,7 @@ func TestIsOverflowError_RecognizesKernelSignals(t *testing.T) {
 }
 
 // TestWatch_OverflowRecovery_SynthesizesMissedEvents primes the snapshot,
-// mutates files OUT-OF-BAND so fsnotify never sees them (no time.Sleep race —
+// mutates files OUT-OF-BAND so the watcher never sees them (no time.Sleep race —
 // we touch files after priming and call the recovery path directly), then
 // asserts the recovery synthesizes write/create/remove events for every change.
 func TestWatch_OverflowRecovery_SynthesizesMissedEvents(t *testing.T) {
@@ -639,7 +656,7 @@ func TestWatch_OverflowRecovery_SynthesizesMissedEvents(t *testing.T) {
 	w.primeSnapshotForTest()
 
 	// Mutate out-of-band: rewrite mutate.ts (size + mtime change), create new.ts,
-	// remove gone.ts. None of these go through fsnotify because Watch() isn't running.
+	// remove gone.ts. None of these are observed live because Watch() isn't running.
 	time.Sleep(20 * time.Millisecond)
 	if err := os.WriteFile(mutate, []byte("export const m=42;"), 0644); err != nil {
 		t.Fatal(err)
@@ -725,7 +742,7 @@ func TestWatch_OverflowFallback_SwitchesToPolling(t *testing.T) {
 	}
 
 	// Now run the polling backend (the real Watch() would have done this
-	// automatically after watchFsnotify returned). Confirm new writes are
+	// automatically after watchNative returned). Confirm new writes are
 	// still delivered through the polling path.
 	stopped := make(chan struct{})
 	go func() {
@@ -760,7 +777,7 @@ func TestWatch_OverflowFallback_SwitchesToPolling(t *testing.T) {
 
 // helpers used only by TestIsOverflowError_RecognizesKernelSignals.
 func fmtErrf(format string, a ...any) error { return fmt.Errorf(format, a...) }
-func fsnotifyOverflowSentinel() error       { return errOverflow }
+func overflowSentinel() error               { return errOverflow }
 func syscallENOSPC() error                  { return errENOSPC }
 
 // TestWatch_BurstWritesNoDataRace runs the watcher under concurrent writes to
@@ -796,7 +813,7 @@ func TestWatch_BurstWritesNoDataRace(t *testing.T) {
 // Symlinked watch root (#152)
 // ─────────────────────────────────────────────────────────────────────────────
 
-// TestWatch_SymlinkedRoot_DetectsChanges verifies that fsnotify-mode watching
+// TestWatch_SymlinkedRoot_DetectsChanges verifies that native-mode watching
 // works when the watch root is itself a symlink (or Windows junction). The
 // underlying filepath.Walk uses os.Lstat, which would otherwise see the
 // symlink as a non-directory and skip it entirely — meaning fsw.Add never
@@ -828,7 +845,7 @@ func TestWatch_SymlinkedRoot_DetectsChanges(t *testing.T) {
 
 	select {
 	case <-got:
-		// good — fsnotify saw the write through the resolved root
+		// good — the backend saw the write through the resolved root
 	case <-time.After(2 * time.Second):
 		t.Fatal("write to symlinked watch root was not detected; addRecursive likely no-op'd")
 	}

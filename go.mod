@@ -9,6 +9,7 @@ replace (
 	github.com/microsoft/typescript-go/shim/compiler => ./shim/compiler
 	github.com/microsoft/typescript-go/shim/core => ./shim/core
 	github.com/microsoft/typescript-go/shim/execute/incremental => ./shim/execute/incremental
+	github.com/microsoft/typescript-go/shim/fswatch => ./shim/fswatch
 	github.com/microsoft/typescript-go/shim/parser => ./shim/parser
 	github.com/microsoft/typescript-go/shim/scanner => ./shim/scanner
 	github.com/microsoft/typescript-go/shim/tsoptions => ./shim/tsoptions
@@ -18,26 +19,26 @@ replace (
 	github.com/microsoft/typescript-go/shim/vfs/osvfs => ./shim/vfs/osvfs
 )
 
-require golang.org/x/tools v0.44.0
+require golang.org/x/tools v0.47.0
 
 require (
 	github.com/klauspost/cpuid/v2 v2.2.10 // indirect
+	github.com/microsoft/typescript-go v0.0.0-20260721214542-01cbcdd8643c // indirect
 	github.com/zeebo/xxh3 v1.1.0 // indirect
-	golang.org/x/mod v0.35.0 // indirect
-	golang.org/x/sync v0.20.0 // indirect
+	golang.org/x/mod v0.37.0 // indirect
+	golang.org/x/sync v0.21.0 // indirect
 )
 
 require (
 	github.com/bmatcuk/doublestar/v4 v4.10.0
-	github.com/fsnotify/fsnotify v1.9.0
-	github.com/go-json-experiment/json v0.0.0-20260214004413-d219187c3433
-	github.com/microsoft/typescript-go v0.0.0-20260424234512-515d036f927a
+	github.com/go-json-experiment/json v0.0.0-20260623181947-01eb4420fa68
 	github.com/microsoft/typescript-go/shim/ast v0.0.0-00010101000000-000000000000
 	github.com/microsoft/typescript-go/shim/bundled v0.0.0-00010101000000-000000000000
 	github.com/microsoft/typescript-go/shim/checker v0.0.0-00010101000000-000000000000
 	github.com/microsoft/typescript-go/shim/compiler v0.0.0-00010101000000-000000000000
 	github.com/microsoft/typescript-go/shim/core v0.0.0-00010101000000-000000000000
 	github.com/microsoft/typescript-go/shim/execute/incremental v0.0.0-00010101000000-000000000000
+	github.com/microsoft/typescript-go/shim/fswatch v0.0.0-00010101000000-000000000000
 	github.com/microsoft/typescript-go/shim/parser v0.0.0-00010101000000-000000000000
 	github.com/microsoft/typescript-go/shim/scanner v0.0.0-00010101000000-000000000000
 	github.com/microsoft/typescript-go/shim/tsoptions v0.0.0-00010101000000-000000000000
@@ -45,6 +46,6 @@ require (
 	github.com/microsoft/typescript-go/shim/vfs v0.0.0-00010101000000-000000000000
 	github.com/microsoft/typescript-go/shim/vfs/cachedvfs v0.0.0-00010101000000-000000000000
 	github.com/microsoft/typescript-go/shim/vfs/osvfs v0.0.0-00010101000000-000000000000
-	golang.org/x/sys v0.43.0
-	golang.org/x/text v0.36.0
+	golang.org/x/sys v0.46.0
+	golang.org/x/text v0.38.0
 )

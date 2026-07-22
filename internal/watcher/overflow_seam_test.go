@@ -3,7 +3,7 @@ package watcher
 import (
 	"syscall"
 
-	"github.com/fsnotify/fsnotify"
+	"github.com/microsoft/typescript-go/shim/fswatch"
 )
 
 // This file exposes package-internal seams that exist solely for tests in
@@ -11,7 +11,7 @@ import (
 // called from production code.
 
 var (
-	errOverflow = fsnotify.ErrEventOverflow
+	errOverflow = fswatch.ErrOverflow
 	errENOSPC   = syscall.ENOSPC
 )
 
@@ -21,7 +21,7 @@ var (
 var recoverHook func() (forceFailure bool)
 
 func (w *Watcher) triggerOverflowForTest() bool {
-	recovered := w.recoverFromOverflow(nil)
+	recovered := w.recoverFromOverflow()
 	if recoverHook != nil && recoverHook() {
 		recovered = false
 	}
