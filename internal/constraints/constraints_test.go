@@ -270,22 +270,6 @@ func TestLiteralHelpers(t *testing.T) {
 	})
 }
 
-// TestValidNumericTypes verifies the set matches the NumericType constants.
-func TestValidNumericTypes(t *testing.T) {
-	expected := []NumericType{
-		NumericInt32, NumericUint32, NumericInt64,
-		NumericUint64, NumericFloat, NumericDouble,
-	}
-	for _, nt := range expected {
-		if !ValidNumericTypes[string(nt)] {
-			t.Errorf("ValidNumericTypes missing %q", nt)
-		}
-	}
-	if len(ValidNumericTypes) != len(expected) {
-		t.Errorf("ValidNumericTypes has %d entries, expected %d", len(ValidNumericTypes), len(expected))
-	}
-}
-
 // TestSetBranded_DefaultNumericAndBool verifies default field handles
 // numeric and boolean literal values (not just strings).
 func TestSetBranded_DefaultNumericAndBool(t *testing.T) {

@@ -7,6 +7,7 @@ import (
 
 	"github.com/microsoft/typescript-go/shim/core"
 	"github.com/tsgonest/tsgonest/internal/analyzer"
+	"github.com/tsgonest/tsgonest/internal/formats"
 	"github.com/tsgonest/tsgonest/internal/metadata"
 )
 
@@ -450,6 +451,15 @@ func rewriteController(text string, outputFile string, controllers []analyzer.Co
 		if ml == nil {
 			warnMethodMissing(sc.className, sc.methodName, "query/param scalar constraint check")
 			continue
+		}
+		if sc.constraints.ValidateFn != nil {
+			emit(RewriteDiagnostic{
+				Severity:   DiagnosticWarning,
+				OutputFile: outputFile,
+				Class:      sc.className,
+				Method:     sc.methodName,
+				Reason:     fmt.Sprintf("Validate<typeof %s> on scalar param %q is not enforced at runtime (OpenAPI schema only) — use a DTO parameter or a Pattern/Format constraint", *sc.constraints.ValidateFn, sc.paramName),
+			})
 		}
 		checkCode := buildScalarConstraintCheck(sc.paramName, sc.atomic, sc.constraints)
 		if checkCode == "" {
@@ -1156,10 +1166,12 @@ func escapeForRegexLiteral(pattern string) string {
 // buildScalarConstraintCheck composes the inline JS for runtime constraint
 // checks on a single named scalar @Param/@Query parameter. All applicable
 // checks for the param are concatenated into one returned string so the caller
-// can emit them as a single prioritized edit. Order: Pattern → MinLength →
-// MaxLength → Minimum → Maximum → MultipleOf. Constraints that don't apply to
-// the atomic are silently skipped (defensive — analyzer shouldn't produce
-// them, but we never want a misapplied check to slip through).
+// can emit them as a single prioritized edit. String order: transforms →
+// Pattern → MinLength → MaxLength → Format → StartsWith → EndsWith →
+// Includes → Uppercase → Lowercase. Number order: Minimum → Maximum →
+// MultipleOf. Constraints that don't apply to the atomic are silently
+// skipped (defensive — analyzer shouldn't produce them, but we never want
+// a misapplied check to slip through).
 func buildScalarConstraintCheck(paramName, atomic string, c *metadata.Constraints) string {
 	if c == nil {
 		return ""
@@ -1167,6 +1179,12 @@ func buildScalarConstraintCheck(paramName, atomic string, c *metadata.Constraint
 	var b strings.Builder
 
 	if atomic == "string" {
+		for _, t := range c.Transforms {
+			switch t {
+			case "trim", "toLowerCase", "toUpperCase":
+				b.WriteString(fmt.Sprintf("\n    %s = %s.%s();", paramName, paramName, t))
+			}
+		}
 		if c.Pattern != nil {
 			raw := *c.Pattern
 			// raw lands in two slots with different escaping rules:
@@ -1186,6 +1204,36 @@ func buildScalarConstraintCheck(paramName, atomic string, c *metadata.Constraint
 			n := *c.MaxLength
 			b.WriteString(fmt.Sprintf("\n    if (%s.length > %d) throw new __e([{path:%q,expected:\"maxLength %d\",received:\"length \"+%s.length}]);",
 				paramName, n, paramName, n, paramName))
+		}
+		if c.Format != nil {
+			if pattern, ok := formats.Regexes[*c.Format]; ok && pattern != "" {
+				regexLiteral := "/" + escapeForRegexLiteral(pattern) + "/" + formats.Flags[*c.Format]
+				b.WriteString(fmt.Sprintf("\n    if (!%s.test(%s)) throw new __e([{path:%q,expected:\"format %s\",received:%s}]);",
+					regexLiteral, paramName, paramName, jsStringEscape(*c.Format), paramName))
+			}
+		}
+		if c.StartsWith != nil {
+			escaped := jsStringEscape(*c.StartsWith)
+			b.WriteString(fmt.Sprintf("\n    if (!%s.startsWith(\"%s\")) throw new __e([{path:%q,expected:\"startsWith %s\",received:%s}]);",
+				paramName, escaped, paramName, escaped, paramName))
+		}
+		if c.EndsWith != nil {
+			escaped := jsStringEscape(*c.EndsWith)
+			b.WriteString(fmt.Sprintf("\n    if (!%s.endsWith(\"%s\")) throw new __e([{path:%q,expected:\"endsWith %s\",received:%s}]);",
+				paramName, escaped, paramName, escaped, paramName))
+		}
+		if c.Includes != nil {
+			escaped := jsStringEscape(*c.Includes)
+			b.WriteString(fmt.Sprintf("\n    if (!%s.includes(\"%s\")) throw new __e([{path:%q,expected:\"includes %s\",received:%s}]);",
+				paramName, escaped, paramName, escaped, paramName))
+		}
+		if c.Uppercase != nil && *c.Uppercase {
+			b.WriteString(fmt.Sprintf("\n    if (%s !== %s.toUpperCase()) throw new __e([{path:%q,expected:\"uppercase\",received:%s}]);",
+				paramName, paramName, paramName, paramName))
+		}
+		if c.Lowercase != nil && *c.Lowercase {
+			b.WriteString(fmt.Sprintf("\n    if (%s !== %s.toLowerCase()) throw new __e([{path:%q,expected:\"lowercase\",received:%s}]);",
+				paramName, paramName, paramName, paramName))
 		}
 	}
 

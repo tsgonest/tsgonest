@@ -137,12 +137,16 @@ export function createRequestFn(config: ClientConfig): RequestFn {
       if (options.body instanceof FormData) {
         // Let the browser set the Content-Type with boundary
         init.body = options.body;
-      } else if (contentType === 'application/json') {
+      } else if (/^application\/json\s*(;|$)/i.test(contentType)) {
         init.body = JSON.stringify(options.body);
-        allHeaders['Content-Type'] = 'application/json';
+        allHeaders['Content-Type'] = contentType;
         init.headers = allHeaders;
       } else {
-        init.body = String(options.body);
+        // Never String() an object — that produces "[object Object]"
+        init.body =
+          typeof options.body === 'string'
+            ? options.body
+            : JSON.stringify(options.body);
         allHeaders['Content-Type'] = contentType;
         init.headers = allHeaders;
       }

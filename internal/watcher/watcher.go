@@ -10,7 +10,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/fsnotify/fsnotify"
+	"github.com/microsoft/typescript-go/shim/fswatch"
 )
 
 // Event represents a file change event.
@@ -23,14 +23,19 @@ type Event struct {
 const DefaultPollInterval = 500 * time.Millisecond
 
 // maxOverflowFailures is the number of consecutive overflow recovery attempts
-// allowed before the watcher gives up on fsnotify and falls back to polling.
+// allowed before the watcher gives up on the native backend and falls back to
+// polling.
 const maxOverflowFailures = 2
 
-// rootLivenessPollInterval is how often the fsnotify backend Stats each watch
-// root to detect rename/removal. Required because Windows
-// ReadDirectoryChangesW does not emit any event for the watched directory
-// itself when it is renamed or deleted.
+// rootLivenessPollInterval is how often each watch root is Stat'ed to detect
+// rename/removal. Kept as a platform-proof belt on top of fswatch's own
+// ErrWatchTerminated delivery; a silently dead watch is the worst failure
+// mode for a dev loop.
 const rootLivenessPollInterval = 500 * time.Millisecond
+
+// errFallbackToPolling signals the Watch loop that overflow recovery gave up
+// and the polling backend should take over.
+var errFallbackToPolling = errors.New("watcher: falling back to polling")
 
 // skipDirs are directory base names that should never be watched or walked.
 // These are either non-source content or hidden directories that produce
@@ -47,9 +52,10 @@ var skipDirs = map[string]bool{
 }
 
 // Watcher watches directories for file changes.
-// It uses fsnotify (inotify/kqueue/ReadDirectoryChangesW) for near-instant
-// event-driven detection. If the OS watch limit is hit, it falls back to
-// polling automatically and warns the user.
+// It uses typescript-go's fswatch (a Go port of @parcel/watcher: FSEvents on
+// macOS, fanotify/inotify on Linux, ReadDirectoryChangesW on Windows) for
+// event-driven detection. If the backend is unavailable or repeatedly
+// overflows, it falls back to polling automatically and warns the user.
 type Watcher struct {
 	dirs         []string
 	extensions   []string // e.g., [".ts", ".tsx"]
@@ -86,11 +92,11 @@ func (w *Watcher) SetPollInterval(d time.Duration) {
 }
 
 // Watch starts watching for file changes. This is a blocking call that runs
-// until Stop() is called. Tries fsnotify first, falls back to polling if
-// the OS watch limit is exhausted or if fsnotify reports too many buffer
-// overflows in a row (Windows ReadDirectoryChangesW or inotify queue).
+// until Stop() is called. Tries the native fswatch backend first, falls back
+// to polling if the backend is unavailable, setup fails (OS watch limit), or
+// it reports too many overflows in a row.
 func (w *Watcher) Watch() error {
-	err := w.watchFsnotify()
+	err := w.watchNative()
 	if err == nil && !w.shouldFallback() {
 		return nil
 	}
@@ -99,8 +105,8 @@ func (w *Watcher) Watch() error {
 	if _, gone := err.(*ErrWatchRootGone); gone {
 		return err
 	}
-	// fsnotify failed (or asked us to fall back after repeated overflows) —
-	// run the polling backend.
+	// Native backend failed (or asked us to fall back after repeated
+	// overflows); run the polling backend.
 	return w.watchPolling()
 }
 
@@ -121,11 +127,9 @@ func (w *Watcher) Stop() {
 }
 
 // ErrWatchRootGone is returned by Watch when one of the configured watch
-// roots is renamed or removed while the watcher is running. fsnotify's
-// behavior in this case is platform-dependent and silent: macOS (kqueue)
-// stops delivering events, Linux (inotify) auto-removes the watch. Either
-// way, file changes go undetected from that point on, so we surface a
-// clear error rather than appear to keep working.
+// roots is renamed or removed while the watcher is running. From that point
+// on file changes would go undetected, so a clear error surfaces rather
+// than appear to keep working.
 type ErrWatchRootGone struct {
 	Path string
 }
@@ -134,57 +138,63 @@ func (e *ErrWatchRootGone) Error() string {
 	return fmt.Sprintf("watch root %q was renamed or removed; restart tsgonest dev", e.Path)
 }
 
-// watchFsnotify uses OS-level file system notifications for near-instant
-// change detection. Returns a non-nil error if setup fails (e.g., watch
-// limit exhausted), in which case the caller should fall back to polling.
+// watchNative subscribes each watch root recursively via fswatch and blocks
+// until Stop, a terminal watch error, or an overflow-triggered fallback.
 //
-// On a buffer-overflow error from the kernel (Windows ERROR_NOTIFY_ENUM_DIR
-// surfaced as fsnotify.ErrEventOverflow, or inotify IN_Q_OVERFLOW), the
-// watcher re-walks the watched roots and synthesizes events for any files
-// whose modTime/size differs from the in-memory snapshot. After
-// maxOverflowFailures consecutive failed recoveries it gives up and lets
-// Watch() fall back to polling.
-func (w *Watcher) watchFsnotify() error {
-	fsw, err := fsnotify.NewWatcher()
-	if err != nil {
-		return err
-	}
-	defer fsw.Close()
-
-	// Capture the watch roots, normalized, so we can detect when one of
-	// them is renamed or removed mid-flight. The key is symlink-resolved
-	// because addRecursive passes the EvalSymlinks-resolved path to
-	// fsnotify, and fsnotify reports event paths exactly as added — so the
-	// lookup side must match. The map value is the original (unresolved)
-	// dir so error messages show what the user configured.
-	roots := make(map[string]string, len(w.dirs))
-	rootResolved := make([][2]string, 0, len(w.dirs))
-	for _, dir := range w.dirs {
-		resolved := dir
-		if r, err := filepath.EvalSymlinks(dir); err == nil {
-			resolved = r
-		}
-		roots[normalizeWatchPath(resolved)] = dir
-		rootResolved = append(rootResolved, [2]string{resolved, dir})
+// fswatch handles the messy parts the old hand-rolled backend needed:
+// per-subdirectory watch registration, coalescing bursts, symlinked roots
+// (events are delivered under the caller-visible path), and root-deletion
+// detection (ErrWatchTerminated).
+func (w *Watcher) watchNative() error {
+	backend := fswatch.Default()
+	if !backend.Available() {
+		return fswatch.ErrUnavailable
 	}
 
-	// Recursively add all directories under each watched root.
-	for _, dir := range w.dirs {
-		if err := w.addRecursive(fsw, dir); err != nil {
-			return err
-		}
-	}
-
+	// Snapshot for overflow recovery and create/write disambiguation.
 	w.snapMu.Lock()
 	w.prevSnapshot = w.buildSnapshot()
 	w.snapMu.Unlock()
 
-	// Poll-based root liveness check. fsnotify's Rename/Remove signal for the
-	// watched root itself is platform-dependent: Linux (inotify) emits
-	// IN_MOVE_SELF/IN_DELETE_SELF, but Windows ReadDirectoryChangesW watches
-	// by HANDLE — renaming or removing the watched directory does NOT generate
-	// any event for the dir itself. A periodic os.Stat covers Windows and
-	// hardens the other platforms against missed/coalesced events.
+	fatalCh := make(chan error, 1)
+	fatal := func(err error) {
+		select {
+		case fatalCh <- err:
+		default:
+		}
+	}
+
+	var watches []fswatch.Watch
+	closeAll := func() {
+		for _, wt := range watches {
+			wt.Close()
+		}
+	}
+
+	for _, dir := range w.dirs {
+		dir := dir
+		abs, err := filepath.Abs(dir)
+		if err != nil {
+			closeAll()
+			return err
+		}
+		wt, err := backend.WatchDirectory(abs, func(events []fswatch.Event, cbErr error) {
+			w.handleBatch(dir, events, cbErr, fatal)
+		}, fswatch.WithRecursive(), fswatch.WithIgnore(shouldSkipPath))
+		if err != nil {
+			closeAll()
+			if errors.Is(err, syscall.ENOSPC) {
+				printWatchLimitWarning()
+			}
+			return err
+		}
+		watches = append(watches, wt)
+	}
+	defer closeAll()
+
+	// Poll-based root liveness check, in addition to fswatch's own
+	// ErrWatchTerminated: a periodic os.Stat is platform-proof against
+	// missed or coalesced root rename/delete events.
 	rootGone := make(chan string, 1)
 	pollDone := make(chan struct{})
 	go func() {
@@ -195,10 +205,14 @@ func (w *Watcher) watchFsnotify() error {
 			case <-pollDone:
 				return
 			case <-ticker.C:
-				for _, pair := range rootResolved {
-					if _, err := os.Stat(pair[0]); err != nil && os.IsNotExist(err) {
+				for _, dir := range w.dirs {
+					resolved := dir
+					if r, err := filepath.EvalSymlinks(dir); err == nil {
+						resolved = r
+					}
+					if _, err := os.Stat(resolved); err != nil && os.IsNotExist(err) {
 						select {
-						case rootGone <- pair[1]:
+						case rootGone <- dir:
 						default:
 						}
 						return
@@ -213,65 +227,127 @@ func (w *Watcher) watchFsnotify() error {
 		select {
 		case <-w.stopCh:
 			return nil
-
 		case path := <-rootGone:
 			return &ErrWatchRootGone{Path: path}
-
-		case ev, ok := <-fsw.Events:
-			if !ok {
-				return nil
+		case err := <-fatalCh:
+			if errors.Is(err, errFallbackToPolling) {
+				return nil // fallbackToPolling flag already set
 			}
-			if ev.Op == fsnotify.Chmod {
-				continue
-			}
-
-			if ev.Has(fsnotify.Remove) || ev.Has(fsnotify.Rename) {
-				if rootPath, gone := matchedRoot(roots, ev.Name); gone {
-					return &ErrWatchRootGone{Path: rootPath}
-				}
-			}
-
-			// Skip events from directories that shouldn't be watched
-			// (e.g., node_modules created inside src/ at runtime).
-			if shouldSkipPath(ev.Name) {
-				continue
-			}
-
-			if !w.matchesExtension(ev.Name) {
-				if ev.Has(fsnotify.Create) {
-					if info, err := os.Stat(ev.Name); err == nil && info.IsDir() {
-						if addErr := w.addRecursive(fsw, ev.Name); addErr == nil {
-							w.synthesizeCreatesForExistingFiles(ev.Name)
-						}
-					}
-				}
-				continue
-			}
-
-			w.recordSnapshotEntry(ev.Name)
-			event := Event{Path: ev.Name, Op: fsnotifyOpToString(ev.Op)}
-			w.addPending(event)
-
-		case err, ok := <-fsw.Errors:
-			if !ok {
-				return nil
-			}
-			if isOverflowError(err) {
-				if w.handleOverflow(fsw) {
-					return nil
-				}
-				continue
-			}
-			fmt.Fprintf(os.Stderr, "watcher: %v\n", err)
+			return err
 		}
 	}
 }
 
+// handleBatch is the fswatch callback for one watch root. It runs on a
+// library goroutine and is never invoked concurrently with itself for the
+// same watch. Events delivered alongside an error are still processed.
+func (w *Watcher) handleBatch(root string, events []fswatch.Event, err error, fatal func(error)) {
+	for _, ev := range events {
+		w.handleEvent(ev)
+	}
+	if err == nil {
+		return
+	}
+	if isOverflowError(err) {
+		if w.handleOverflow() {
+			fatal(errFallbackToPolling)
+		}
+		return
+	}
+	if errors.Is(err, fswatch.ErrWatchTerminated) {
+		fatal(&ErrWatchRootGone{Path: root})
+		return
+	}
+	fmt.Fprintf(os.Stderr, "watcher: %v\n", err)
+}
+
+func (w *Watcher) handleEvent(ev fswatch.Event) {
+	path := ev.Path
+	if shouldSkipPath(path) {
+		return
+	}
+
+	if ev.Kind == fswatch.EventDelete {
+		if !w.matchesExtension(path) {
+			return
+		}
+		w.snapMu.Lock()
+		if w.prevSnapshot != nil {
+			delete(w.prevSnapshot, path)
+		}
+		w.snapMu.Unlock()
+		w.addPending(Event{Path: path, Op: "remove"})
+		return
+	}
+
+	if !w.matchesExtension(path) {
+		// A directory appearing (e.g. git checkout renaming a fully
+		// populated package into the watch root) may carry files whose
+		// events predate the subscription. Synthesize creates for any
+		// files not yet in the snapshot.
+		if info, statErr := os.Stat(path); statErr == nil && info.IsDir() {
+			w.synthesizeCreatesForNewFiles(path)
+		}
+		return
+	}
+
+	w.snapMu.Lock()
+	prev, existed := w.prevSnapshot[path]
+	w.snapMu.Unlock()
+	op := "write"
+	if !existed {
+		op = "create"
+	}
+	// FSEvents can replay events from just before subscription (a known
+	// parcel-watcher quirk). If the file's stat matches the snapshot, nothing
+	// actually changed; drop the stale replay.
+	if info, statErr := os.Stat(path); statErr == nil && existed &&
+		info.ModTime().Equal(prev.modTime) && info.Size() == prev.size {
+		return
+	}
+	w.recordSnapshotEntry(path)
+	w.addPending(Event{Path: path, Op: op})
+}
+
+// synthesizeCreatesForNewFiles walks a freshly-appeared directory and pushes
+// synthetic create events for matching files the snapshot has never seen.
+// The snapshot check deduplicates against events fswatch delivers itself.
+func (w *Watcher) synthesizeCreatesForNewFiles(root string) {
+	filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			if path != root {
+				base := filepath.Base(path)
+				if skipDirs[base] || (strings.HasPrefix(base, ".") && base != ".") {
+					return filepath.SkipDir
+				}
+			}
+			return nil
+		}
+		if !d.Type().IsRegular() {
+			return nil
+		}
+		if shouldSkipPath(path) || !w.matchesExtension(path) {
+			return nil
+		}
+		w.snapMu.Lock()
+		_, known := w.prevSnapshot[path]
+		w.snapMu.Unlock()
+		if known {
+			return nil
+		}
+		w.recordSnapshotEntry(path)
+		w.addPending(Event{Path: path, Op: "create"})
+		return nil
+	})
+}
+
 // handleOverflow runs the snapshot-diff recovery and tracks consecutive
-// failures. Returns true if the caller should exit watchFsnotify so the
-// outer Watch() can fall back to polling.
-func (w *Watcher) handleOverflow(fsw *fsnotify.Watcher) bool {
-	recovered := w.recoverFromOverflow(fsw)
+// failures. Returns true if the watcher should fall back to polling.
+func (w *Watcher) handleOverflow() bool {
+	recovered := w.recoverFromOverflow()
 
 	w.snapMu.Lock()
 	if recovered {
@@ -284,7 +360,7 @@ func (w *Watcher) handleOverflow(fsw *fsnotify.Watcher) bool {
 
 	if failures >= maxOverflowFailures {
 		fmt.Fprintf(os.Stderr,
-			"watcher: fsnotify overflow recovery failed %d times; falling back to polling\n",
+			"watcher: overflow recovery failed %d times; falling back to polling\n",
 			failures)
 		w.snapMu.Lock()
 		w.fallbackToPolling = true
@@ -296,22 +372,11 @@ func (w *Watcher) handleOverflow(fsw *fsnotify.Watcher) bool {
 
 // recoverFromOverflow re-walks every watched root, diffs against the
 // in-memory snapshot, and pushes synthesized Create/Write/Remove events
-// downstream. It also re-attaches fsw to any directories that appeared
-// since the last walk so subsequent events do not get dropped.
+// downstream. fswatch keeps its own subdirectory watches alive across an
+// overflow, so no re-registration is needed here.
 //
-// Returns true on a clean re-walk (no errors, snapshot replaced). Returns
-// false if any root failed to walk — the caller treats this as a recovery
-// failure and may fall back to polling on repeated misses.
-func (w *Watcher) recoverFromOverflow(fsw *fsnotify.Watcher) bool {
-	ok := true
-	if fsw != nil {
-		for _, dir := range w.dirs {
-			if err := w.addRecursive(fsw, dir); err != nil {
-				ok = false
-			}
-		}
-	}
-
+// Returns true on a clean re-walk (snapshot replaced).
+func (w *Watcher) recoverFromOverflow() bool {
 	newSnapshot := w.buildSnapshot()
 
 	w.snapMu.Lock()
@@ -322,7 +387,7 @@ func (w *Watcher) recoverFromOverflow(fsw *fsnotify.Watcher) bool {
 	for _, ev := range w.diff(prev, newSnapshot) {
 		w.addPending(ev)
 	}
-	return ok
+	return true
 }
 
 func (w *Watcher) recordSnapshotEntry(path string) {
@@ -346,19 +411,15 @@ func (w *Watcher) recordSnapshotEntry(path string) {
 	w.snapMu.Unlock()
 }
 
-// isOverflowError reports whether err is a kernel-level overflow signal
-// from any fsnotify backend. Windows ReadDirectoryChangesW reports
-// ERROR_NOTIFY_ENUM_DIR (1022) when its 64KB buffer overflows during a
-// burst (large git checkout, pnpm install). Linux inotify reports
-// IN_Q_OVERFLOW when the per-instance event queue fills. Both surface as
-// fsnotify.ErrEventOverflow; we also accept ENOSPC on Linux (inotify
-// watch-descriptor exhaustion) and a string fallback for any future
-// backend that wraps differently.
+// isOverflowError reports whether err is a kernel-level overflow signal.
+// fswatch surfaces these as ErrOverflow ("some changes were missed; rescan").
+// ENOSPC (inotify watch-descriptor exhaustion) and string fallbacks are kept
+// for defense in depth across backends.
 func isOverflowError(err error) bool {
 	if err == nil {
 		return false
 	}
-	if errors.Is(err, fsnotify.ErrEventOverflow) {
+	if errors.Is(err, fswatch.ErrOverflow) {
 		return true
 	}
 	if errors.Is(err, syscall.ENOSPC) {
@@ -368,78 +429,6 @@ func isOverflowError(err error) bool {
 	return strings.Contains(msg, "overflow") ||
 		strings.Contains(msg, "notify_enum_dir") ||
 		strings.Contains(msg, "error 1022")
-}
-
-// addRecursive walks a directory tree and adds each directory to the
-// fsnotify watcher. Skips directories in the skipDirs set and hidden
-// directories (prefixed with "."). Returns an error if adding any
-// directory fails (typically ENOSPC on Linux when the inotify limit is hit).
-//
-// The root is resolved through filepath.EvalSymlinks so that watch roots
-// which are themselves symlinks or Windows junctions (mklink /J, OneDrive
-// Documents/Desktop redirection, monorepo layout symlinks) are walked as
-// their real targets. filepath.Walk uses os.Lstat, which reports symlinks
-// as non-directories regardless of target — without this resolution the
-// walk would no-op silently and no fsnotify.Add would ever run.
-// Symlinks discovered nested inside the tree are NOT followed, to avoid
-// cycles and double-watches.
-func (w *Watcher) addRecursive(fsw *fsnotify.Watcher, root string) error {
-	if resolved, err := filepath.EvalSymlinks(root); err == nil {
-		root = resolved
-	}
-	return filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil // skip inaccessible paths
-		}
-		if info.IsDir() {
-			base := filepath.Base(path)
-			// Skip known non-source directories and hidden dirs (except the root itself)
-			if path != root && (skipDirs[base] || (strings.HasPrefix(base, ".") && base != ".")) {
-				return filepath.SkipDir
-			}
-			if addErr := fsw.Add(path); addErr != nil {
-				printWatchLimitWarning()
-				return addErr
-			}
-		}
-		return nil
-	})
-}
-
-// synthesizeCreatesForExistingFiles walks a freshly-attached directory and
-// pushes synthetic Create events for every file already inside that matches
-// the configured extensions. This is the fix for atomically populated
-// directories (e.g., `git checkout` / `git pull` renaming a fully-populated
-// package directory into the watch root): the kernel-level Create events for
-// those pre-existing files happened before fsnotify was watching the dir, so
-// fsnotify never reported them. Without synthesis, dev mode would silently
-// miss the new files until they were touched.
-func (w *Watcher) synthesizeCreatesForExistingFiles(root string) {
-	filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return nil
-		}
-		if d.IsDir() {
-			if path != root {
-				base := filepath.Base(path)
-				if skipDirs[base] || (strings.HasPrefix(base, ".") && base != ".") {
-					return filepath.SkipDir
-				}
-			}
-			return nil
-		}
-		if !d.Type().IsRegular() {
-			return nil
-		}
-		if shouldSkipPath(path) {
-			return nil
-		}
-		if !w.matchesExtension(path) {
-			return nil
-		}
-		w.addPending(Event{Path: path, Op: "create"})
-		return nil
-	})
 }
 
 // printWatchLimitWarning prints a one-time warning with a link to
@@ -454,9 +443,9 @@ var printWatchLimitWarning = sync.OnceFunc(func() {
 })
 
 // watchPolling uses the original polling approach as a fallback. When
-// transitioning from fsnotify after an overflow fallback, it seeds from the
-// last-known fsnotify snapshot so the initial poll doesn't synthesize
-// spurious "create" events for every file already on disk.
+// transitioning after an overflow fallback, it seeds from the last-known
+// snapshot so the initial poll doesn't synthesize spurious "create" events
+// for every file already on disk.
 func (w *Watcher) watchPolling() error {
 	w.snapMu.Lock()
 	snapshot := w.prevSnapshot
@@ -526,40 +515,6 @@ func (w *Watcher) matchesExtension(path string) bool {
 	return false
 }
 
-func fsnotifyOpToString(op fsnotify.Op) string {
-	switch {
-	case op.Has(fsnotify.Create):
-		return "create"
-	case op.Has(fsnotify.Remove) || op.Has(fsnotify.Rename):
-		return "remove"
-	default:
-		return "write"
-	}
-}
-
-// normalizeWatchPath returns a canonical absolute form of a watch root
-// for comparison against fsnotify event paths. fsnotify reports event
-// paths as they were passed to Add (no symlink resolution), so we only
-// Abs+Clean here — resolving symlinks would make /var/foo (the path the
-// user added on macOS) miss events reported under that same /var/foo.
-func normalizeWatchPath(p string) string {
-	if abs, err := filepath.Abs(p); err == nil {
-		return filepath.Clean(abs)
-	}
-	return filepath.Clean(p)
-}
-
-// matchedRoot reports whether eventPath equals one of the registered
-// watch roots, returning the original (unnormalized) root path so error
-// messages reflect what the user passed in.
-func matchedRoot(roots map[string]string, eventPath string) (string, bool) {
-	norm := normalizeWatchPath(eventPath)
-	if orig, ok := roots[norm]; ok {
-		return orig, true
-	}
-	return "", false
-}
-
 // shouldSkipPath returns true if the path contains a directory segment
 // that should be ignored (e.g., node_modules, .git).
 // Normalizes separators to "/" before matching so that Windows native paths
@@ -591,19 +546,24 @@ type fileInfo struct {
 func (w *Watcher) buildSnapshot() map[string]fileInfo {
 	snap := make(map[string]fileInfo)
 	for _, dir := range w.dirs {
-		// Mirror addRecursive: resolve symlinks/junctions at the root so the
-		// polling fallback walks the real target instead of no-op'ing on a
-		// symlinked watch root. Nested symlinks are still left alone.
-		if resolved, err := filepath.EvalSymlinks(dir); err == nil {
-			dir = resolved
+		// Resolve symlinks/junctions at the root so the walk covers the real
+		// target instead of no-op'ing on a symlinked watch root (filepath.Walk
+		// uses Lstat). Keys are rebased back onto the caller-visible root so
+		// they compare equal to fswatch event paths, which are delivered under
+		// the path the caller subscribed (e.g. /var/... vs /private/var/... on
+		// macOS). Nested symlinks are still left alone.
+		orig := dir
+		resolved := dir
+		if r, err := filepath.EvalSymlinks(dir); err == nil {
+			resolved = r
 		}
-		filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		filepath.Walk(resolved, func(path string, info os.FileInfo, err error) error {
 			if err != nil {
 				return nil
 			}
 			if info.IsDir() {
 				base := filepath.Base(path)
-				if path != dir && (skipDirs[base] || (strings.HasPrefix(base, ".") && base != ".")) {
+				if path != resolved && (skipDirs[base] || (strings.HasPrefix(base, ".") && base != ".")) {
 					return filepath.SkipDir
 				}
 				return nil
@@ -611,7 +571,11 @@ func (w *Watcher) buildSnapshot() map[string]fileInfo {
 			ext := filepath.Ext(path)
 			for _, e := range w.extensions {
 				if strings.EqualFold(ext, e) {
-					snap[path] = fileInfo{modTime: info.ModTime(), size: info.Size()}
+					key := path
+					if resolved != orig && strings.HasPrefix(path, resolved) {
+						key = orig + path[len(resolved):]
+					}
+					snap[key] = fileInfo{modTime: info.ModTime(), size: info.Size()}
 					break
 				}
 			}

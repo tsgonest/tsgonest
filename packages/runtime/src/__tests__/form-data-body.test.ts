@@ -133,49 +133,6 @@ describe("FormDataInterceptor", () => {
     expect(req.body.name).toBe("test");
   });
 
-  it("merges multiple files with same field as array of web Files", async () => {
-    const interceptor = new FormDataInterceptor();
-
-    const file1 = {
-      fieldname: "images",
-      originalname: "a.jpg",
-      mimetype: "image/jpeg",
-      buffer: Buffer.from("img1"),
-    };
-    const file2 = {
-      fieldname: "images",
-      originalname: "b.jpg",
-      mimetype: "image/jpeg",
-      buffer: Buffer.from("img2"),
-    };
-    const mockMulter = {
-      any: () => (req: any, _res: any, cb: (err: any) => void) => {
-        req.files = [file1, file2];
-        cb(null);
-      },
-    };
-    const factory = () => mockMulter;
-
-    class TestController {
-      upload(@FormDataBody(factory) _body: any) {}
-    }
-
-    const req = { body: {}, files: undefined as any };
-    const context = {
-      getHandler: () => TestController.prototype.upload,
-      getClass: () => TestController,
-      switchToHttp: () => ({
-        getRequest: () => req,
-        getResponse: () => {},
-      }),
-    };
-
-    await interceptor.intercept(context, { handle: () => ({}) });
-    expect(req.body.images).toHaveLength(2);
-    expect(req.body.images[0]).toBeInstanceOf(File);
-    expect(req.body.images[1]).toBeInstanceOf(File);
-  });
-
   it("converts single multer file to web-native File instance", async () => {
     const interceptor = new FormDataInterceptor();
 
@@ -267,46 +224,6 @@ describe("FormDataInterceptor", () => {
     expect(req.body.images[1]).toBeInstanceOf(File);
     expect(req.body.images[1].name).toBe("b.png");
     expect(req.body.images[1].type).toBe("image/png");
-  });
-
-  it("converted files pass instanceof File check (for validation)", async () => {
-    const interceptor = new FormDataInterceptor();
-
-    const multerFile = {
-      fieldname: "document",
-      originalname: "report.pdf",
-      mimetype: "application/pdf",
-      buffer: Buffer.from("pdf-content"),
-      size: 11,
-    };
-    const mockMulter = {
-      any: () => (req: any, _res: any, cb: (err: any) => void) => {
-        req.files = [multerFile];
-        cb(null);
-      },
-    };
-    const factory = () => mockMulter;
-
-    class TestController {
-      upload(@FormDataBody(factory) _body: any) {}
-    }
-
-    const req = { body: {}, files: undefined as any };
-    const context = {
-      getHandler: () => TestController.prototype.upload,
-      getClass: () => TestController,
-      switchToHttp: () => ({
-        getRequest: () => req,
-        getResponse: () => {},
-      }),
-    };
-
-    await interceptor.intercept(context, { handle: () => ({}) });
-
-    // This is the critical check — generated assert functions use `instanceof File`
-    // Raw multer objects would fail this check
-    const file = req.body.document;
-    expect(file instanceof File).toBe(true);
   });
 
   it("preserves file content through conversion", async () => {

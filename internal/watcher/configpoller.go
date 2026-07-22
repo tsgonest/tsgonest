@@ -59,6 +59,13 @@ func WatchFiles(paths []string, pollInterval time.Duration, onChange func(path s
 					// non-zero → zero: file deleted
 					if newTime != oldTime {
 						snapshot[path] = newTime
+						// Re-check stop: a tick already past the select must
+						// not fire the callback after stop() returned.
+						select {
+						case <-stopCh:
+							return
+						default:
+						}
 						onChange(path)
 					}
 				}

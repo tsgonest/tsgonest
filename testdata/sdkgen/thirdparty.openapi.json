@@ -1,0 +1,75 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Third-party API (converted swagger)",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/token/session/:create": {
+      "put": {
+        "operationId": "TokenSessionCreate_create",
+        "tags": ["token/session"],
+        "parameters": [
+          {
+            "name": "consumerToken",
+            "in": "query",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json; charset=utf-8": {
+                "schema": { "$ref": "#/components/schemas/SessionToken" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/customer": {
+      "post": {
+        "operationId": "Customer_post",
+        "tags": ["customer"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json; charset=utf-8": {
+              "schema": { "$ref": "#/components/schemas/Customer" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json; charset=utf-8": {
+                "schema": { "$ref": "#/components/schemas/Customer" }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "SessionToken": {
+        "type": "object",
+        "properties": {
+          "token": { "type": "string" },
+          "expirationDate": { "type": "string" }
+        }
+      },
+      "Customer": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer" },
+          "name": { "type": "string" }
+        }
+      }
+    }
+  }
+}

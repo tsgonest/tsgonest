@@ -1,6 +1,7 @@
 package rewrite
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 )
@@ -14,10 +15,12 @@ const rewriteSentinel = "/* @tsgonest-rewritten */"
 // `is(...)` call in JS corresponds to the Nth MarkerCall with FunctionName=="is".
 //
 // The function also:
-// 1. Removes the tsgonest import/require line
-// 2. Adds companion import/require lines at the top
-// 3. Replaces each marker call with the corresponding companion function call
-func rewriteMarkers(text string, outputFile string, calls []MarkerCall, companionMap map[string]string, moduleFormat string) string {
+//  1. Removes the tsgonest import/require line (kept when any call has no
+//     companion — the runtime markers are identity no-ops, so an unrewritten
+//     call must keep its import to avoid a ReferenceError)
+//  2. Adds companion import/require lines at the top
+//  3. Replaces each marker call with the corresponding companion function call
+func rewriteMarkers(text string, outputFile string, calls []MarkerCall, companionMap map[string]string, moduleFormat string, warn func(string)) string {
 	if len(calls) == 0 {
 		return text
 	}
@@ -25,6 +28,17 @@ func rewriteMarkers(text string, outputFile string, calls []MarkerCall, companio
 	// Check for sentinel — already rewritten
 	if strings.Contains(text, rewriteSentinel) {
 		return text
+	}
+
+	// Calls whose type never produced a companion are left unrewritten.
+	missingTypes := make(map[string]bool)
+	for _, call := range calls {
+		if _, ok := companionMap[call.TypeName]; !ok {
+			if !missingTypes[call.TypeName] && warn != nil {
+				warn(fmt.Sprintf("no companion generated for type %q — marker call left as a no-op (validation skipped)", call.TypeName))
+			}
+			missingTypes[call.TypeName] = true
+		}
 	}
 
 	// Count occurrences of each marker function to build occurrence index
@@ -40,12 +54,20 @@ func rewriteMarkers(text string, outputFile string, calls []MarkerCall, companio
 	var result []string
 	var importLines []string
 
-	// Detect and remove tsgonest import line, collect companion imports
-	tsgonestImportRemoved := false
+	// Detect and remove tsgonest import line, collect companion imports.
+	// For CJS emit, capture the namespace binding (e.g. "tsgonest_1") so the
+	// interop call form `(0, tsgonest_1.assert)(x)` can be rewritten too.
+	tsgonestImportFound := false
+	cjsNamespace := ""
 	for _, line := range lines {
-		if !tsgonestImportRemoved && isTsgonestImportLine(line) {
-			tsgonestImportRemoved = true
-			continue // skip this line
+		if !tsgonestImportFound && isTsgonestImportLine(line) {
+			tsgonestImportFound = true
+			if m := cjsNamespaceRe.FindStringSubmatch(line); m != nil {
+				cjsNamespace = m[1]
+			}
+			if len(missingTypes) == 0 {
+				continue // strip the line — all calls rewrite to companions
+			}
 		}
 		result = append(result, line)
 	}
@@ -57,7 +79,7 @@ func rewriteMarkers(text string, outputFile string, calls []MarkerCall, companio
 	joined := strings.Join(result, "\n")
 	for funcName, typeNames := range funcTypeLookup {
 		occurrenceIndex[funcName] = 0
-		joined = replaceMarkerCalls(joined, funcName, typeNames, &occurrenceIndex)
+		joined = replaceMarkerCalls(joined, funcName, cjsNamespace, typeNames, missingTypes, &occurrenceIndex)
 	}
 
 	// Reassemble: [use strict +] sentinel + companion imports + rewritten body
@@ -95,25 +117,31 @@ func isTsgonestImportLine(line string) bool {
 	return false
 }
 
-// markerCallPatterns caches compiled regexps for each marker function.
-var markerCallPatterns = map[string]*regexp.Regexp{}
+// cjsNamespaceRe extracts the namespace binding from tsgo's CJS emit of the
+// tsgonest import, e.g. `const tsgonest_1 = require("tsgonest");` → "tsgonest_1".
+// Destructured requires (`const { assert } = ...`) intentionally don't match.
+var cjsNamespaceRe = regexp.MustCompile(`(?:const|var|let)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*require\((?:"tsgonest"|'tsgonest')\)`)
 
-func init() {
-	for name := range markerFunctions {
-		// Match the function name followed by ( but not preceded by an alphanumeric
-		// character (to avoid matching e.g., "promise" when looking for "is").
-		// The negative lookbehind ensures we match standalone calls.
-		// We match: funcName( and replace just the function name part.
-		markerCallPatterns[name] = regexp.MustCompile(`\b` + regexp.QuoteMeta(name) + `\(`)
+// markerCallPattern matches every emitted call form of a marker function:
+//   - bare ESM / destructured-require form: `assert(`
+//   - CJS interop form: `(0, tsgonest_1.assert)(`
+//   - plain member form: `tsgonest_1.assert(`
+func markerCallPattern(funcName, cjsNamespace string) *regexp.Regexp {
+	name := regexp.QuoteMeta(funcName)
+	if cjsNamespace == "" {
+		return regexp.MustCompile(`\b` + name + `\(`)
 	}
+	ns := regexp.QuoteMeta(cjsNamespace)
+	return regexp.MustCompile(
+		`\(0,\s*` + ns + `\.` + name + `\)\s*\(` +
+			`|\b` + ns + `\.` + name + `\(` +
+			`|\b` + name + `\(`)
 }
 
-// replaceMarkerCalls replaces occurrences of `funcName(` with `companionFuncName(` in order.
-func replaceMarkerCalls(text string, funcName string, typeNames []string, occurrenceIndex *map[string]int) string {
-	pattern := markerCallPatterns[funcName]
-	if pattern == nil {
-		return text
-	}
+// replaceMarkerCalls replaces marker call sites with companion function calls in order.
+// Occurrences whose type has no companion are consumed but left unchanged.
+func replaceMarkerCalls(text string, funcName string, cjsNamespace string, typeNames []string, missingTypes map[string]bool, occurrenceIndex *map[string]int) string {
+	pattern := markerCallPattern(funcName, cjsNamespace)
 
 	idx := (*occurrenceIndex)[funcName]
 	text = pattern.ReplaceAllStringFunc(text, func(match string) string {
@@ -122,6 +150,9 @@ func replaceMarkerCalls(text string, funcName string, typeNames []string, occurr
 		}
 		typeName := typeNames[idx]
 		idx++
+		if missingTypes[typeName] {
+			return match
+		}
 		return companionFuncName(funcName, typeName) + "("
 	})
 	(*occurrenceIndex)[funcName] = idx

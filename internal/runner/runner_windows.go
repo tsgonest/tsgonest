@@ -160,7 +160,10 @@ func (r *Runner) Start() error {
 	go func() {
 		cmd.Wait()
 		r.alive.Store(false)
+		// close(done) first so a Stop/Restart triggered by the callback
+		// sees the exited child immediately instead of waiting 5s.
 		close(done)
+		r.reportExit(cmd)
 	}()
 
 	return nil

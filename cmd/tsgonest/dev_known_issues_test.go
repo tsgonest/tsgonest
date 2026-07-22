@@ -440,3 +440,125 @@ func TestDevLoop_ExecFlagShellSelection(t *testing.T) {
 		t.Errorf("windows: expected args %v, got %v", []string{"/C", cmd}, args)
 	}
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// G. Drained events discarded → watcher wedges after "debouncing..." — FIXED (#228)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// TestDevLoop_DrainedEventsAreCarriedIntoNextBuild reproduces issue #228: a
+// file change lands while a build is in flight, its watcher debounce has
+// already flushed (Pending() is false), and the trigger gets consumed by the
+// post-build drain. Before the fix the drain discarded the events, nothing
+// re-delivered them, and the loop blocked on triggerCh forever. Dev printed
+// "changes detected during build, debouncing..." and never rebuilt again.
+// The fix carries drained events into the next iteration.
+func TestDevLoop_DrainedEventsAreCarriedIntoNextBuild(t *testing.T) {
+	builder := &fakeBuilder{
+		buildStarted: make(chan struct{}, 1),
+		releaseBuild: make(chan struct{}, 2),
+	}
+	restarter := &fakeRestarter{}
+	triggerCh := make(chan rebuildTrigger, 16)
+	done := make(chan struct{})
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		rebuildLoop(rebuildLoopDeps{
+			triggerCh: triggerCh,
+			done:      done,
+			builder:   builder,
+			proc:      restarter,
+			pending:   func() bool { return false },
+		})
+	}()
+	defer func() {
+		close(done)
+		wg.Wait()
+	}()
+
+	triggerCh <- rebuildTrigger{events: []watcher.Event{{Path: "src/a.ts", Op: "write"}}}
+	select {
+	case <-builder.buildStarted:
+	case <-time.After(2 * time.Second):
+		builder.releaseBuild <- struct{}{}
+		t.Fatal("first build never started")
+	}
+
+	// Second change arrives while build 1 is in flight; its debounce already
+	// flushed, so this trigger is all that exists. The drain will consume it.
+	triggerCh <- rebuildTrigger{events: []watcher.Event{{Path: "src/b.ts", Op: "write"}}}
+	builder.releaseBuild <- struct{}{}
+
+	// The loop must self-deliver the carried events as a second build.
+	select {
+	case <-builder.buildStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("carried events were discarded; second build never started (issue #228 regression)")
+	}
+	builder.releaseBuild <- struct{}{}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for restarter.Count() < 1 {
+		if time.Now().After(deadline) {
+			t.Fatalf("expected a restart after the carried rebuild, got %d", restarter.Count())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if got := builder.calls.Load(); got != 2 {
+		t.Fatalf("expected exactly 2 builds (original + carried), got %d", got)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// H. Crash watchdog: external clean wipes dist under a running app — HARDENED
+// ─────────────────────────────────────────────────────────────────────────────
+
+// TestDevLoop_CrashTriggerRebuildsAndRestarts asserts the self-heal path:
+// when the runner's OnUnexpectedExit watchdog detects the child died with
+// the output directory missing, it pushes a crashed trigger. The rebuild
+// loop must respond with exactly one full build followed by one restart,
+// keeping proc.Restart() calls on the single rebuild-loop path (issue #131).
+func TestDevLoop_CrashTriggerRebuildsAndRestarts(t *testing.T) {
+	builder := &fakeBuilder{}
+	restarter := &fakeRestarter{}
+	triggerCh := make(chan rebuildTrigger, 1)
+	done := make(chan struct{})
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		rebuildLoop(rebuildLoopDeps{
+			triggerCh: triggerCh,
+			done:      done,
+			builder:   builder,
+			proc:      restarter,
+			pending:   func() bool { return false },
+		})
+	}()
+
+	triggerCh <- rebuildTrigger{crashed: true}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for restarter.Count() < 1 {
+		if time.Now().After(deadline) {
+			close(done)
+			wg.Wait()
+			t.Fatal("crash trigger did not produce a restart")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	close(done)
+	wg.Wait()
+
+	if got := builder.calls.Load(); got != 1 {
+		t.Fatalf("expected exactly 1 full build for the crash trigger, got %d", got)
+	}
+	if got := restarter.Count(); got != 1 {
+		t.Fatalf("expected exactly 1 restart for the crash trigger, got %d", got)
+	}
+}

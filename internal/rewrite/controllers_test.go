@@ -2438,3 +2438,107 @@ func TestRewriteController_StringParamWithPatternContainingBackslash_EscapesSafe
 		t.Errorf("expected regex literal /\\d+/ in test call, got:\n%s", result)
 	}
 }
+
+func scalarParamController(atomic string, c *metadata.Constraints) []analyzer.ControllerInfo {
+	return []analyzer.ControllerInfo{
+		{
+			Name:       "UserController",
+			SourceFile: "/src/user.controller.ts",
+			Routes: []analyzer.Route{
+				{
+					OperationID: "findOne",
+					MethodName:  "findOne",
+					Parameters: []analyzer.RouteParameter{
+						{
+							Category:  "param",
+							Name:      "id",
+							LocalName: "id",
+							Type: metadata.Metadata{
+								Kind:        metadata.KindAtomic,
+								Atomic:      atomic,
+								Constraints: c,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+const scalarParamInput = `class UserController {
+    async findOne(id) {
+        return this.service.findOne(id);
+    }
+}`
+
+func TestRewriteController_StringParamWithFormat_EmitsFormatCheck(t *testing.T) {
+	controllers := scalarParamController("string", &metadata.Constraints{Format: strPtr("uuid")})
+	result := rewriteController(scalarParamInput, "/dist/user.controller.js", controllers, map[string]string{}, "esm", nil)
+
+	if !strings.Contains(result, `.test(id)) throw new __e([{path:"id",expected:"format uuid"`) {
+		t.Errorf("expected uuid format check for @Param('id'), got:\n%s", result)
+	}
+	if !strings.Contains(result, "urn:uuid") {
+		t.Errorf("expected uuid regex from the shared format table, got:\n%s", result)
+	}
+	if !strings.Contains(result, "/i.test(id)") {
+		t.Errorf("expected case-insensitive flag on uuid regex, got:\n%s", result)
+	}
+}
+
+func TestRewriteController_StringParamWithUnknownFormat_NoCheck(t *testing.T) {
+	controllers := scalarParamController("string", &metadata.Constraints{Format: strPtr("password")})
+	result := rewriteController(scalarParamInput, "/dist/user.controller.js", controllers, map[string]string{}, "esm", nil)
+
+	if strings.Contains(result, "throw new __e") {
+		t.Errorf("password format has no regex; expected no runtime check, got:\n%s", result)
+	}
+}
+
+func TestRewriteController_StringParamContentChecks_EmitChecks(t *testing.T) {
+	controllers := scalarParamController("string", &metadata.Constraints{
+		StartsWith: strPtr("usr_"),
+		EndsWith:   strPtr("-x"),
+		Includes:   strPtr("mid"),
+	})
+	result := rewriteController(scalarParamInput, "/dist/user.controller.js", controllers, map[string]string{}, "esm", nil)
+
+	for _, want := range []string{
+		`if (!id.startsWith("usr_")) throw new __e([{path:"id",expected:"startsWith usr_"`,
+		`if (!id.endsWith("-x")) throw new __e([{path:"id",expected:"endsWith -x"`,
+		`if (!id.includes("mid")) throw new __e([{path:"id",expected:"includes mid"`,
+	} {
+		if !strings.Contains(result, want) {
+			t.Errorf("missing check %q in:\n%s", want, result)
+		}
+	}
+}
+
+func TestRewriteController_StringParamCaseChecks_EmitChecks(t *testing.T) {
+	yes := true
+	controllers := scalarParamController("string", &metadata.Constraints{Uppercase: &yes})
+	result := rewriteController(scalarParamInput, "/dist/user.controller.js", controllers, map[string]string{}, "esm", nil)
+
+	if !strings.Contains(result, `if (id !== id.toUpperCase()) throw new __e([{path:"id",expected:"uppercase"`) {
+		t.Errorf("expected uppercase check, got:\n%s", result)
+	}
+}
+
+func TestRewriteController_StringParamTransforms_RunBeforeChecks(t *testing.T) {
+	controllers := scalarParamController("string", &metadata.Constraints{
+		Transforms: []string{"trim", "toLowerCase"},
+		MinLength:  intPtr(3),
+	})
+	result := rewriteController(scalarParamInput, "/dist/user.controller.js", controllers, map[string]string{}, "esm", nil)
+
+	trimIdx := strings.Index(result, "id = id.trim();")
+	lowerIdx := strings.Index(result, "id = id.toLowerCase();")
+	checkIdx := strings.Index(result, "id.length < 3")
+	if trimIdx == -1 || lowerIdx == -1 || checkIdx == -1 {
+		t.Fatalf("expected trim, toLowerCase, and minLength emissions, got:\n%s", result)
+	}
+	if !(trimIdx < lowerIdx && lowerIdx < checkIdx) {
+		t.Errorf("transforms must run before constraint checks, got:\n%s", result)
+	}
+}

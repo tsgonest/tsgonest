@@ -7,9 +7,9 @@ import (
 	"time"
 )
 
-// TestWatch_FsnotifyDetectsWrite verifies that the fsnotify-backed Watch()
+// TestWatch_NativeDetectsWrite verifies that the fswatch-backed Watch()
 // detects file modifications with low latency.
-func TestWatch_FsnotifyDetectsWrite(t *testing.T) {
+func TestWatch_NativeDetectsWrite(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "app.ts"), []byte("const x = 1;"), 0644)
 
@@ -42,12 +42,12 @@ func TestWatch_FsnotifyDetectsWrite(t *testing.T) {
 			t.Errorf("expected event for app.ts, got %v", events)
 		}
 	case <-time.After(3 * time.Second):
-		t.Fatal("fsnotify did not detect file write within 3s")
+		t.Fatal("native backend did not detect file write within 3s")
 	}
 }
 
-// TestWatch_FsnotifyDetectsCreate verifies that new files are detected.
-func TestWatch_FsnotifyDetectsCreate(t *testing.T) {
+// TestWatch_NativeDetectsCreate verifies that new files are detected.
+func TestWatch_NativeDetectsCreate(t *testing.T) {
 	dir := t.TempDir()
 
 	changed := make(chan []Event, 1)
@@ -75,12 +75,12 @@ func TestWatch_FsnotifyDetectsCreate(t *testing.T) {
 			t.Errorf("expected create event for new.ts, got %v", events)
 		}
 	case <-time.After(3 * time.Second):
-		t.Fatal("fsnotify did not detect file creation within 3s")
+		t.Fatal("native backend did not detect file creation within 3s")
 	}
 }
 
-// TestWatch_FsnotifyFiltersExtensions verifies that non-matching extensions are ignored.
-func TestWatch_FsnotifyFiltersExtensions(t *testing.T) {
+// TestWatch_NativeFiltersExtensions verifies that non-matching extensions are ignored.
+func TestWatch_NativeFiltersExtensions(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "app.ts"), []byte("const x = 1;"), 0644)
 
@@ -105,9 +105,9 @@ func TestWatch_FsnotifyFiltersExtensions(t *testing.T) {
 	}
 }
 
-// TestWatch_FsnotifyDetectsSubdirChanges verifies that changes in subdirectories
+// TestWatch_NativeDetectsSubdirChanges verifies that changes in subdirectories
 // are detected (recursive watching).
-func TestWatch_FsnotifyDetectsSubdirChanges(t *testing.T) {
+func TestWatch_NativeDetectsSubdirChanges(t *testing.T) {
 	dir := t.TempDir()
 	subDir := filepath.Join(dir, "controllers")
 	os.MkdirAll(subDir, 0755)
@@ -138,13 +138,13 @@ func TestWatch_FsnotifyDetectsSubdirChanges(t *testing.T) {
 			t.Errorf("expected event for app.controller.ts in subdir, got %v", events)
 		}
 	case <-time.After(3 * time.Second):
-		t.Fatal("fsnotify did not detect subdirectory file change within 3s")
+		t.Fatal("native backend did not detect subdirectory file change within 3s")
 	}
 }
 
-// TestWatch_FsnotifyNewSubdir verifies that files created in a newly created
+// TestWatch_NativeNewSubdir verifies that files created in a newly created
 // subdirectory are detected (the new directory is dynamically added to the watch).
-func TestWatch_FsnotifyNewSubdir(t *testing.T) {
+func TestWatch_NativeNewSubdir(t *testing.T) {
 	dir := t.TempDir()
 
 	changed := make(chan []Event, 2)
@@ -160,7 +160,7 @@ func TestWatch_FsnotifyNewSubdir(t *testing.T) {
 	// Create a new subdirectory and a file in it
 	newDir := filepath.Join(dir, "services")
 	os.MkdirAll(newDir, 0755)
-	// Small delay to let fsnotify pick up the new directory
+	// Small delay to let the backend pick up the new directory
 	time.Sleep(100 * time.Millisecond)
 	os.WriteFile(filepath.Join(newDir, "user.service.ts"), []byte("export class UserService {}"), 0644)
 
@@ -175,7 +175,7 @@ func TestWatch_FsnotifyNewSubdir(t *testing.T) {
 				}
 			}
 		case <-timeout:
-			t.Fatal("fsnotify did not detect file in newly created subdirectory within 3s")
+			t.Fatal("native backend did not detect file in newly created subdirectory within 3s")
 		}
 	}
 }

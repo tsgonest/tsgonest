@@ -53,6 +53,7 @@ func main() {
 		"compiler",
 		"core",
 		"execute/incremental",
+		"fswatch",
 		"parser",
 		"scanner",
 		"tsoptions",

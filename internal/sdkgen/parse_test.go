@@ -1319,3 +1319,98 @@ func TestParseSchemaNode_MinMaxItems(t *testing.T) {
 		t.Errorf("expected maxItems=2, got %v", node.MaxItems)
 	}
 }
+
+func TestResolveControllerName_SanitizesNonIdentifierTags(t *testing.T) {
+	cases := []struct {
+		tag  string
+		want string
+	}{
+		{"token/session", "tokenSessionController"},
+		{"token/sessionNS", "tokenSessionNSController"},
+		{"user-profiles", "userProfilesController"},
+		{"2fa", "_2faController"},
+		{"a b.c", "aBCController"},
+		{"///", "DefaultController"},
+	}
+	for _, tc := range cases {
+		op := openAPIOperation{Tags: []string{tc.tag}}
+		if got := resolveControllerName(op, "/", ""); got != tc.want {
+			t.Errorf("tag %q: expected %q, got %q", tc.tag, tc.want, got)
+		}
+	}
+}
+
+func TestResolveControllerName_SanitizesPathSegments(t *testing.T) {
+	op := openAPIOperation{}
+	if got := resolveControllerName(op, "/user-profiles/123", ""); got != "UserProfilesController" {
+		t.Errorf("expected UserProfilesController, got %q", got)
+	}
+}
+
+func TestParseOpenAPIBytes_ParameterizedJSONContentType(t *testing.T) {
+	doc := `{
+		"openapi": "3.1.0",
+		"info": {"title": "Test", "version": "1.0.0"},
+		"paths": {
+			"/customer": {
+				"post": {
+					"operationId": "createCustomer",
+					"x-tsgonest-controller": "CustomerController",
+					"requestBody": {
+						"required": true,
+						"content": {"application/json; charset=utf-8": {"schema": {"type": "object", "properties": {"name": {"type": "string"}}}}}
+					},
+					"responses": {
+						"201": {
+							"description": "Created",
+							"content": {"application/json; charset=utf-8": {"schema": {"type": "object"}}}
+						}
+					}
+				}
+			}
+		}
+	}`
+
+	sdkDoc, err := ParseOpenAPIBytes([]byte(doc))
+	if err != nil {
+		t.Fatalf("ParseOpenAPIBytes: %v", err)
+	}
+	var found bool
+	for _, v := range sdkDoc.Versions {
+		for _, ctrl := range v.Controllers {
+			for _, m := range ctrl.Methods {
+				if m.Name != "createCustomer" {
+					continue
+				}
+				found = true
+				if m.Body == nil {
+					t.Fatal("expected request body")
+				}
+				if m.Body.ContentType != "application/json" {
+					t.Errorf("parameterized media type must normalize to application/json, got %q", m.Body.ContentType)
+				}
+				if m.Body.TSType == "" || m.Body.TSType == "unknown" {
+					t.Errorf("schema behind parameterized media type must resolve, got %q", m.Body.TSType)
+				}
+			}
+		}
+	}
+	if !found {
+		t.Fatal("createCustomer method not found")
+	}
+}
+
+func TestNormalizeMediaType(t *testing.T) {
+	cases := map[string]string{
+		"application/json":                "application/json",
+		"application/json; charset=utf-8": "application/json",
+		"Application/JSON;charset=UTF-8":  "application/json",
+		"multipart/form-data; boundary=x": "multipart/form-data",
+		" text/plain ":                    "text/plain",
+	}
+	for in, want := range cases {
+		if got := normalizeMediaType(in); got != want {
+			t.Errorf("normalizeMediaType(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

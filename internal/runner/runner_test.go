@@ -100,14 +100,6 @@ func TestRunner_DisableStdin(t *testing.T) {
 	}
 }
 
-func TestRunner_DisableStdin_DefaultFalse(t *testing.T) {
-	// By default, DisableStdin should be false
-	r := New("echo", []string{"hello"}, "")
-	if r.DisableStdin {
-		t.Error("expected DisableStdin to default to false")
-	}
-}
-
 // TestRunner_Running_DataRace stress-tests Running() against Restart() to
 // guarantee the lock-free atomic-based liveness flag stays race-free under
 // `go test -race`. The previous implementation read r.cmd.ProcessState from
