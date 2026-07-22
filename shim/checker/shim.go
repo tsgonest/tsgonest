@@ -11,7 +11,7 @@ import "github.com/microsoft/typescript-go/internal/nodebuilder"
 import "github.com/microsoft/typescript-go/internal/printer"
 import "github.com/microsoft/typescript-go/internal/tracing"
 import "sync"
-import "unsafe"
+import _ "unsafe"
 
 type AccessFlags = checker.AccessFlags
 const AccessFlagsAllowMissing = checker.AccessFlagsAllowMissing
@@ -536,18 +536,6 @@ type TupleElementInfo = checker.TupleElementInfo
 type TupleNormalizer = checker.TupleNormalizer
 type TupleType = checker.TupleType
 type Type = checker.Type
-type extra_Type struct {
-  flags checker.TypeFlags
-  objectFlags checker.ObjectFlags
-  id checker.TypeId
-  symbol *ast.Symbol
-  alias *checker.TypeAlias
-  checker *checker.Checker
-  data checker.TypeData
-}
-func Type_alias(v *checker.Type) *checker.TypeAlias {
-  return ((*extra_Type)(unsafe.Pointer(v))).alias
-}
 type TypeAlias = checker.TypeAlias
 type TypeAliasLinks = checker.TypeAliasLinks
 type TypeBase = checker.TypeBase

@@ -138,7 +138,7 @@ func (w *TypeWalker) warnAnonymousTypeArgs(baseName string) {
 // (e.g., `type MeetingResponse = Omit<...> & {...}`). Used to suppress
 // anonymous type argument warnings when the parent type already provides a name.
 func (w *TypeWalker) hasNamedAlias(t *shimchecker.Type) bool {
-	alias := shimchecker.Type_alias(t)
+	alias := t.Alias()
 	if alias == nil {
 		return false
 	}
@@ -329,7 +329,7 @@ func (w *TypeWalker) applyAliasJSDoc(t *shimchecker.Type, result metadata.Metada
 	var aliasJSDoc *metadata.Constraints
 
 	// Fast path: alias info is attached directly on the type (object/array aliases).
-	if alias := shimchecker.Type_alias(t); alias != nil {
+	if alias := t.Alias(); alias != nil {
 		if sym := alias.Symbol(); sym != nil {
 			name := sym.Name
 			if !(name == "" || name == "__type" || name == "__object" || (len(name) > 0 && name[0] == '\xfe')) && sym.Declarations != nil {
@@ -474,7 +474,7 @@ func (w *TypeWalker) walkSingleType(t *shimchecker.Type) metadata.Metadata {
 // encountered as a sub-field, not walked directly at the top level).
 // Returns "" if no name can be derived.
 func (w *TypeWalker) resolveAliasName(t *shimchecker.Type) string {
-	alias := shimchecker.Type_alias(t)
+	alias := t.Alias()
 	if alias == nil {
 		return ""
 	}
@@ -672,7 +672,7 @@ func (w *TypeWalker) walkUnion(t *shimchecker.Type) metadata.Metadata {
 	// used as sub-fields (e.g., `status: OrderStatus` where OrderStatus = 'a' | 'b').
 	// For generic instantiations, build a composite name to avoid collisions.
 	if w.depth > 1 {
-		alias := shimchecker.Type_alias(t)
+		alias := t.Alias()
 		if alias != nil {
 			if aliasSym := alias.Symbol(); aliasSym != nil {
 				aliasName := aliasSym.Name
@@ -709,7 +709,7 @@ func (w *TypeWalker) walkUnion(t *shimchecker.Type) metadata.Metadata {
 // Returns empty string if no name is found.
 func (w *TypeWalker) getUnionEnumName(t *shimchecker.Type) string {
 	// 1. Check for type alias (Prisma-style string union types)
-	alias := shimchecker.Type_alias(t)
+	alias := t.Alias()
 	if alias != nil {
 		aliasSym := alias.Symbol()
 		if aliasSym != nil && aliasSym.Name != "" {
@@ -973,7 +973,7 @@ func (w *TypeWalker) walkIntersection(t *shimchecker.Type) metadata.Metadata {
 	// register the flattened result so it becomes a $ref instead of being inlined.
 	// Only for sub-field types (depth > 1). For generic aliases, build composite names.
 	if w.depth > 1 && result.Kind == metadata.KindObject {
-		alias := shimchecker.Type_alias(t)
+		alias := t.Alias()
 		if alias != nil && w.pendingName[t.Id()] == "" {
 			if aliasSym := alias.Symbol(); aliasSym != nil {
 				aliasName := aliasSym.Name
@@ -1232,7 +1232,7 @@ func (w *TypeWalker) walkObjectType(t *shimchecker.Type) metadata.Metadata {
 
 	// Generic type alias recovery — works at ANY depth.
 	// Type aliases resolve to anonymous types (ObjectFlagsAnonymous), so
-	// getTypeName returns "". But Type_alias preserves the alias declaration,
+	// getTypeName returns "". But Type.Alias() preserves the alias declaration,
 	// letting us recover the original name. Generic instantiations (with type
 	// args) need composite naming at every depth, including depth 0/1 where
 	// controller return types are walked via WalkTypeNode/WalkType. Without
@@ -1240,7 +1240,7 @@ func (w *TypeWalker) walkObjectType(t *shimchecker.Type) metadata.Metadata {
 	// single schema because the anonymous type has no name.
 	// Skip when being walked by WalkNamedType (has a pendingName entry).
 	if w.pendingName[t.Id()] == "" {
-		alias := shimchecker.Type_alias(t)
+		alias := t.Alias()
 		if alias != nil {
 			if aliasSym := alias.Symbol(); aliasSym != nil {
 				aliasName := aliasSym.Name
@@ -1743,7 +1743,7 @@ func (w *TypeWalker) deriveTypeArgName(t *shimchecker.Type) (string, bool) {
 		}
 
 		// Anonymous object — check for type alias name
-		alias := shimchecker.Type_alias(t)
+		alias := t.Alias()
 		if alias != nil {
 			if aliasSym := alias.Symbol(); aliasSym != nil && aliasSym.Name != "" {
 				name := aliasSym.Name
@@ -1763,7 +1763,7 @@ func (w *TypeWalker) deriveTypeArgName(t *shimchecker.Type) (string, bool) {
 	// Union types
 	if flags&shimchecker.TypeFlagsUnion != 0 {
 		// Named union alias (e.g., type Status = 'active' | 'inactive')
-		alias := shimchecker.Type_alias(t)
+		alias := t.Alias()
 		if alias != nil {
 			if aliasSym := alias.Symbol(); aliasSym != nil && aliasSym.Name != "" {
 				return aliasSym.Name, true
