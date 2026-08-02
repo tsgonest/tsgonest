@@ -4251,3 +4251,59 @@ func TestValidate_AliasArrayMongoIdEndToEnd_EmitsRegex(t *testing.T) {
 	code := GenerateCompanionSelective("AddParticipantsDTO", meta, reg, true, false)
 	assertContains(t, code, "/^[0-9a-fA-F]{24}$/.test(input.userIds[i1])")
 }
+
+// --- Recursive type + discriminated union: dynamic path leaking into static emitters ---
+
+// recursiveWithDiscriminatedUnion builds the minimal shape that triggers the bug:
+// a self-referencing type (which forces the `_path` dynamic-path validator) carrying
+// a property whose type is a discriminated union.
+func recursiveWithDiscriminatedUnion() (*metadata.Metadata, *metadata.TypeRegistry) {
+	reg := metadata.NewTypeRegistry()
+	button := metadata.Metadata{
+		Kind: metadata.KindObject,
+		Properties: []metadata.Property{
+			{Name: "type", Type: metadata.Metadata{Kind: metadata.KindLiteral, LiteralValue: "button"}, Required: true},
+		},
+	}
+	image := metadata.Metadata{
+		Kind: metadata.KindObject,
+		Properties: []metadata.Property{
+			{Name: "type", Type: metadata.Metadata{Kind: metadata.KindLiteral, LiteralValue: "image"}, Required: true},
+		},
+	}
+	block := metadata.Metadata{
+		Kind:         metadata.KindUnion,
+		UnionMembers: []metadata.Metadata{button, image},
+		Discriminant: &metadata.Discriminant{
+			Property: "type",
+			Mapping:  map[string]int{"button": 0, "image": 1},
+			Values:   map[string]any{"button": "button", "image": "image"},
+		},
+	}
+	meta := &metadata.Metadata{
+		Kind: metadata.KindObject,
+		Name: "Msg",
+		Properties: []metadata.Property{
+			{Name: "block", Type: block, Required: true},
+			{Name: "replies", Type: metadata.Metadata{
+				Kind:        metadata.KindArray,
+				ElementType: &metadata.Metadata{Kind: metadata.KindRef, Ref: "Msg"},
+			}, Required: true},
+		},
+	}
+	reg.Types["Msg"] = meta
+	return meta, reg
+}
+
+func TestValidate_RecursiveWithDiscriminatedUnion_EmitsParseableJS(t *testing.T) {
+	meta, reg := recursiveWithDiscriminatedUnion()
+	code := GenerateCompanionSelective("Msg", meta, reg, true, false)
+
+	// The recursive optimization must be in play, otherwise this test proves nothing.
+	assertContains(t, code, "_validateMsg(input, _path, errors)")
+
+	// The discriminant default branch must reference the runtime path expression,
+	// not bake the generator's expression source into a string literal.
+	assertNotContains(t, code, `path: "_path`)
+	assertContains(t, code, `_path + ".block" + ".type"`)
+}

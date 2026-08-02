@@ -95,15 +95,15 @@ func emitValidatePreChecks(e *Emitter, accessor string, prop *metadata.Property)
 // generateConstraintChecks emits JS validation checks for JSDoc constraints.
 // When typeVerified is true, typeof guards on constraint checks are omitted because
 // the type has already been verified by a preceding type check.
-func generateConstraintChecks(e *Emitter, accessor string, path string, prop *metadata.Property) {
+func generateConstraintChecks(e *Emitter, accessor string, path jsPath, prop *metadata.Property) {
 	generateConstraintChecksInner(e, accessor, path, prop, false)
 }
 
-func generateConstraintChecksVerified(e *Emitter, accessor string, path string, prop *metadata.Property) {
+func generateConstraintChecksVerified(e *Emitter, accessor string, path jsPath, prop *metadata.Property) {
 	generateConstraintChecksInner(e, accessor, path, prop, true)
 }
 
-func generateConstraintChecksInner(e *Emitter, accessor string, path string, prop *metadata.Property, typeVerified bool) {
+func generateConstraintChecksInner(e *Emitter, accessor string, path jsPath, prop *metadata.Property, typeVerified bool) {
 	c := prop.Constraints
 	if c == nil {
 		return
@@ -135,7 +135,7 @@ func generateConstraintChecksInner(e *Emitter, accessor string, path string, pro
 		} else {
 			e.Block("if (typeof %s === \"number\" && %s < %v)", accessor, accessor, *c.Minimum)
 		}
-		e.Line("errors.push({ path: %q, expected: \"%s\", received: \"\" + %s });", path, errMsg("minimum", fmt.Sprintf("minimum %v", *c.Minimum)), accessor)
+		e.Line("errors.push({ path: %s, expected: \"%s\", received: \"\" + %s });", path, errMsg("minimum", fmt.Sprintf("minimum %v", *c.Minimum)), accessor)
 		e.EndBlock()
 	}
 	if c.Maximum != nil {
@@ -144,7 +144,7 @@ func generateConstraintChecksInner(e *Emitter, accessor string, path string, pro
 		} else {
 			e.Block("if (typeof %s === \"number\" && %s > %v)", accessor, accessor, *c.Maximum)
 		}
-		e.Line("errors.push({ path: %q, expected: \"%s\", received: \"\" + %s });", path, errMsg("maximum", fmt.Sprintf("maximum %v", *c.Maximum)), accessor)
+		e.Line("errors.push({ path: %s, expected: \"%s\", received: \"\" + %s });", path, errMsg("maximum", fmt.Sprintf("maximum %v", *c.Maximum)), accessor)
 		e.EndBlock()
 	}
 	if c.ExclusiveMinimum != nil {
@@ -153,7 +153,7 @@ func generateConstraintChecksInner(e *Emitter, accessor string, path string, pro
 		} else {
 			e.Block("if (typeof %s === \"number\" && %s <= %v)", accessor, accessor, *c.ExclusiveMinimum)
 		}
-		e.Line("errors.push({ path: %q, expected: \"%s\", received: \"\" + %s });", path, errMsg("exclusiveMinimum", fmt.Sprintf("exclusiveMinimum %v", *c.ExclusiveMinimum)), accessor)
+		e.Line("errors.push({ path: %s, expected: \"%s\", received: \"\" + %s });", path, errMsg("exclusiveMinimum", fmt.Sprintf("exclusiveMinimum %v", *c.ExclusiveMinimum)), accessor)
 		e.EndBlock()
 	}
 	if c.ExclusiveMaximum != nil {
@@ -162,7 +162,7 @@ func generateConstraintChecksInner(e *Emitter, accessor string, path string, pro
 		} else {
 			e.Block("if (typeof %s === \"number\" && %s >= %v)", accessor, accessor, *c.ExclusiveMaximum)
 		}
-		e.Line("errors.push({ path: %q, expected: \"%s\", received: \"\" + %s });", path, errMsg("exclusiveMaximum", fmt.Sprintf("exclusiveMaximum %v", *c.ExclusiveMaximum)), accessor)
+		e.Line("errors.push({ path: %s, expected: \"%s\", received: \"\" + %s });", path, errMsg("exclusiveMaximum", fmt.Sprintf("exclusiveMaximum %v", *c.ExclusiveMaximum)), accessor)
 		e.EndBlock()
 	}
 	if c.MultipleOf != nil {
@@ -186,7 +186,7 @@ func generateConstraintChecksInner(e *Emitter, accessor string, path string, pro
 				e.Block("if (typeof %s === \"number\" && Math.abs(%s / %v - Math.round(%s / %v)) > 1e-10)", accessor, accessor, mul, accessor, mul)
 			}
 		}
-		e.Line("errors.push({ path: %q, expected: \"%s\", received: \"\" + %s });", path, errMsg("multipleOf", fmt.Sprintf("multipleOf %v", mul)), accessor)
+		e.Line("errors.push({ path: %s, expected: \"%s\", received: \"\" + %s });", path, errMsg("multipleOf", fmt.Sprintf("multipleOf %v", mul)), accessor)
 		e.EndBlock()
 	}
 	if c.NumericType != nil {
@@ -200,7 +200,7 @@ func generateConstraintChecksInner(e *Emitter, accessor string, path string, pro
 		} else {
 			e.Block("if (typeof %s === \"string\" && %s.length < %d)", accessor, accessor, *c.MinLength)
 		}
-		e.Line("errors.push({ path: %q, expected: \"%s\", received: \"length \" + %s.length });", path, errMsg("minLength", fmt.Sprintf("minLength %d", *c.MinLength)), accessor)
+		e.Line("errors.push({ path: %s, expected: \"%s\", received: \"length \" + %s.length });", path, errMsg("minLength", fmt.Sprintf("minLength %d", *c.MinLength)), accessor)
 		e.EndBlock()
 	}
 	if c.MaxLength != nil {
@@ -209,7 +209,7 @@ func generateConstraintChecksInner(e *Emitter, accessor string, path string, pro
 		} else {
 			e.Block("if (typeof %s === \"string\" && %s.length > %d)", accessor, accessor, *c.MaxLength)
 		}
-		e.Line("errors.push({ path: %q, expected: \"%s\", received: \"length \" + %s.length });", path, errMsg("maxLength", fmt.Sprintf("maxLength %d", *c.MaxLength)), accessor)
+		e.Line("errors.push({ path: %s, expected: \"%s\", received: \"length \" + %s.length });", path, errMsg("maxLength", fmt.Sprintf("maxLength %d", *c.MaxLength)), accessor)
 		e.EndBlock()
 	}
 
@@ -221,7 +221,7 @@ func generateConstraintChecksInner(e *Emitter, accessor string, path string, pro
 		} else {
 			e.Block("if (typeof %s === \"string\" && !/%s/.test(%s))", accessor, escapedPattern, accessor)
 		}
-		e.Line("errors.push({ path: %q, expected: \"%s\", received: %s });", path, errMsg("pattern", fmt.Sprintf("pattern %s", *c.Pattern)), accessor)
+		e.Line("errors.push({ path: %s, expected: \"%s\", received: %s });", path, errMsg("pattern", fmt.Sprintf("pattern %s", *c.Pattern)), accessor)
 		e.EndBlock()
 	}
 
@@ -237,7 +237,7 @@ func generateConstraintChecksInner(e *Emitter, accessor string, path string, pro
 		} else {
 			e.Block("if (Array.isArray(%s) && %s.length < %d)", accessor, accessor, *c.MinItems)
 		}
-		e.Line("errors.push({ path: %q, expected: \"%s\", received: \"length \" + %s.length });", path, errMsg("minItems", fmt.Sprintf("minItems %d", *c.MinItems)), accessor)
+		e.Line("errors.push({ path: %s, expected: \"%s\", received: \"length \" + %s.length });", path, errMsg("minItems", fmt.Sprintf("minItems %d", *c.MinItems)), accessor)
 		e.EndBlock()
 	}
 	if c.MaxItems != nil {
@@ -246,7 +246,7 @@ func generateConstraintChecksInner(e *Emitter, accessor string, path string, pro
 		} else {
 			e.Block("if (Array.isArray(%s) && %s.length > %d)", accessor, accessor, *c.MaxItems)
 		}
-		e.Line("errors.push({ path: %q, expected: \"%s\", received: \"length \" + %s.length });", path, errMsg("maxItems", fmt.Sprintf("maxItems %d", *c.MaxItems)), accessor)
+		e.Line("errors.push({ path: %s, expected: \"%s\", received: \"length \" + %s.length });", path, errMsg("maxItems", fmt.Sprintf("maxItems %d", *c.MaxItems)), accessor)
 		e.EndBlock()
 	}
 	if c.UniqueItems != nil && *c.UniqueItems {
@@ -255,7 +255,7 @@ func generateConstraintChecksInner(e *Emitter, accessor string, path string, pro
 		} else {
 			e.Block("if (Array.isArray(%s) && new Set(%s).size !== %s.length)", accessor, accessor, accessor)
 		}
-		e.Line("errors.push({ path: %q, expected: \"%s\", received: \"duplicate items\" });", path, errMsg("uniqueItems", "uniqueItems"))
+		e.Line("errors.push({ path: %s, expected: \"%s\", received: \"duplicate items\" });", path, errMsg("uniqueItems", "uniqueItems"))
 		e.EndBlock()
 	}
 
@@ -267,7 +267,7 @@ func generateConstraintChecksInner(e *Emitter, accessor string, path string, pro
 		} else {
 			e.Block("if (typeof %s === \"string\" && !%s.startsWith(\"%s\"))", accessor, accessor, escaped)
 		}
-		e.Line("errors.push({ path: %q, expected: \"%s\", received: %s });", path, errMsg("startsWith", fmt.Sprintf("startsWith %s", escaped)), accessor)
+		e.Line("errors.push({ path: %s, expected: \"%s\", received: %s });", path, errMsg("startsWith", fmt.Sprintf("startsWith %s", escaped)), accessor)
 		e.EndBlock()
 	}
 	if c.EndsWith != nil {
@@ -277,7 +277,7 @@ func generateConstraintChecksInner(e *Emitter, accessor string, path string, pro
 		} else {
 			e.Block("if (typeof %s === \"string\" && !%s.endsWith(\"%s\"))", accessor, accessor, escaped)
 		}
-		e.Line("errors.push({ path: %q, expected: \"%s\", received: %s });", path, errMsg("endsWith", fmt.Sprintf("endsWith %s", escaped)), accessor)
+		e.Line("errors.push({ path: %s, expected: \"%s\", received: %s });", path, errMsg("endsWith", fmt.Sprintf("endsWith %s", escaped)), accessor)
 		e.EndBlock()
 	}
 	if c.Includes != nil {
@@ -287,7 +287,7 @@ func generateConstraintChecksInner(e *Emitter, accessor string, path string, pro
 		} else {
 			e.Block("if (typeof %s === \"string\" && !%s.includes(\"%s\"))", accessor, accessor, escaped)
 		}
-		e.Line("errors.push({ path: %q, expected: \"%s\", received: %s });", path, errMsg("includes", fmt.Sprintf("includes %s", escaped)), accessor)
+		e.Line("errors.push({ path: %s, expected: \"%s\", received: %s });", path, errMsg("includes", fmt.Sprintf("includes %s", escaped)), accessor)
 		e.EndBlock()
 	}
 	if c.Uppercase != nil && *c.Uppercase {
@@ -296,7 +296,7 @@ func generateConstraintChecksInner(e *Emitter, accessor string, path string, pro
 		} else {
 			e.Block("if (typeof %s === \"string\" && %s !== %s.toUpperCase())", accessor, accessor, accessor)
 		}
-		e.Line("errors.push({ path: %q, expected: \"%s\", received: %s });", path, errMsg("uppercase", "uppercase"), accessor)
+		e.Line("errors.push({ path: %s, expected: \"%s\", received: %s });", path, errMsg("uppercase", "uppercase"), accessor)
 		e.EndBlock()
 	}
 	if c.Lowercase != nil && *c.Lowercase {
@@ -305,7 +305,7 @@ func generateConstraintChecksInner(e *Emitter, accessor string, path string, pro
 		} else {
 			e.Block("if (typeof %s === \"string\" && %s !== %s.toLowerCase())", accessor, accessor, accessor)
 		}
-		e.Line("errors.push({ path: %q, expected: \"%s\", received: %s });", path, errMsg("lowercase", "lowercase"), accessor)
+		e.Line("errors.push({ path: %s, expected: \"%s\", received: %s });", path, errMsg("lowercase", "lowercase"), accessor)
 		e.EndBlock()
 	}
 
@@ -313,7 +313,7 @@ func generateConstraintChecksInner(e *Emitter, accessor string, path string, pro
 	if c.ValidateFn != nil {
 		fnName := *c.ValidateFn
 		e.Block("if (!%s(%s))", fnName, accessor)
-		e.Line("errors.push({ path: %q, expected: \"%s\", received: \"\" + %s });", path, errMsg("validate", fmt.Sprintf("validate(%s)", fnName)), accessor)
+		e.Line("errors.push({ path: %s, expected: \"%s\", received: \"\" + %s });", path, errMsg("validate", fmt.Sprintf("validate(%s)", fnName)), accessor)
 		e.EndBlock()
 	}
 }
@@ -393,7 +393,7 @@ func generateValidateConstraintChecksDynamicPath(e *Emitter, accessor string, pa
 
 // generateNumericTypeCheck emits validation for @type int32/uint32/int64/uint64/float/double.
 // Checks perConstraintErrors["type"] first, then customError (global), then default.
-func generateNumericTypeCheck(e *Emitter, accessor string, path string, numType string, customError *string, perConstraintErrors map[string]string, typeVerified bool) {
+func generateNumericTypeCheck(e *Emitter, accessor string, path jsPath, numType string, customError *string, perConstraintErrors map[string]string, typeVerified bool) {
 	errMsg := func(defaultExpected string) string {
 		if perConstraintErrors != nil {
 			if msg, ok := perConstraintErrors["type"]; ok {
@@ -412,7 +412,7 @@ func generateNumericTypeCheck(e *Emitter, accessor string, path string, numType 
 		} else {
 			e.Block("if (typeof %s === \"number\" && (!Number.isInteger(%s) || %s < -2147483648 || %s > 2147483647))", accessor, accessor, accessor, accessor)
 		}
-		e.Line("errors.push({ path: %q, expected: \"%s\", received: \"\" + %s });", path, errMsg(string(constraints.NumericInt32)), accessor)
+		e.Line("errors.push({ path: %s, expected: \"%s\", received: \"\" + %s });", path, errMsg(string(constraints.NumericInt32)), accessor)
 		e.EndBlock()
 	case constraints.NumericUint32:
 		if typeVerified {
@@ -420,7 +420,7 @@ func generateNumericTypeCheck(e *Emitter, accessor string, path string, numType 
 		} else {
 			e.Block("if (typeof %s === \"number\" && (!Number.isInteger(%s) || %s < 0 || %s > 4294967295))", accessor, accessor, accessor, accessor)
 		}
-		e.Line("errors.push({ path: %q, expected: \"%s\", received: \"\" + %s });", path, errMsg(string(constraints.NumericUint32)), accessor)
+		e.Line("errors.push({ path: %s, expected: \"%s\", received: \"\" + %s });", path, errMsg(string(constraints.NumericUint32)), accessor)
 		e.EndBlock()
 	case constraints.NumericInt64:
 		if typeVerified {
@@ -428,7 +428,7 @@ func generateNumericTypeCheck(e *Emitter, accessor string, path string, numType 
 		} else {
 			e.Block("if (typeof %s === \"number\" && (!Number.isInteger(%s) || %s < -9007199254740991 || %s > 9007199254740991))", accessor, accessor, accessor, accessor)
 		}
-		e.Line("errors.push({ path: %q, expected: \"%s\", received: \"\" + %s });", path, errMsg(string(constraints.NumericInt64)), accessor)
+		e.Line("errors.push({ path: %s, expected: \"%s\", received: \"\" + %s });", path, errMsg(string(constraints.NumericInt64)), accessor)
 		e.EndBlock()
 	case constraints.NumericUint64:
 		if typeVerified {
@@ -436,7 +436,7 @@ func generateNumericTypeCheck(e *Emitter, accessor string, path string, numType 
 		} else {
 			e.Block("if (typeof %s === \"number\" && (!Number.isInteger(%s) || %s < 0 || %s > 9007199254740991))", accessor, accessor, accessor, accessor)
 		}
-		e.Line("errors.push({ path: %q, expected: \"%s\", received: \"\" + %s });", path, errMsg(string(constraints.NumericUint64)), accessor)
+		e.Line("errors.push({ path: %s, expected: \"%s\", received: \"\" + %s });", path, errMsg(string(constraints.NumericUint64)), accessor)
 		e.EndBlock()
 	case constraints.NumericFloat:
 		if typeVerified {
@@ -444,7 +444,7 @@ func generateNumericTypeCheck(e *Emitter, accessor string, path string, numType 
 		} else {
 			e.Block("if (typeof %s === \"number\" && !Number.isFinite(%s))", accessor, accessor)
 		}
-		e.Line("errors.push({ path: %q, expected: \"%s\", received: \"\" + %s });", path, errMsg(string(constraints.NumericFloat)), accessor)
+		e.Line("errors.push({ path: %s, expected: \"%s\", received: \"\" + %s });", path, errMsg(string(constraints.NumericFloat)), accessor)
 		e.EndBlock()
 	case constraints.NumericDouble:
 		// double always passes — no extra check needed (any finite number is valid)
@@ -453,7 +453,7 @@ func generateNumericTypeCheck(e *Emitter, accessor string, path string, numType 
 
 // generateFormatCheck emits validation code for a string format constraint.
 // Checks perConstraintErrors["format"] first, then customError (global), then default.
-func generateFormatCheck(e *Emitter, accessor string, path string, format string, customError *string, perConstraintErrors map[string]string, typeVerified bool) {
+func generateFormatCheck(e *Emitter, accessor string, path jsPath, format string, customError *string, perConstraintErrors map[string]string, typeVerified bool) {
 	errMsg := func(defaultExpected string) string {
 		if perConstraintErrors != nil {
 			if msg, ok := perConstraintErrors["format"]; ok {
@@ -473,10 +473,10 @@ func generateFormatCheck(e *Emitter, accessor string, path string, format string
 	case "regex":
 		// Use try/catch to validate regex
 		if typeVerified {
-			e.Line("try { new RegExp(%s); } catch (_e) { errors.push({ path: %q, expected: \"%s\", received: %s }); }", accessor, path, errMsg("format regex"), accessor)
+			e.Line("try { new RegExp(%s); } catch (_e) { errors.push({ path: %s, expected: \"%s\", received: %s }); }", accessor, path, errMsg("format regex"), accessor)
 		} else {
 			e.Block("if (typeof %s === \"string\")", accessor)
-			e.Line("try { new RegExp(%s); } catch (_e) { errors.push({ path: %q, expected: \"%s\", received: %s }); }", accessor, path, errMsg("format regex"), accessor)
+			e.Line("try { new RegExp(%s); } catch (_e) { errors.push({ path: %s, expected: \"%s\", received: %s }); }", accessor, path, errMsg("format regex"), accessor)
 			e.EndBlock()
 		}
 		return
@@ -501,6 +501,6 @@ func generateFormatCheck(e *Emitter, accessor string, path string, format string
 	} else {
 		e.Block("if (typeof %s === \"string\" && !%s.test(%s))", accessor, regexLiteral, accessor)
 	}
-	e.Line("errors.push({ path: %q, expected: \"%s\", received: %s });", path, errMsg(fmt.Sprintf("format %s", format)), accessor)
+	e.Line("errors.push({ path: %s, expected: \"%s\", received: %s });", path, errMsg(fmt.Sprintf("format %s", format)), accessor)
 	e.EndBlock()
 }

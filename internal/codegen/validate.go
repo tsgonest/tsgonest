@@ -579,7 +579,7 @@ func generateValidateFunction(e *Emitter, typeName string, meta *metadata.Metada
 	} else {
 		e.Block("export function %s(input)", fnName)
 		e.Line("const errors = [];")
-		generateTypeCheck(e, "input", "", meta, registry, 0, ctx)
+		generateTypeCheck(e, "input", literalPath(""), meta, registry, 0, ctx)
 		e.Block("if (errors.length > 0)")
 		e.Line("return { success: false, errors };")
 		e.EndBlock()
@@ -728,7 +728,7 @@ func generateTypeCheckWithPathInner(e *Emitter, accessor string, pathExpr string
 		// For recursive validate with path, use the same union pattern but with dynamic path
 		// Delegate to the standard generateTypeCheck since unions are complex
 		// and the path rewrite is mainly an issue for recursive refs, not unions
-		generateUnionCheck(e, accessor, pathExpr, meta, registry, depth, ctx)
+		generateUnionCheck(e, accessor, exprPath(pathExpr), meta, registry, depth, ctx)
 
 	case metadata.KindLiteral:
 		e.Block("if (%s !== %s)", accessor, jsLiteral(meta.LiteralValue))
@@ -844,10 +844,10 @@ func generateStringifyFunction(e *Emitter, typeName string, mode string) {
 
 // generateTypeCheck generates validation checks for a type at the given access path.
 // `accessor` is the JS expression to access the value (e.g., "input", "input.name").
-// `path` is the error path string (e.g., "input.name").
-func generateTypeCheck(e *Emitter, accessor string, path string, meta *metadata.Metadata, registry *metadata.TypeRegistry, depth int, ctx *validateCtx) {
-	if path == "" {
-		path = accessor
+// `path` is the error path jsPath (e.g., "input.name").
+func generateTypeCheck(e *Emitter, accessor string, path jsPath, meta *metadata.Metadata, registry *metadata.TypeRegistry, depth int, ctx *validateCtx) {
+	if path.isEmpty() {
+		path = literalPath(accessor)
 	}
 
 	// Handle nullable
@@ -874,14 +874,14 @@ func generateTypeCheck(e *Emitter, accessor string, path string, meta *metadata.
 }
 
 // generateTypeCheckInner generates the actual type checks (after null/undefined handling).
-func generateTypeCheckInner(e *Emitter, accessor string, path string, meta *metadata.Metadata, registry *metadata.TypeRegistry, depth int, ctx *validateCtx) {
+func generateTypeCheckInner(e *Emitter, accessor string, path jsPath, meta *metadata.Metadata, registry *metadata.TypeRegistry, depth int, ctx *validateCtx) {
 	switch meta.Kind {
 	case metadata.KindAtomic:
 		generateAtomicCheck(e, accessor, path, meta.Atomic)
 		// Template literal types produce a regex pattern — validate it at runtime
 		if meta.Atomic == "string" && meta.TemplatePattern != "" {
 			e.Block("if (typeof %s === \"string\" && !/%s/.test(%s))", accessor, escapeForRegexLiteral(meta.TemplatePattern), accessor)
-			e.Line("errors.push({ path: %q, expected: \"pattern %s\", received: %s });", path, jsStringEscape(meta.TemplatePattern), accessor)
+			e.Line("errors.push({ path: %s, expected: \"pattern %s\", received: %s });", path, jsStringEscape(meta.TemplatePattern), accessor)
 			e.EndBlock()
 		}
 
@@ -907,7 +907,7 @@ func generateTypeCheckInner(e *Emitter, accessor string, path string, meta *meta
 		if ctx != nil && ctx.generating[meta.Ref] {
 			// Emit a recursive call to the validate function being generated
 			fnName := "validate" + meta.Ref
-			e.Line("{ const _r = %s(%s); if (!_r.success) errors.push(..._r.errors.map(e => ({ ...e, path: e.path.replace(/^input/, %q) }))); }", fnName, accessor, path)
+			e.Line("{ const _r = %s(%s); if (!_r.success) errors.push(..._r.errors.map(e => ({ ...e, path: e.path.replace(/^input/, %s) }))); }", fnName, accessor, path)
 		} else if resolved, ok := registry.Types[meta.Ref]; ok {
 			// Non-recursive ref: inline the checks as before
 			if ctx != nil {
@@ -932,11 +932,11 @@ func generateTypeCheckInner(e *Emitter, accessor string, path string, meta *meta
 		// No validation for any/unknown
 
 	case metadata.KindNever:
-		e.Line("errors.push({ path: %q, expected: \"never\", received: typeof %s });", path, accessor)
+		e.Line("errors.push({ path: %s, expected: \"never\", received: typeof %s });", path, accessor)
 
 	case metadata.KindVoid:
 		e.Block("if (%s !== undefined)", accessor)
-		e.Line("errors.push({ path: %q, expected: \"void\", received: typeof %s });", path, accessor)
+		e.Line("errors.push({ path: %s, expected: \"void\", received: typeof %s });", path, accessor)
 		e.EndBlock()
 
 	case metadata.KindIntersection:
@@ -948,48 +948,48 @@ func generateTypeCheckInner(e *Emitter, accessor string, path string, meta *meta
 	}
 }
 
-func generateAtomicCheck(e *Emitter, accessor string, path string, atomic string) {
+func generateAtomicCheck(e *Emitter, accessor string, path jsPath, atomic string) {
 	switch atomic {
 	case "string":
 		e.Block("if (typeof %s !== \"string\")", accessor)
-		e.Line("errors.push({ path: %q, expected: \"string\", received: typeof %s });", path, accessor)
+		e.Line("errors.push({ path: %s, expected: \"string\", received: typeof %s });", path, accessor)
 		e.EndBlock()
 	case "number":
 		e.Block("if (typeof %s !== \"number\" || !Number.isFinite(%s))", accessor, accessor)
-		e.Line("errors.push({ path: %q, expected: \"number\", received: typeof %s });", path, accessor)
+		e.Line("errors.push({ path: %s, expected: \"number\", received: typeof %s });", path, accessor)
 		e.EndBlock()
 	case "boolean":
 		e.Block("if (typeof %s !== \"boolean\")", accessor)
-		e.Line("errors.push({ path: %q, expected: \"boolean\", received: typeof %s });", path, accessor)
+		e.Line("errors.push({ path: %s, expected: \"boolean\", received: typeof %s });", path, accessor)
 		e.EndBlock()
 	case "bigint":
 		e.Block("if (typeof %s !== \"bigint\")", accessor)
-		e.Line("errors.push({ path: %q, expected: \"bigint\", received: typeof %s });", path, accessor)
+		e.Line("errors.push({ path: %s, expected: \"bigint\", received: typeof %s });", path, accessor)
 		e.EndBlock()
 	}
 }
 
-func generateLiteralCheck(e *Emitter, accessor string, path string, value any) {
+func generateLiteralCheck(e *Emitter, accessor string, path jsPath, value any) {
 	switch v := value.(type) {
 	case string:
 		e.Block("if (%s !== %q)", accessor, v)
-		e.Line("errors.push({ path: %q, expected: %q, received: %s });", path, v, accessor)
+		e.Line("errors.push({ path: %s, expected: %q, received: %s });", path, v, accessor)
 		e.EndBlock()
 	case float64:
 		e.Block("if (%s !== %v)", accessor, v)
-		e.Line("errors.push({ path: %q, expected: %v, received: %s });", path, v, accessor)
+		e.Line("errors.push({ path: %s, expected: %v, received: %s });", path, v, accessor)
 		e.EndBlock()
 	case bool:
 		e.Block("if (%s !== %v)", accessor, v)
-		e.Line("errors.push({ path: %q, expected: %v, received: %s });", path, v, accessor)
+		e.Line("errors.push({ path: %s, expected: %v, received: %s });", path, v, accessor)
 		e.EndBlock()
 	}
 }
 
-func generateObjectCheck(e *Emitter, accessor string, path string, meta *metadata.Metadata, registry *metadata.TypeRegistry, depth int, ctx *validateCtx) {
+func generateObjectCheck(e *Emitter, accessor string, path jsPath, meta *metadata.Metadata, registry *metadata.TypeRegistry, depth int, ctx *validateCtx) {
 	// Check it's an object
 	e.Block("if (typeof %s !== \"object\" || %s === null)", accessor, accessor)
-	e.Line("errors.push({ path: %q, expected: \"object\", received: typeof %s });", path, accessor)
+	e.Line("errors.push({ path: %s, expected: \"object\", received: typeof %s });", path, accessor)
 	e.EndBlockSuffix(" else {")
 	e.indent++
 
@@ -1007,7 +1007,7 @@ func generateObjectCheck(e *Emitter, accessor string, path string, meta *metadat
 			kVar := fmt.Sprintf("_k%d", depth)
 			e.Block("for (const %s of Object.keys(%s))", kVar, accessor)
 			e.Block("if (!%s.has(%s))", knownSetExpr, kVar)
-			e.Line("errors.push({ path: %q + \".\" + %s, expected: \"known property\", received: %s });", path, kVar, kVar)
+			e.Line("errors.push({ path: %s + \".\" + %s, expected: \"known property\", received: %s });", path, kVar, kVar)
 			e.EndBlock()
 			e.EndBlock()
 		} else if meta.Strictness == "strip" {
@@ -1024,7 +1024,7 @@ func generateObjectCheck(e *Emitter, accessor string, path string, meta *metadat
 	// Check each property
 	for _, prop := range meta.Properties {
 		propAccessor := jsPropAccess(accessor, prop.Name)
-		propPath := path + jsPropPathSuffix(prop.Name)
+		propPath := path.prop(prop.Name)
 
 		// Emit default value assignment BEFORE validation.
 		// When a property has @default and the value is undefined, fill it in.
@@ -1037,7 +1037,7 @@ func generateObjectCheck(e *Emitter, accessor string, path string, meta *metadat
 
 		if prop.Required && !prop.Type.Optional {
 			e.Block("if (%s === undefined)", propAccessor)
-			e.Line("errors.push({ path: %q, expected: \"%s\", received: \"undefined\" });", propPath, describeType(&prop.Type))
+			e.Line("errors.push({ path: %s, expected: \"%s\", received: \"undefined\" });", propPath, describeType(&prop.Type))
 			e.EndBlockSuffix(" else {")
 			e.indent++
 			// Emit transforms + coercion BEFORE type check so that string
@@ -1060,7 +1060,7 @@ func generateObjectCheck(e *Emitter, accessor string, path string, meta *metadat
 			// exactOptionalPropertyTypes: property can be missing but not explicitly undefined
 			e.Block("if (%q in %s)", prop.Name, accessor)
 			e.Block("if (%s === undefined)", propAccessor)
-			e.Line("errors.push({ path: %q, expected: \"%s (not undefined)\", received: \"undefined\" });", propPath, describeType(&prop.Type))
+			e.Line("errors.push({ path: %s, expected: \"%s (not undefined)\", received: \"undefined\" });", propPath, describeType(&prop.Type))
 			e.EndBlockSuffix(" else {")
 			e.indent++
 			emitValidatePreChecks(e, propAccessor, &prop)
@@ -1117,7 +1117,7 @@ func generateObjectCheck(e *Emitter, accessor string, path string, meta *metadat
 		}
 
 		elemAccessor := fmt.Sprintf("%s[%s]", accessor, kVar)
-		elemPath := fmt.Sprintf("%s[\" + %s + \"]", path, kVar)
+		elemPath := path.indexExpr(kVar)
 		generateTypeCheck(e, elemAccessor, elemPath, &meta.IndexSignature.ValueType, registry, depth+1, ctx)
 
 		if len(meta.Properties) > 0 {
@@ -1130,9 +1130,9 @@ func generateObjectCheck(e *Emitter, accessor string, path string, meta *metadat
 	e.Line("}")
 }
 
-func generateArrayCheck(e *Emitter, accessor string, path string, meta *metadata.Metadata, registry *metadata.TypeRegistry, depth int, ctx *validateCtx) {
+func generateArrayCheck(e *Emitter, accessor string, path jsPath, meta *metadata.Metadata, registry *metadata.TypeRegistry, depth int, ctx *validateCtx) {
 	e.Block("if (!Array.isArray(%s))", accessor)
-	e.Line("errors.push({ path: %q, expected: \"array\", received: typeof %s });", path, accessor)
+	e.Line("errors.push({ path: %s, expected: \"array\", received: typeof %s });", path, accessor)
 	e.EndBlockSuffix(" else {")
 	e.indent++
 
@@ -1140,7 +1140,7 @@ func generateArrayCheck(e *Emitter, accessor string, path string, meta *metadata
 		idx := fmt.Sprintf("i%d", depth)
 		e.Block("for (let %s = 0; %s < %s.length; %s++)", idx, idx, accessor, idx)
 		elemAccessor := fmt.Sprintf("%s[%s]", accessor, idx)
-		elemPath := fmt.Sprintf("%s[\" + %s + \"]", path, idx)
+		elemPath := path.indexExpr(idx)
 		generateTypeCheck(e, elemAccessor, elemPath, meta.ElementType, registry, depth+1, ctx)
 		e.EndBlock()
 	}
@@ -1149,9 +1149,9 @@ func generateArrayCheck(e *Emitter, accessor string, path string, meta *metadata
 	e.Line("}")
 }
 
-func generateTupleCheck(e *Emitter, accessor string, path string, meta *metadata.Metadata, registry *metadata.TypeRegistry, depth int, ctx *validateCtx) {
+func generateTupleCheck(e *Emitter, accessor string, path jsPath, meta *metadata.Metadata, registry *metadata.TypeRegistry, depth int, ctx *validateCtx) {
 	e.Block("if (!Array.isArray(%s))", accessor)
-	e.Line("errors.push({ path: %q, expected: \"tuple\", received: typeof %s });", path, accessor)
+	e.Line("errors.push({ path: %s, expected: \"tuple\", received: typeof %s });", path, accessor)
 	e.EndBlockSuffix(" else {")
 	e.indent++
 
@@ -1164,7 +1164,7 @@ func generateTupleCheck(e *Emitter, accessor string, path string, meta *metadata
 	}
 	if minLen > 0 {
 		e.Block("if (%s.length < %d)", accessor, minLen)
-		e.Line("errors.push({ path: %q, expected: \"tuple of length >= %d\", received: %s.length });", path, minLen, accessor)
+		e.Line("errors.push({ path: %s, expected: \"tuple of length >= %d\", received: %s.length });", path, minLen, accessor)
 		e.EndBlock()
 	}
 
@@ -1174,7 +1174,7 @@ func generateTupleCheck(e *Emitter, accessor string, path string, meta *metadata
 			continue // Rest elements are not checked individually
 		}
 		elemAccessor := fmt.Sprintf("%s[%d]", accessor, i)
-		elemPath := fmt.Sprintf("%s[%d]", path, i)
+		elemPath := path.indexLiteral(i)
 		if elem.Optional {
 			e.Block("if (%s.length > %d)", accessor, i)
 			generateTypeCheck(e, elemAccessor, elemPath, &elem.Type, registry, depth+1, ctx)
@@ -1188,7 +1188,7 @@ func generateTupleCheck(e *Emitter, accessor string, path string, meta *metadata
 	e.Line("}")
 }
 
-func generateUnionCheck(e *Emitter, accessor string, path string, meta *metadata.Metadata, registry *metadata.TypeRegistry, depth int, ctx *validateCtx) {
+func generateUnionCheck(e *Emitter, accessor string, path jsPath, meta *metadata.Metadata, registry *metadata.TypeRegistry, depth int, ctx *validateCtx) {
 	// For literal unions, generate a Set check
 	allLiterals := true
 	for _, m := range meta.UnionMembers {
@@ -1207,7 +1207,7 @@ func generateUnionCheck(e *Emitter, accessor string, path string, meta *metadata
 		e.Block("if (!%s.includes(%s))", setExpr, accessor)
 		// Use jsStringEscape to safely embed literal values inside a JS string
 		escapedDesc := jsStringEscape("one of " + strings.Join(vals, " | "))
-		e.Line("errors.push({ path: %q, expected: \"%s\", received: %s });", path, escapedDesc, accessor)
+		e.Line("errors.push({ path: %s, expected: \"%s\", received: %s });", path, escapedDesc, accessor)
 		e.EndBlock()
 		return
 	}
@@ -1236,19 +1236,19 @@ func generateUnionCheck(e *Emitter, accessor string, path string, meta *metadata
 	e.Block("if (!%s)", unionValidVar(depth))
 	e.Line("errors.length = %s;", unionSaveVar(depth))
 	expected := describeUnion(meta)
-	e.Line("errors.push({ path: %q, expected: %q, received: typeof %s });", path, expected, accessor)
+	e.Line("errors.push({ path: %s, expected: %q, received: typeof %s });", path, expected, accessor)
 	e.EndBlock()
 }
 
 // generateDiscriminatedUnionCheck emits a switch statement on the discriminant property
 // for O(1) dispatch instead of O(n) try-each for discriminated unions.
-func generateDiscriminatedUnionCheck(e *Emitter, accessor string, path string, meta *metadata.Metadata, registry *metadata.TypeRegistry, depth int, ctx *validateCtx) {
+func generateDiscriminatedUnionCheck(e *Emitter, accessor string, path jsPath, meta *metadata.Metadata, registry *metadata.TypeRegistry, depth int, ctx *validateCtx) {
 	disc := meta.Discriminant
 	discAccessor := jsPropAccess(accessor, disc.Property)
 
 	// First check the value is an object
 	e.Block("if (typeof %s !== \"object\" || %s === null)", accessor, accessor)
-	e.Line("errors.push({ path: %q, expected: \"object\", received: typeof %s });", path, accessor)
+	e.Line("errors.push({ path: %s, expected: \"object\", received: typeof %s });", path, accessor)
 	e.EndBlockSuffix(" else {")
 	e.indent++
 
@@ -1285,7 +1285,7 @@ func generateDiscriminatedUnionCheck(e *Emitter, accessor string, path string, m
 		expectedVals[i] = discLiteral(v, disc)
 	}
 	expectedStr := jsStringEscape("one of " + strings.Join(expectedVals, " | "))
-	e.Line("errors.push({ path: \"%s%s\", expected: \"%s\", received: %s });", path, jsStringEscape(jsPropPathSuffix(disc.Property)), expectedStr, discAccessor)
+	e.Line("errors.push({ path: %s, expected: \"%s\", received: %s });", path.prop(disc.Property), expectedStr, discAccessor)
 	e.indent--
 
 	e.indent--
@@ -1294,39 +1294,39 @@ func generateDiscriminatedUnionCheck(e *Emitter, accessor string, path string, m
 	e.EndBlock() // close else block
 }
 
-func generateEnumCheck(e *Emitter, accessor string, path string, meta *metadata.Metadata) {
+func generateEnumCheck(e *Emitter, accessor string, path jsPath, meta *metadata.Metadata) {
 	vals := make([]string, len(meta.EnumValues))
 	for i, ev := range meta.EnumValues {
 		vals[i] = jsLiteral(ev.Value)
 	}
 	setExpr := "[" + strings.Join(vals, ", ") + "]"
 	e.Block("if (!%s.includes(%s))", setExpr, accessor)
-	e.Line("errors.push({ path: %q, expected: \"enum value\", received: %s });", path, accessor)
+	e.Line("errors.push({ path: %s, expected: \"enum value\", received: %s });", path, accessor)
 	e.EndBlock()
 }
 
-func generateNativeCheck(e *Emitter, accessor string, path string, meta *metadata.Metadata) {
+func generateNativeCheck(e *Emitter, accessor string, path jsPath, meta *metadata.Metadata) {
 	switch meta.NativeType {
 	case "Date":
 		e.Block("if (!(%s instanceof Date) || isNaN(%s.getTime()))", accessor, accessor)
-		e.Line("errors.push({ path: %q, expected: \"Date\", received: typeof %s });", path, accessor)
+		e.Line("errors.push({ path: %s, expected: \"Date\", received: typeof %s });", path, accessor)
 		e.EndBlock()
 	case "RegExp":
 		e.Block("if (!(%s instanceof RegExp))", accessor)
-		e.Line("errors.push({ path: %q, expected: \"RegExp\", received: typeof %s });", path, accessor)
+		e.Line("errors.push({ path: %s, expected: \"RegExp\", received: typeof %s });", path, accessor)
 		e.EndBlock()
 	case "Map":
 		e.Block("if (!(%s instanceof Map))", accessor)
-		e.Line("errors.push({ path: %q, expected: \"Map\", received: typeof %s });", path, accessor)
+		e.Line("errors.push({ path: %s, expected: \"Map\", received: typeof %s });", path, accessor)
 		e.EndBlock()
 	case "Set":
 		e.Block("if (!(%s instanceof Set))", accessor)
-		e.Line("errors.push({ path: %q, expected: \"Set\", received: typeof %s });", path, accessor)
+		e.Line("errors.push({ path: %s, expected: \"Set\", received: typeof %s });", path, accessor)
 		e.EndBlock()
 	default:
 		// TypedArrays, URL, etc.
 		e.Block("if (!(%s instanceof %s))", accessor, meta.NativeType)
-		e.Line("errors.push({ path: %q, expected: \"%s\", received: typeof %s });", path, meta.NativeType, accessor)
+		e.Line("errors.push({ path: %s, expected: \"%s\", received: typeof %s });", path, meta.NativeType, accessor)
 		e.EndBlock()
 	}
 }

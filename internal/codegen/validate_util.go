@@ -9,6 +9,106 @@ import (
 
 // --- Helpers ---
 
+// jsPath models the runtime error path of a validation failure while it is being
+// assembled at codegen time. A path is a sequence of segments that are either
+// literal text or JavaScript expressions evaluated at runtime.
+//
+// Both forms are needed. A plain validator knows its whole path up front
+// ("input.user.name"), but an array element only learns its index at runtime, and
+// a recursive validator receives its prefix through the `_path` parameter. Keeping
+// the two kinds of segment distinct is what lets String render a correct JS
+// expression in every case, instead of splicing raw expression source into a
+// string literal.
+type jsPath struct {
+	segments []jsPathSegment
+}
+
+type jsPathSegment struct {
+	text string
+	// expr marks text as JavaScript source to evaluate rather than literal path text.
+	expr bool
+}
+
+// literalPath starts a path from fully known text, e.g. "input".
+func literalPath(text string) jsPath {
+	if text == "" {
+		return jsPath{}
+	}
+	return jsPath{segments: []jsPathSegment{{text: text}}}
+}
+
+// exprPath starts a path from a JavaScript expression, e.g. the `_path`
+// parameter of a recursive validator.
+func exprPath(expr string) jsPath {
+	return jsPath{segments: []jsPathSegment{{text: expr, expr: true}}}
+}
+
+func (p jsPath) isEmpty() bool {
+	return len(p.segments) == 0
+}
+
+func (p jsPath) append(seg jsPathSegment) jsPath {
+	// Copy so callers can branch off a shared prefix without aliasing.
+	next := make([]jsPathSegment, len(p.segments), len(p.segments)+1)
+	copy(next, p.segments)
+	return jsPath{segments: append(next, seg)}
+}
+
+// text appends literal path text.
+func (p jsPath) text(s string) jsPath {
+	if s == "" {
+		return p
+	}
+	return p.append(jsPathSegment{text: s})
+}
+
+// prop appends a property access, e.g. `.name` or `["odd key"]`.
+func (p jsPath) prop(propName string) jsPath {
+	return p.text(jsPropPathSuffix(propName))
+}
+
+// indexExpr appends a bracketed index whose value is only known at runtime,
+// e.g. the loop variable of an array check.
+func (p jsPath) indexExpr(expr string) jsPath {
+	return p.text("[").append(jsPathSegment{text: expr, expr: true}).text("]")
+}
+
+// indexLiteral appends a bracketed index known at codegen time, e.g. a tuple slot.
+func (p jsPath) indexLiteral(index int) jsPath {
+	return p.text(fmt.Sprintf("[%d]", index))
+}
+
+// String renders the path as a JavaScript expression producing the path string.
+// Adjacent literal segments are folded into a single quoted string so that a
+// fully static path emits as one literal, byte-identical to the naive form.
+func (p jsPath) String() string {
+	if p.isEmpty() {
+		return `""`
+	}
+
+	var parts []string
+	var pending strings.Builder
+	flush := func() {
+		if pending.Len() == 0 {
+			return
+		}
+		parts = append(parts, `"`+jsStringEscape(pending.String())+`"`)
+		pending.Reset()
+	}
+
+	for _, seg := range p.segments {
+		if seg.expr {
+			flush()
+			parts = append(parts, seg.text)
+			continue
+		}
+		pending.WriteString(seg.text)
+	}
+	flush()
+
+	return strings.Join(parts, " + ")
+}
+
 func unionSaveVar(depth int) string {
 	return fmt.Sprintf("_ue%d", depth)
 }
