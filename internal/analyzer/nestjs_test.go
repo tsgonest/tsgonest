@@ -1397,6 +1397,61 @@ func TestControllerAnalyzer_HigherOrderDecoratorFactory(t *testing.T) {
 	}
 }
 
+func TestControllerAnalyzer_CustomDecoratorIn_ImportedFromAnotherFile(t *testing.T) {
+	env := setupWalkerMultiFile(t, map[string]string{
+		"decorators.ts": `
+			export function Controller(path: string): ClassDecorator { return (target) => target; }
+			export function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+
+			export type ParamDecorator = (target: any, key: string, index: number) => void;
+
+			/** @in param */
+			export const ExtractId = (name: string): ParamDecorator => (target, key, index) => {};
+
+			/** @in headers */
+			export function TenantId(name: string): ParamDecorator {
+				return (target: any, key: string, index: number) => {};
+			}
+		`,
+		"controller.ts": `
+			import { Controller, Get, ExtractId, TenantId as Tenant } from "./decorators";
+
+			@Controller("users")
+			export class UserController {
+				@Get(":id")
+				findOne(@ExtractId("id") id: string, @Tenant("x-tenant") tenant: string): string { return ""; }
+			}
+		`,
+	}, "controller.ts")
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 || len(controllers[0].Routes) != 1 {
+		t.Fatalf("expected 1 controller with 1 route")
+	}
+
+	route := controllers[0].Routes[0]
+	if len(route.Parameters) != 2 {
+		t.Fatalf("expected 2 parameters, got %d", len(route.Parameters))
+	}
+
+	if route.Parameters[0].Category != "param" {
+		t.Errorf("param 0: expected Category='param', got %q", route.Parameters[0].Category)
+	}
+	if route.Parameters[0].Name != "id" {
+		t.Errorf("param 0: expected Name='id', got %q", route.Parameters[0].Name)
+	}
+	if route.Parameters[1].Category != "headers" {
+		t.Errorf("param 1: expected Category='headers', got %q", route.Parameters[1].Category)
+	}
+	if route.Parameters[1].Name != "x-tenant" {
+		t.Errorf("param 1: expected Name='x-tenant', got %q", route.Parameters[1].Name)
+	}
+}
+
 // --- Return Type Inference Tests (no explicit annotation) ---
 
 func TestControllerAnalyzer_InferReturnType_InlineObject(t *testing.T) {

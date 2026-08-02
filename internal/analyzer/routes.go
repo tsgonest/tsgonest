@@ -1579,6 +1579,14 @@ func (a *ControllerAnalyzer) resolveDecoratorIn(dec *ast.Node) string {
 		return ""
 	}
 
+	// An imported decorator resolves to its import specifier, which carries no JSDoc. Follow the alias to the
+	// declaration that does, so @in works on a decorator declared in another file.
+	if sym.Flags&ast.SymbolFlagsAlias != 0 {
+		if aliased := a.checker.GetAliasedSymbol(sym); aliased != nil {
+			sym = aliased
+		}
+	}
+
 	// Get the value declaration
 	decl := sym.ValueDeclaration
 	if decl == nil {
