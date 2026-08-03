@@ -173,6 +173,10 @@ type RouteParameter struct {
 	// Name is the parameter name (e.g., "id" from @Param("id")).
 	// For @Body() without argument, Name is empty.
 	Name string
+	// CustomDecorator is the local name of the custom decorator that supplied this
+	// parameter's category via an @in JSDoc tag (e.g., "TenantID"). Empty when the
+	// category came from a built-in NestJS decorator.
+	CustomDecorator string
 	// LocalName is the local variable name from the method signature (e.g., "body", "id").
 	// Used by the rewriter to inject validation at the correct parameter.
 	LocalName string
@@ -1271,6 +1275,7 @@ func (a *ControllerAnalyzer) analyzeParameter(paramNode *ast.Node, className str
 	// Look for parameter decorators
 	category := ""
 	paramName := ""
+	customDecorator := ""
 	isFormData := false
 	var unresolvedDecorators []string // track custom decorators without @in
 
@@ -1318,10 +1323,13 @@ func (a *ControllerAnalyzer) analyzeParameter(paramNode *ast.Node, className str
 			return nil
 		default:
 			// Try @in JSDoc on the decorator's declaration site
-			if resolved := a.resolveDecoratorIn(dec); resolved != "" {
+			if resolved, declaredName := a.resolveDecoratorIn(dec); resolved != "" {
 				category = resolved
+				customDecorator = info.Name
 				if len(info.Args) > 0 {
 					paramName = info.Args[0]
+				} else {
+					paramName = declaredName
 				}
 			} else {
 				unresolvedDecorators = append(unresolvedDecorators, info.Name)
@@ -1389,14 +1397,15 @@ func (a *ControllerAnalyzer) analyzeParameter(paramNode *ast.Node, className str
 	}
 
 	rp := &RouteParameter{
-		Category:     category,
-		Name:         paramName,
-		LocalName:    localName,
-		TypeName:     paramTypeName,
-		Type:         paramType,
-		Required:     required,
-		HasDefault:   hasDefault,
-		DefaultValue: defaultValue,
+		Category:        category,
+		Name:            paramName,
+		LocalName:       localName,
+		TypeName:        paramTypeName,
+		Type:            paramType,
+		Required:        required,
+		HasDefault:      hasDefault,
+		DefaultValue:    defaultValue,
+		CustomDecorator: customDecorator,
 	}
 
 	// @FormDataBody always uses multipart/form-data content type
@@ -1550,10 +1559,19 @@ func hasResponseDecorator(paramNode *ast.Node) bool {
 // resolves the symbol for ExtractId, finds its declaration, reads the @in JSDoc,
 // and treats it as a path parameter.
 //
+// The tag may also carry the parameter name as a second token, so a decorator
+// that always maps to the same header/query/path key needs no call-site literal:
+//
+//	/** @in headers x-tenant-id */
+//	export const TenantID = createParamDecorator(...)
+//
+// Returns the category and the declared name; the name is empty when the tag
+// carries only a category. A call-site argument takes priority over it.
+//
 // Valid @in values: param, query, body, headers
-func (a *ControllerAnalyzer) resolveDecoratorIn(dec *ast.Node) string {
+func (a *ControllerAnalyzer) resolveDecoratorIn(dec *ast.Node) (category string, declaredName string) {
 	if dec.Kind != ast.KindDecorator {
-		return ""
+		return "", ""
 	}
 	expr := dec.AsDecorator().Expression
 
@@ -1570,13 +1588,13 @@ func (a *ControllerAnalyzer) resolveDecoratorIn(dec *ast.Node) string {
 		// @ns.Foo (no call)
 		calleeNode = expr
 	default:
-		return ""
+		return "", ""
 	}
 
 	// Resolve the symbol
 	sym := a.checker.GetSymbolAtLocation(calleeNode)
 	if sym == nil {
-		return ""
+		return "", ""
 	}
 
 	// An imported decorator resolves to its import specifier, which carries no JSDoc. Follow the alias to the
@@ -1590,7 +1608,7 @@ func (a *ControllerAnalyzer) resolveDecoratorIn(dec *ast.Node) string {
 	// Get the value declaration
 	decl := sym.ValueDeclaration
 	if decl == nil {
-		return ""
+		return "", ""
 	}
 
 	// Read JSDoc from the declaration.
@@ -1622,14 +1640,15 @@ func (a *ControllerAnalyzer) resolveDecoratorOrigin(dec *ast.Node) *DecoratorOri
 }
 
 // extractInTag reads JSDoc from a node (or its ancestor VariableStatement)
-// and returns the @in tag value if it matches a valid parameter category.
-func extractInTag(node *ast.Node) string {
+// and returns the @in tag category, plus the declared parameter name when the
+// tag carries one.
+func extractInTag(node *ast.Node) (category string, declaredName string) {
 	// Try the node itself first, then parent chain (for VariableDeclaration → VariableStatement)
 	for n := node; n != nil; n = n.Parent {
 		jsdocs := n.JSDoc(nil)
 		if len(jsdocs) > 0 {
-			if cat := findInTag(jsdocs[len(jsdocs)-1]); cat != "" {
-				return cat
+			if cat, name := findInTag(jsdocs[len(jsdocs)-1]); cat != "" {
+				return cat, name
 			}
 		}
 		// Stop walking after VariableStatement or any statement-level node
@@ -1638,26 +1657,39 @@ func extractInTag(node *ast.Node) string {
 			break
 		}
 	}
-	return ""
+	return "", ""
 }
 
-// findInTag scans a JSDoc node's tags for @in and returns the category value.
-func findInTag(jsdocNode *ast.Node) string {
+// findInTag scans a JSDoc node's tags for @in and returns the category value
+// along with the optional parameter name that may follow it.
+//
+// The category is matched case-insensitively; the name keeps its original case,
+// since it is emitted verbatim as the header/query/path key.
+func findInTag(jsdocNode *ast.Node) (category string, declaredName string) {
 	jsdoc := jsdocNode.AsJSDoc()
 	if jsdoc.Tags == nil {
-		return ""
+		return "", ""
 	}
 	for _, tagNode := range jsdoc.Tags.Nodes {
 		tagName, comment := extractJSDocTagInfo(tagNode)
-		if strings.ToLower(tagName) == "in" {
-			cat := strings.TrimSpace(strings.ToLower(comment))
-			switch cat {
-			case string(CategoryParam), string(CategoryQuery), string(CategoryBody), string(CategoryHeaders):
-				return cat
+		if strings.ToLower(tagName) != "in" {
+			continue
+		}
+		fields := strings.Fields(comment)
+		if len(fields) == 0 {
+			continue
+		}
+		cat := strings.ToLower(fields[0])
+		switch cat {
+		case string(CategoryParam), string(CategoryQuery), string(CategoryBody), string(CategoryHeaders):
+			name := ""
+			if len(fields) > 1 {
+				name = fields[1]
 			}
+			return cat, name
 		}
 	}
-	return ""
+	return "", ""
 }
 
 // extractReturnType extracts and unwraps the return type of a method.
@@ -2017,6 +2049,7 @@ func ValidateParameterType(param *RouteParameter, wc *WarningCollector, registry
 	if wc == nil {
 		return
 	}
+	warnCustomDecoratorNoName(param, wc, registry, sourceFile, location)
 	switch param.Category {
 	case string(CategoryParam):
 		// Path params must be scalar (string, number). Warn if arrays/objects are used.
@@ -2088,6 +2121,48 @@ func ValidateParameterType(param *RouteParameter, wc *WarningCollector, registry
 					location))
 		}
 	}
+}
+
+// warnCustomDecoratorNoName reports a custom @in decorator that produced a
+// parameter with no name.
+//
+// A scalar param/query/header has to be addressed by a key, so an empty name
+// means the parameter is emitted unnamed and silently drops out of the spec.
+// Object-typed parameters are exempt: an unnamed object is the whole-query or
+// whole-headers DTO pattern, which is valid. Body is exempt for the same reason.
+func warnCustomDecoratorNoName(param *RouteParameter, wc *WarningCollector, registry *metadata.TypeRegistry, sourceFile string, location string) {
+	if param.CustomDecorator == "" || param.Name != "" {
+		return
+	}
+	switch param.Category {
+	case string(CategoryParam), string(CategoryQuery), string(CategoryHeaders):
+	default:
+		return
+	}
+	if isObjectLike(&param.Type, registry) {
+		return
+	}
+	wc.Add(sourceFile, string(WarnCustomDecoratorNoName),
+		fmt.Sprintf("%s — @%s() resolves to '@in %s' but supplies no name, so it is emitted under a placeholder key "+
+			"rather than the real one. Pass it at the call site (@%s('name')) or declare it on the decorator (@in %s name)",
+			location, param.CustomDecorator, param.Category, param.CustomDecorator, param.Category))
+}
+
+// isObjectLike reports whether a type is an object, or a ref that resolves to one.
+// A ref that cannot be resolved counts as object-like, so that an unregistered
+// type never turns into a spurious warning.
+func isObjectLike(m *metadata.Metadata, registry *metadata.TypeRegistry) bool {
+	if m.Kind == metadata.KindObject {
+		return true
+	}
+	if m.Kind != metadata.KindRef {
+		return false
+	}
+	if registry == nil || m.Ref == "" {
+		return true
+	}
+	resolved, ok := registry.Types[m.Ref]
+	return !ok || resolved.Kind == metadata.KindObject
 }
 
 // hasNestedObjects checks if a metadata type contains nested object types.

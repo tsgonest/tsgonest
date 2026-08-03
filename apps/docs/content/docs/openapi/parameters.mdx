@@ -246,6 +246,40 @@ The `@in` tag accepts:
 
 This allows tsgonest to correctly represent custom extraction logic in the OpenAPI document without any changes to your decorator implementation.
 
+### Declaring the parameter name
+
+When a decorator always maps to the same key, add the name as a second token on the `@in` tag. Call sites then need no argument:
+
+```ts title="tenant-id.decorator.ts"
+/** @in headers x-tenant-id */
+export const TenantID = createParamDecorator(
+  (_, ctx: ExecutionContext) => ctx.switchToHttp().getRequest().tenantId,
+);
+```
+
+```ts title="items.controller.ts"
+@Get('/items')
+list(@TenantID() tenantId: string): ItemDto[] { ... }
+// Emits a header parameter named "x-tenant-id"
+```
+
+The category is case-insensitive, the name is not: it is emitted verbatim as the header, query, or path key.
+
+An argument at the call site still wins, so `@TenantID('x-legacy-tenant')` overrides the declared name for that one parameter.
+
+### Missing names are reported
+
+A custom decorator resolving to `@in param`, `@in query`, or `@in headers` needs a name from somewhere. Without one the parameter falls back to a placeholder key (`id`, `query`, `headers`), which is almost never the key clients actually send. tsgonest warns rather than letting that through silently:
+
+```
+ItemController.list() src/items.controller.ts:14
+@TenantID() resolves to '@in headers' but supplies no name, so it is emitted under a
+placeholder key rather than the real one. Pass it at the call site (@TenantID('name'))
+or declare it on the decorator (@in headers name)
+```
+
+Object-typed parameters are exempt, since an unnamed object is the whole-query or whole-headers DTO pattern described above. `@in body` is exempt too, because an unnamed whole body is the normal case.
+
 ## Limitations
 
 Factory decorators (functions that wrap core NestJS decorators) are not supported — tsgonest uses static analysis and cannot see through the indirection. Import aliases (`import { Body as NestBody }`) **are** supported. See [Rules & Limitations](/docs/rules) for full details.

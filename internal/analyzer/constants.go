@@ -43,6 +43,7 @@ const (
 	WarnParamOptional                    WarningKind = "param-optional"
 	WarnParamUnion                       WarningKind = "param-union"
 	WarnParamNoName                      WarningKind = "param-no-name"
+	WarnCustomDecoratorNoName            WarningKind = "custom-decorator-no-name"
 	WarnParamComplexType                 WarningKind = "param-complex-type"
 	WarnQueryComplexType                 WarningKind = "query-complex-type"
 	WarnQueryNullable                    WarningKind = "query-nullable"

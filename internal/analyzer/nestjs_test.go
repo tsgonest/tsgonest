@@ -1257,6 +1257,254 @@ func TestControllerAnalyzer_CustomDecoratorIn_Headers(t *testing.T) {
 	}
 }
 
+func TestControllerAnalyzer_CustomDecorator_InTagDeclaresName(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+
+		type ParamDecorator = (target: any, key: string, index: number) => void;
+		function createParamDecorator(fn: Function): (...args: any[]) => ParamDecorator {
+			return (...args: any[]) => (target: any, key: string, index: number) => {};
+		}
+
+		/** @in headers x-tenant-id */
+		const TenantID = createParamDecorator((data: any, ctx: any) => {
+			return ctx.switchToHttp().getRequest().tenantId;
+		});
+
+		@Controller("items")
+		export class ItemController {
+			@Get()
+			findAll(@TenantID() tenantId: string): string { return ""; }
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 || len(controllers[0].Routes) != 1 {
+		t.Fatalf("expected 1 controller with 1 route")
+	}
+
+	route := controllers[0].Routes[0]
+	if len(route.Parameters) != 1 {
+		t.Fatalf("expected 1 parameter, got %d", len(route.Parameters))
+	}
+	param := route.Parameters[0]
+	if param.Category != "headers" {
+		t.Errorf("expected Category='headers', got %q", param.Category)
+	}
+	if param.Name != "x-tenant-id" {
+		t.Errorf("expected Name='x-tenant-id' from the @in tag, got %q", param.Name)
+	}
+}
+
+func TestControllerAnalyzer_CustomDecorator_InTagNamePreservesCase(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+
+		type ParamDecorator = (target: any, key: string, index: number) => void;
+		function createParamDecorator(fn: Function): (...args: any[]) => ParamDecorator {
+			return (...args: any[]) => (target: any, key: string, index: number) => {};
+		}
+
+		/** @in HEADERS X-Tenant-Id */
+		const TenantID = createParamDecorator((data: any, ctx: any) => null);
+
+		@Controller("items")
+		export class ItemController {
+			@Get()
+			findAll(@TenantID() tenantId: string): string { return ""; }
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	route := controllers[0].Routes[0]
+	if len(route.Parameters) != 1 {
+		t.Fatalf("expected 1 parameter, got %d", len(route.Parameters))
+	}
+	param := route.Parameters[0]
+	if param.Category != "headers" {
+		t.Errorf("expected Category='headers' (category is case-insensitive), got %q", param.Category)
+	}
+	if param.Name != "X-Tenant-Id" {
+		t.Errorf("expected Name to keep its original case, got %q", param.Name)
+	}
+}
+
+func TestControllerAnalyzer_CustomDecorator_CallSiteNameWinsOverInTag(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+
+		type ParamDecorator = (target: any, key: string, index: number) => void;
+		function createParamDecorator(fn: Function): (...args: any[]) => ParamDecorator {
+			return (...args: any[]) => (target: any, key: string, index: number) => {};
+		}
+
+		/** @in headers x-tenant-id */
+		const TenantID = createParamDecorator((data: any, ctx: any) => null);
+
+		@Controller("items")
+		export class ItemController {
+			@Get()
+			findAll(@TenantID("x-override") tenantId: string): string { return ""; }
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	route := controllers[0].Routes[0]
+	if len(route.Parameters) != 1 {
+		t.Fatalf("expected 1 parameter, got %d", len(route.Parameters))
+	}
+	if got := route.Parameters[0].Name; got != "x-override" {
+		t.Errorf("expected call-site argument to win, got %q", got)
+	}
+}
+
+func TestControllerAnalyzer_CustomDecorator_NoName_Warns(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+
+		type ParamDecorator = (target: any, key: string, index: number) => void;
+		function createParamDecorator(fn: Function): (...args: any[]) => ParamDecorator {
+			return (...args: any[]) => (target: any, key: string, index: number) => {};
+		}
+
+		/** @in headers */
+		const TenantID = createParamDecorator((data: any, ctx: any) => null);
+
+		@Controller("items")
+		export class ItemController {
+			@Get()
+			findAll(@TenantID() tenantId: string): string { return ""; }
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	ca.AnalyzeSourceFile(env.sourceFile)
+
+	found := false
+	for _, w := range ca.Warnings() {
+		if w.Kind == "custom-decorator-no-name" {
+			found = true
+			if !strings.Contains(w.Message, "TenantID") {
+				t.Errorf("expected warning to name the decorator, got: %s", w.Message)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("expected custom-decorator-no-name warning, got %+v", ca.Warnings())
+	}
+}
+
+func TestControllerAnalyzer_CustomDecorator_NoName_ObjectTypeExempt(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+
+		type ParamDecorator = (target: any, key: string, index: number) => void;
+		function createParamDecorator(fn: Function): (...args: any[]) => ParamDecorator {
+			return (...args: any[]) => (target: any, key: string, index: number) => {};
+		}
+
+		/** @in query */
+		const Filters = createParamDecorator((data: any, ctx: any) => null);
+
+		@Controller("items")
+		export class ItemController {
+			@Get()
+			findAll(@Filters() filters: { page: number }): string { return ""; }
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	ca.AnalyzeSourceFile(env.sourceFile)
+
+	for _, w := range ca.Warnings() {
+		if w.Kind == "custom-decorator-no-name" {
+			t.Errorf("whole-object query DTO should not warn: %s", w.Message)
+		}
+	}
+}
+
+func TestControllerAnalyzer_CustomDecorator_NoName_BodyExempt(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Post(path?: string): MethodDecorator { return (t, k, d) => d; }
+
+		type ParamDecorator = (target: any, key: string, index: number) => void;
+		function createParamDecorator(fn: Function): (...args: any[]) => ParamDecorator {
+			return (...args: any[]) => (target: any, key: string, index: number) => {};
+		}
+
+		/** @in body */
+		const RawBody = createParamDecorator((data: any, ctx: any) => null);
+
+		@Controller("items")
+		export class ItemController {
+			@Post()
+			create(@RawBody() raw: string): string { return ""; }
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	ca.AnalyzeSourceFile(env.sourceFile)
+
+	for _, w := range ca.Warnings() {
+		if w.Kind == "custom-decorator-no-name" {
+			t.Errorf("unnamed body parameter is the normal case and should not warn: %s", w.Message)
+		}
+	}
+}
+
+func TestControllerAnalyzer_BuiltinDecorator_NoName_DoesNotWarnCustom(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Get(path?: string): MethodDecorator { return (t, k, d) => d; }
+		function Headers(name?: string): ParameterDecorator { return () => {}; }
+
+		@Controller("items")
+		export class ItemController {
+			@Get()
+			findAll(@Headers() h: { auth: string }): string { return ""; }
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	ca.AnalyzeSourceFile(env.sourceFile)
+
+	for _, w := range ca.Warnings() {
+		if w.Kind == "custom-decorator-no-name" {
+			t.Errorf("built-in decorator should never raise the custom-decorator warning: %s", w.Message)
+		}
+	}
+}
+
 func TestControllerAnalyzer_CustomDecorator_NoIn_Skipped(t *testing.T) {
 	env := setupWalker(t, `
 		function Controller(path: string): ClassDecorator { return (target) => target; }
