@@ -19,6 +19,7 @@ import (
 	"github.com/tsgonest/tsgonest/internal/compiler"
 	"github.com/tsgonest/tsgonest/internal/config"
 	"github.com/tsgonest/tsgonest/internal/runner"
+	"github.com/tsgonest/tsgonest/internal/watchdog"
 	"github.com/tsgonest/tsgonest/internal/watcher"
 )
 
@@ -326,6 +327,10 @@ func runDevLoop(flags *devFlags, sigCh chan os.Signal, rsCh <-chan struct{}) dev
 
 	if proc != nil {
 		proc.DisableStdin = true
+		// Where the kernel cannot clean up after us (macOS, the BSDs), a guard
+		// process stops the app if we die. Without it a SIGKILLed dev leaves
+		// the app orphaned on its port and the next run fails with EADDRINUSE.
+		proc.WatchParentDeath = watchdog.Needed
 		// Crash watchdog. A missing dist entry point means an external
 		// build --clean wiped the outputs while dev was running, so push
 		// a crash trigger and let the rebuild loop heal it (the loop is

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"github.com/tsgonest/tsgonest/internal/watchdog"
 )
 
 var version = "0.0.1-dev"
@@ -31,6 +33,9 @@ func run() int {
 		return runMigrate(os.Args[2:])
 	case "sdk":
 		return runSDK(os.Args[2:])
+	case watchdog.Command:
+		// Spawned by `dev` for itself, never typed by hand: see internal/watchdog.
+		return watchdog.Main(os.Args[2:])
 	case "--version", "-v":
 		fmt.Println("tsgonest", version)
 		return 0

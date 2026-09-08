@@ -12,6 +12,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/tsgonest/tsgonest/internal/watchdog"
 )
 
 // TestRunner_StopKillsProcessGroup verifies that Stop() kills the entire
@@ -48,10 +50,12 @@ func TestRunner_StopKillsProcessGroup(t *testing.T) {
 
 // TestRunner_ParentDeathCleansUpChild verifies that when the parent process is
 // killed with SIGKILL, the child process is also terminated (via Pdeathsig on Linux).
-// On macOS, Pdeathsig is not available so this test is skipped.
+// macOS has no Pdeathsig, so it is skipped here and covered instead by
+// TestRunner_WatchParentDeathCleansUpChildOnSIGKILL, which does the same job
+// through a guard process.
 func TestRunner_ParentDeathCleansUpChild(t *testing.T) {
 	if runtime.GOOS == "darwin" {
-		t.Skip("Pdeathsig not available on macOS — no kernel mechanism for parent-death cleanup")
+		t.Skip("Pdeathsig not available on macOS — WatchParentDeath covers this case")
 	}
 	if os.Getenv("RUNNER_TEST_HELPER") == "parent" {
 		pidFilePath := os.Getenv("RUNNER_TEST_PIDFILE")
@@ -242,8 +246,8 @@ func TestRunner_StopResetsCmd(t *testing.T) {
 	}
 }
 
-// TestRunner_SignalHandlerPattern verifies the corrected signal handler pattern:
-// a looping handler where the second signal triggers force-kill.
+// A child that ignores SIGTERM ends up on the SIGKILL path; that path waits on
+// the wait goroutine with no timeout of its own, so it must not hang.
 func TestRunner_StopSIGKILLPathHasNoTimeout(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping slow test (requires 5s SIGTERM timeout)")
@@ -356,4 +360,68 @@ func TestRunner_KillWithoutStart(t *testing.T) {
 		t.Fatalf("Start after Kill: got %v, want ErrRunnerStopped", err)
 		r.Stop()
 	}
+}
+
+// The macOS gap. Pdeathsig does not exist there, so a SIGKILLed parent used to
+// leave the child running with no parent and still holding its port, which is
+// the EADDRINUSE on the next `tsgonest dev`. With WatchParentDeath a guard
+// process beside the child stops it when the parent goes. The child here is a
+// plain sleep: it knows nothing and needs to know nothing.
+func TestRunner_WatchParentDeathCleansUpChildOnSIGKILL(t *testing.T) {
+	if os.Getenv("RUNNER_TEST_HELPER") == "guard" {
+		pid, _ := strconv.Atoi(os.Getenv("RUNNER_TEST_CHILD"))
+		os.Exit(watchdog.Main([]string{strconv.Itoa(pid)}))
+	}
+	if os.Getenv("RUNNER_TEST_HELPER") == "watchparent" {
+		pidFilePath := os.Getenv("RUNNER_TEST_PIDFILE")
+		// The test binary cannot dispatch the hidden subcommand: re-run this
+		// test with a marker instead, the branch above.
+		watchdog.HelperCommand = func(childPid int) (*exec.Cmd, error) {
+			cmd := exec.Command(os.Args[0], "-test.run=^TestRunner_WatchParentDeathCleansUpChildOnSIGKILL$")
+			cmd.Env = append(os.Environ(), "RUNNER_TEST_HELPER=guard", "RUNNER_TEST_CHILD="+strconv.Itoa(childPid))
+			return cmd, nil
+		}
+		r := New("sleep", []string{"300"}, "")
+		r.WatchParentDeath = true
+		if err := r.Start(); err != nil {
+			fmt.Fprintf(os.Stderr, "helper: start error: %v\n", err)
+			os.Exit(1)
+		}
+		os.WriteFile(pidFilePath, []byte(fmt.Sprintf("%d", r.cmd.Process.Pid)), 0644)
+		select {}
+	}
+
+	pidFile, err := os.CreateTemp("", "runner-watchparent-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pidFilePath := pidFile.Name()
+	pidFile.Close()
+	defer os.Remove(pidFilePath)
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestRunner_WatchParentDeathCleansUpChildOnSIGKILL$")
+	cmd.Env = append(os.Environ(), "RUNNER_TEST_HELPER=watchparent", "RUNNER_TEST_PIDFILE="+pidFilePath)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+
+	childPid := waitForPidFile(t, pidFilePath, 5*time.Second)
+	if err := syscall.Kill(childPid, 0); err != nil {
+		cmd.Process.Kill()
+		cmd.Wait()
+		t.Fatalf("child %d should be alive before the parent dies: %v", childPid, err)
+	}
+
+	cmd.Process.Signal(syscall.SIGKILL)
+	cmd.Wait()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if err := syscall.Kill(childPid, 0); err != nil {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Errorf("child %d survived the parent being SIGKILLed", childPid)
+	syscall.Kill(childPid, syscall.SIGKILL)
 }
