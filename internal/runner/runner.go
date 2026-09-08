@@ -27,6 +27,17 @@ type Runner struct {
 	// synchronized against later mutation.
 	OnUnexpectedExit func(exitCode int)
 
+	// WatchParentDeath starts a guard process beside each child (see
+	// internal/watchdog): it sits in the child's process group holding a pipe
+	// from us, and stops the group if that pipe goes dead, which is this
+	// process dying however it dies. Set it before the first Start.
+	//
+	// This is the stand-in for Pdeathsig on macOS and the BSDs, where the
+	// kernel offers nothing: without it a SIGKILLed tsgonest leaves the app
+	// running with no parent and still holding its port. The child itself is
+	// untouched, so it works the same for node, bun and --exec.
+	WatchParentDeath bool
+
 	mu      sync.Mutex
 	cmd     *exec.Cmd
 	done    chan struct{}

@@ -4,8 +4,11 @@ package runner
 
 import (
 	"fmt"
+	"os"
 	"syscall"
 	"time"
+
+	"github.com/tsgonest/tsgonest/internal/watchdog"
 )
 
 // Start starts the child process.
@@ -25,6 +28,19 @@ func (r *Runner) Start() error {
 		return fmt.Errorf("starting process: %w", err)
 	}
 
+	// A guard process in the child's group holds a pipe from us; if we die it
+	// stops the child. A guard that cannot start is not worth failing the
+	// child over: the app simply goes back to being orphanable.
+	var releaseGuard func()
+	if r.WatchParentDeath {
+		release, guardErr := watchdog.Attach(r.cmd.Process.Pid)
+		if guardErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: parent-death guard unavailable: %v\n", guardErr)
+		} else {
+			releaseGuard = release
+		}
+	}
+
 	// Allocate r.done and spawn the wait goroutine ONLY after all error-prone
 	// setup has succeeded. If cmd.Start fails, r.done stays as it was so
 	// Wait() will not block forever on a goroutine that was never spawned.
@@ -37,6 +53,10 @@ func (r *Runner) Start() error {
 	done := r.done
 	go func() {
 		cmd.Wait()
+		// This child is gone; its guard sees EOF, finds it gone, and leaves.
+		if releaseGuard != nil {
+			releaseGuard()
+		}
 		r.alive.Store(false)
 		// close(done) first so a Stop/Restart triggered by the callback
 		// sees the exited child immediately instead of waiting 5s.
@@ -45,6 +65,34 @@ func (r *Runner) Start() error {
 	}()
 
 	return nil
+}
+
+// Kill force-kills the child and everything in its process group, and waits
+// for the child to be reaped. For the caller that is about to exit at once
+// (the second Ctrl-C): the child must not be left behind, or it keeps its
+// port with no parent and the next start fails with EADDRINUSE.
+func (r *Runner) Kill() {
+	r.mu.Lock()
+	cmd := r.cmd
+	done := r.done
+	r.stopped = true
+	r.mu.Unlock()
+	if cmd == nil || cmd.Process == nil {
+		return
+	}
+	if pgid, err := syscall.Getpgid(cmd.Process.Pid); err == nil {
+		syscall.Kill(-pgid, syscall.SIGKILL)
+	} else {
+		cmd.Process.Kill()
+	}
+	if done == nil {
+		_, _ = cmd.Process.Wait()
+		return
+	}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+	}
 }
 
 // stop stops the child process gracefully, with a force-kill timeout.

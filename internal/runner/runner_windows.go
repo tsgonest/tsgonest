@@ -243,6 +243,37 @@ func (r *Runner) stop() error {
 	return nil
 }
 
+// Kill force-kills the child and, through the Job Object, everything it
+// spawned, and waits for the child to be reaped. For the caller that is about
+// to exit at once (the second Ctrl-C): the child must not be left behind on
+// its port.
+func (r *Runner) Kill() {
+	r.mu.Lock()
+	cmd := r.cmd
+	done := r.done
+	r.stopped = true
+	if cmd == nil || cmd.Process == nil {
+		r.closeJob()
+		r.mu.Unlock()
+		return
+	}
+	r.mu.Unlock()
+
+	cmd.Process.Kill()
+	if done == nil {
+		_, _ = cmd.Process.Wait()
+	} else {
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+		}
+	}
+
+	r.mu.Lock()
+	r.closeJob()
+	r.mu.Unlock()
+}
+
 // closeJob closes the Windows Job Object handle.
 // With JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, this terminates all processes in the job.
 func (r *Runner) closeJob() {
