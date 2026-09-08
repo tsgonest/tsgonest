@@ -244,43 +244,6 @@ func TestRunner_StopResetsCmd(t *testing.T) {
 
 // TestRunner_SignalHandlerPattern verifies the corrected signal handler pattern:
 // a looping handler where the second signal triggers force-kill.
-func TestRunner_SignalHandlerPattern(t *testing.T) {
-	// Reproduce the FIXED dev.go signal handling pattern
-	sigCh := make(chan os.Signal, 2)
-
-	secondHandled := make(chan bool, 1)
-
-	go func() {
-		<-sigCh // first signal — start graceful shutdown
-
-		// Simulate Stop() running in background
-		stopDone := make(chan struct{})
-		go func() {
-			time.Sleep(100 * time.Millisecond) // simulate Stop() work
-			close(stopDone)
-		}()
-
-		select {
-		case <-stopDone:
-			secondHandled <- true // graceful completed
-		case <-sigCh:
-			secondHandled <- true // second signal caught
-		}
-	}()
-
-	sigCh <- syscall.SIGINT
-	sigCh <- syscall.SIGINT
-
-	select {
-	case handled := <-secondHandled:
-		if !handled {
-			t.Error("second signal was not handled")
-		}
-	case <-time.After(2 * time.Second):
-		t.Error("signal handler goroutine didn't respond")
-	}
-}
-
 func TestRunner_StopSIGKILLPathHasNoTimeout(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping slow test (requires 5s SIGTERM timeout)")
@@ -343,4 +306,54 @@ func waitForPidFile(t *testing.T, path string, timeout time.Duration) int {
 	}
 	t.Fatalf("timeout waiting for PID in %s", path)
 	return 0
+}
+
+// Kill is what the second Ctrl-C runs right before os.Exit: the whole process
+// group must be gone when it returns, or the child outlives tsgonest on its
+// port and the next `tsgonest dev` fails with EADDRINUSE.
+func TestRunner_KillLeavesNoProcessGroupBehind(t *testing.T) {
+	pidFile, err := os.CreateTemp("", "runner-kill-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(pidFile.Name())
+	pidFile.Close()
+
+	// The child traps SIGTERM, the way a server mid-shutdown ignores it, so
+	// only SIGKILL can take it down.
+	script := fmt.Sprintf(`trap '' TERM; sleep 300 & echo $! > %s; wait`, pidFile.Name())
+	r := New("sh", []string{"-c", script}, "")
+	if err := r.Start(); err != nil {
+		t.Fatal(err)
+	}
+	childPid := r.cmd.Process.Pid
+	grandchildPid := waitForPidFile(t, pidFile.Name(), 5*time.Second)
+
+	start := time.Now()
+	r.Kill()
+	if took := time.Since(start); took > 2*time.Second {
+		t.Errorf("Kill took %v; it must not wait out a graceful timeout", took)
+	}
+	time.Sleep(100 * time.Millisecond)
+
+	if err := syscall.Kill(childPid, 0); err == nil {
+		t.Errorf("child %d still alive after Kill()", childPid)
+		syscall.Kill(childPid, syscall.SIGKILL)
+	}
+	if err := syscall.Kill(grandchildPid, 0); err == nil {
+		t.Errorf("grandchild %d still alive after Kill() — process group kill failed", grandchildPid)
+		syscall.Kill(grandchildPid, syscall.SIGKILL)
+	}
+	if r.Running() {
+		t.Error("Running() still true after Kill()")
+	}
+}
+
+func TestRunner_KillWithoutStart(t *testing.T) {
+	r := New("sleep", []string{"300"}, "")
+	r.Kill()
+	if err := r.Start(); err != ErrRunnerStopped {
+		t.Fatalf("Start after Kill: got %v, want ErrRunnerStopped", err)
+		r.Stop()
+	}
 }

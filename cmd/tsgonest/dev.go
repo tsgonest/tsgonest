@@ -470,20 +470,12 @@ func runDevLoop(flags *devFlags, sigCh chan os.Signal, rsCh <-chan struct{}) dev
 			fmt.Fprintln(os.Stderr, "\nshutting down...")
 			w.Stop()
 
-			stopDone := make(chan struct{})
-			go func() {
-				if proc != nil {
-					proc.Stop()
-				}
-				close(stopDone)
-			}()
-
-			select {
-			case <-stopDone:
-			case <-sigCh:
-				fmt.Fprintln(os.Stderr, "\nforce killing...")
-				os.Exit(1)
+			// A nil *runner.Runner must reach the handler as a nil interface.
+			var child shutdownProc
+			if proc != nil {
+				child = proc
 			}
+			shutdownOnSignal(sigCh, child, os.Stderr, time.Now, os.Exit)
 		case path := <-configChanged:
 			// Config changed — stop the watcher to return from Watch()
 			restartRequested.Store(true)

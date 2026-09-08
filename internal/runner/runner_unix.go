@@ -47,6 +47,34 @@ func (r *Runner) Start() error {
 	return nil
 }
 
+// Kill force-kills the child and everything in its process group, and waits
+// for the child to be reaped. For the caller that is about to exit at once
+// (the second Ctrl-C): the child must not be left behind, or it keeps its
+// port with no parent and the next start fails with EADDRINUSE.
+func (r *Runner) Kill() {
+	r.mu.Lock()
+	cmd := r.cmd
+	done := r.done
+	r.stopped = true
+	r.mu.Unlock()
+	if cmd == nil || cmd.Process == nil {
+		return
+	}
+	if pgid, err := syscall.Getpgid(cmd.Process.Pid); err == nil {
+		syscall.Kill(-pgid, syscall.SIGKILL)
+	} else {
+		cmd.Process.Kill()
+	}
+	if done == nil {
+		_, _ = cmd.Process.Wait()
+		return
+	}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+	}
+}
+
 // stop stops the child process gracefully, with a force-kill timeout.
 //
 // The mutex is released across the up-to-5s graceful-shutdown wait so that
