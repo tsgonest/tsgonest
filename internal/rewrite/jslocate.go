@@ -1,10 +1,10 @@
 package rewrite
 
 import (
-	"github.com/microsoft/typescript-go/shim/ast"
-	"github.com/microsoft/typescript-go/shim/core"
-	shimparser "github.com/microsoft/typescript-go/shim/parser"
-	shimscanner "github.com/microsoft/typescript-go/shim/scanner"
+	"github.com/microsoft/TypeScript/tsc/shim/ast"
+	"github.com/microsoft/TypeScript/tsc/shim/core"
+	shimparser "github.com/microsoft/TypeScript/tsc/shim/parser"
+	shimscanner "github.com/microsoft/TypeScript/tsc/shim/scanner"
 )
 
 // ParamLoc holds position info for a single method parameter.

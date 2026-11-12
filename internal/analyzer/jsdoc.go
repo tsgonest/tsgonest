@@ -4,7 +4,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/microsoft/typescript-go/shim/ast"
+	"github.com/microsoft/TypeScript/tsc/shim/ast"
 )
 
 // classJSDocInfo holds JSDoc metadata extracted from a controller class declaration.

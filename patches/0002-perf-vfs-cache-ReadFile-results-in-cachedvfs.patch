@@ -1,0 +1,65 @@
+From 971aee46d6375010539e6faed9e43e627c413d4f Mon Sep 17 00:00:00 2001
+From: Codex <codex@example.com>
+Date: Thu, 12 Nov 2026 17:50:48 +1300
+Subject: [PATCH 2/2] perf(vfs): cache ReadFile results in cachedvfs
+
+---
+ tsc/internal/vfs/cachedvfs/cachedvfs.go | 24 +++++++++++++++++++++++-
+ 1 file changed, 23 insertions(+), 1 deletion(-)
+
+diff --git a/tsc/internal/vfs/cachedvfs/cachedvfs.go b/tsc/internal/vfs/cachedvfs/cachedvfs.go
+index a5c4c334b..759318250 100644
+--- a/tsc/internal/vfs/cachedvfs/cachedvfs.go
++++ b/tsc/internal/vfs/cachedvfs/cachedvfs.go
+@@ -16,10 +16,16 @@ type FS struct {
+ 	directoryExistsCache      collections.SyncMap[tspath.RootedDirectoryPath, bool]
+ 	fileExistsCache           collections.SyncMap[tspath.RootedFilePath, bool]
+ 	getAccessibleEntriesCache collections.SyncMap[tspath.RootedDirectoryPath, vfs.Entries]
++	readFileCache             collections.SyncMap[tspath.RootedFilePath, readFileCacheEntry]
+ 	realpathCache             collections.SyncMap[tspath.RootedPath, tspath.RootedPath]
+ 	statCache                 collections.SyncMap[tspath.RootedPath, vfs.FileInfo]
+ }
+ 
++type readFileCacheEntry struct {
++	contents string
++	ok       bool
++}
++
+ var _ vfs.FS = (*FS)(nil)
+ 
+ func From(fs vfs.FS) *FS {
+@@ -42,6 +48,7 @@ func (fsys *FS) ClearCache() {
+ 	fsys.directoryExistsCache.Clear()
+ 	fsys.fileExistsCache.Clear()
+ 	fsys.getAccessibleEntriesCache.Clear()
++	fsys.readFileCache.Clear()
+ 	fsys.realpathCache.Clear()
+ 	fsys.statCache.Clear()
+ }
+@@ -95,7 +102,22 @@ func (fsys *FS) GetAccessibleEntries(path tspath.RootedDirectoryPath) vfs.Entrie
+ }
+ 
+ func (fsys *FS) ReadFile(path tspath.RootedFilePath) (contents string, ok bool) {
+-	return fsys.fs.ReadFile(path)
++	if fsys.enabled.Load() {
++		if ret, hit := fsys.readFileCache.Load(path); hit {
++			return ret.contents, ret.ok
++		}
++	}
++
++	contents, ok = fsys.fs.ReadFile(path)
++
++	if fsys.enabled.Load() {
++		fsys.readFileCache.Store(path, readFileCacheEntry{
++			contents: contents,
++			ok:       ok,
++		})
++	}
++
++	return contents, ok
+ }
+ 
+ func (fsys *FS) Realpath(path tspath.RootedPath) tspath.RootedPath {
+-- 
+2.56.0
+

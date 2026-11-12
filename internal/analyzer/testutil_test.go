@@ -6,13 +6,13 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/microsoft/typescript-go/shim/ast"
-	"github.com/microsoft/typescript-go/shim/bundled"
-	shimchecker "github.com/microsoft/typescript-go/shim/checker"
-	shimcompiler "github.com/microsoft/typescript-go/shim/compiler"
-	"github.com/microsoft/typescript-go/shim/core"
-	"github.com/microsoft/typescript-go/shim/tsoptions"
-	"github.com/microsoft/typescript-go/shim/tspath"
+	"github.com/microsoft/TypeScript/tsc/shim/ast"
+	"github.com/microsoft/TypeScript/tsc/shim/bundled"
+	shimchecker "github.com/microsoft/TypeScript/tsc/shim/checker"
+	shimcompiler "github.com/microsoft/TypeScript/tsc/shim/compiler"
+	"github.com/microsoft/TypeScript/tsc/shim/core"
+	"github.com/microsoft/TypeScript/tsc/shim/tsoptions"
+	"github.com/microsoft/TypeScript/tsc/shim/tspath"
 	"github.com/tsgonest/tsgonest/internal/analyzer"
 	"github.com/tsgonest/tsgonest/internal/metadata"
 	"github.com/tsgonest/tsgonest/internal/testutil"
@@ -47,11 +47,11 @@ func setupWalker(t *testing.T, tsSource string) *walkerEnv {
 		filePath: tsSource,
 	}
 	fs := testutil.NewDefaultOverlayVFS(virtualFiles)
-	host := shimcompiler.NewCompilerHost(rootDir, fs, bundled.LibPath(), nil, nil, nil)
+	host := shimcompiler.NewCompilerHost(fs, bundled.LibPath(), nil, nil, nil)
 
 	// Parse tsconfig
 	configParseResult, diags := tsoptions.GetParsedCommandLineOfConfigFile(
-		"tsconfig.json", &core.CompilerOptions{}, nil, host, nil,
+		tspath.RootedFilePathFromAbsolute(tspath.ResolvePath(rootDir, "tsconfig.json")), &core.CompilerOptions{}, nil, tsoptions.NewDefaultParseConfigHost(fs), nil,
 	)
 	if len(diags) > 0 {
 		t.Fatalf("tsconfig parse errors: %v", diags[0].String())
@@ -70,7 +70,7 @@ func setupWalker(t *testing.T, tsSource string) *walkerEnv {
 	program.BindSourceFiles()
 
 	// Get the source file
-	sourceFile := program.GetSourceFile(fileName)
+	sourceFile := program.GetSourceFile(tspath.RootedFilePathFromAbsolute(filePath))
 	if sourceFile == nil {
 		t.Fatalf("source file %q not found in program", fileName)
 	}
@@ -102,10 +102,10 @@ func setupWalkerMultiFile(t *testing.T, files map[string]string, mainFile string
 		virtualFiles[tspath.ResolvePath(rootDir, name)] = content
 	}
 	fs := testutil.NewDefaultOverlayVFS(virtualFiles)
-	host := shimcompiler.NewCompilerHost(rootDir, fs, bundled.LibPath(), nil, nil, nil)
+	host := shimcompiler.NewCompilerHost(fs, bundled.LibPath(), nil, nil, nil)
 
 	configParseResult, diags := tsoptions.GetParsedCommandLineOfConfigFile(
-		"tsconfig.json", &core.CompilerOptions{}, nil, host, nil,
+		tspath.RootedFilePathFromAbsolute(tspath.ResolvePath(rootDir, "tsconfig.json")), &core.CompilerOptions{}, nil, tsoptions.NewDefaultParseConfigHost(fs), nil,
 	)
 	if len(diags) > 0 {
 		t.Fatalf("tsconfig parse errors: %v", diags[0].String())
@@ -122,7 +122,7 @@ func setupWalkerMultiFile(t *testing.T, files map[string]string, mainFile string
 	}
 	program.BindSourceFiles()
 
-	sourceFile := program.GetSourceFile(mainFile)
+	sourceFile := program.GetSourceFile(tspath.RootedFilePathFromAbsolute(tspath.ResolvePath(rootDir, mainFile)))
 	if sourceFile == nil {
 		t.Fatalf("source file %q not found in program", mainFile)
 	}

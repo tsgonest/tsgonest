@@ -7,7 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/microsoft/typescript-go/shim/core"
+	"github.com/microsoft/TypeScript/tsc/shim/core"
+	"github.com/microsoft/TypeScript/tsc/shim/tspath"
 	"github.com/tsgonest/tsgonest/internal/compiler"
 	"github.com/tsgonest/tsgonest/internal/config"
 	"github.com/tsgonest/tsgonest/internal/pathalias"
@@ -107,12 +108,12 @@ func resolvePathAliases(opts *core.CompilerOptions, cwd string, emittedFiles []s
 	for k, v := range opts.Paths.Entries() {
 		pathsMap[k] = v
 	}
-	pathsBaseDir := opts.GetPathsBasePath(cwd)
+	pathsBaseDir := string(opts.GetPathsBasePath(tspath.RootedDirectoryPathFromAbsolute(cwd)))
 
 	resolver := pathalias.NewPathResolver(pathalias.Config{
 		PathsBaseDir: pathsBaseDir,
-		OutDir:       opts.OutDir,
-		RootDir:      opts.RootDir,
+		OutDir:       string(opts.OutDir),
+		RootDir:      string(opts.RootDir),
 		Paths:        pathsMap,
 	})
 	count, err := resolver.ResolveAllEmittedFiles(emittedFiles)

@@ -1,8 +1,8 @@
 package analyzer
 
 import (
-	"github.com/microsoft/typescript-go/shim/ast"
-	shimchecker "github.com/microsoft/typescript-go/shim/checker"
+	"github.com/microsoft/TypeScript/tsc/shim/ast"
+	shimchecker "github.com/microsoft/TypeScript/tsc/shim/checker"
 )
 
 // DecoratorOrigin contains the resolved original name and import source of a decorator.
@@ -58,19 +58,19 @@ func resolveIdentifierOrigin(ident *ast.Node, checker *shimchecker.Checker) *Dec
 	}
 
 	// Non-alias: locally defined decorator. We can still return the name but no module.
-	if sym.Flags&ast.SymbolFlagsAlias == 0 {
+	if sym.Flags()&ast.SymbolFlagsAlias == 0 {
 		return nil
 	}
 
 	// Resolve the alias to get the original exported name
 	original := checker.GetAliasedSymbol(sym)
-	originalName := sym.Name // default to local name
-	if original != nil && original.Name != "" {
-		originalName = original.Name
+	originalName := sym.Name() // default to local name
+	if original != nil && original.Name() != "" {
+		originalName = original.Name()
 	}
 
 	// Walk the alias symbol's declaration to find the import module specifier
-	moduleSpec := moduleSpecifierFromDeclarations(sym.Declarations)
+	moduleSpec := moduleSpecifierFromDeclarations(sym.Declarations())
 
 	return &DecoratorOrigin{
 		Name:            originalName,
@@ -100,13 +100,13 @@ func resolvePropertyAccessOrigin(pa *ast.Node, checker *shimchecker.Checker) *De
 	}
 
 	// The namespace symbol should be an alias (from import * as ns)
-	if nsSym.Flags&ast.SymbolFlagsAlias == 0 {
+	if nsSym.Flags()&ast.SymbolFlagsAlias == 0 {
 		return nil
 	}
 
 	// Walk the namespace symbol's declaration to find the import module specifier.
 	// For `import * as nest from '...'`, the declaration is a NamespaceImport node.
-	moduleSpec := moduleSpecifierFromDeclarations(nsSym.Declarations)
+	moduleSpec := moduleSpecifierFromDeclarations(nsSym.Declarations())
 
 	return &DecoratorOrigin{
 		Name:            propName,

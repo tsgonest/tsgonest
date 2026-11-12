@@ -1,28 +1,27 @@
-From 54c5d5e60ee069172f001d27f889edb4b78a6b10 Mon Sep 17 00:00:00 2001
+From d25aa871e6eacf2b8e196e459f3b29d4dc440200 Mon Sep 17 00:00:00 2001
 From: Cameron Clark <cameron.clark@hey.com>
-Date: Mon, 3 Nov 2025 12:44:32 +0000
-Subject: [PATCH 4/7] fix: early return from invalid tsconfig for better errors
+Date: Thu, 12 Nov 2026 17:50:48 +1300
+Subject: [PATCH 1/2] fix: early return from invalid tsconfig for better errors
 
 ---
- internal/tsoptions/tsconfigparsing.go | 11 +++++++++++
- 1 file changed, 11 insertions(+)
+ tsc/internal/tsoptions/tsconfigparsing.go | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
 
-diff --git a/internal/tsoptions/tsconfigparsing.go b/internal/tsoptions/tsconfigparsing.go
-index 9668bb70b4..716a4e5d05 100644
---- a/internal/tsoptions/tsconfigparsing.go
-+++ b/internal/tsoptions/tsconfigparsing.go
-@@ -192,6 +192,17 @@ func parseOwnConfigOfJsonSourceFile(
- 	var extendedConfigPath any
+diff --git a/tsc/internal/tsoptions/tsconfigparsing.go b/tsc/internal/tsoptions/tsconfigparsing.go
+index 2b393fd79..ea3e452c7 100644
+--- a/tsc/internal/tsoptions/tsconfigparsing.go
++++ b/tsc/internal/tsoptions/tsconfigparsing.go
+@@ -118,6 +118,16 @@ func parseOwnConfigOfJsonSourceFile(
+ 	var extendedConfigPaths []tspath.RootedFilePath
  	var rootCompilerOptions []*ast.PropertyName
  	var errors []*ast.Diagnostic
 +
 +	// If there are parsing errors, return only the first one
 +	if len(sourceFile.Diagnostics()) > 0 {
 +		return &parsedTsconfig{
-+			raw:                &collections.OrderedMap[string, any]{},
-+			options:            compilerOptions,
-+			typeAcquisition:    typeAcquisition,
-+			extendedConfigPath: extendedConfigPath,
++			raw:             &collections.OrderedMap[string, any]{},
++			options:         compilerOptions,
++			typeAcquisition: typeAcquisition,
 +		}, []*ast.Diagnostic{sourceFile.Diagnostics()[0]}
 +	}
 +
@@ -30,5 +29,5 @@ index 9668bb70b4..716a4e5d05 100644
  		keyText string,
  		value any,
 -- 
-2.50.1 (Apple Git-155)
+2.56.0
 

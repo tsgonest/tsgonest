@@ -40,7 +40,7 @@ A useful report includes:
 | In scope | Out of scope |
 |----------|-------------|
 | The `tsgonest` CLI binary | Third-party dependencies (report upstream) |
-| `@tsgonest/runtime` npm package | The `typescript-go` submodule (report to Microsoft) |
+| `@tsgonest/runtime` npm package | The `typescript` submodule (report to Microsoft) |
 | `@tsgonest/types` npm package | Vulnerabilities in test fixtures |
 | The release / CI pipeline | |
 

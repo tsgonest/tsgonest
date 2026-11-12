@@ -6,7 +6,7 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/microsoft/typescript-go/shim/core"
+	"github.com/microsoft/TypeScript/tsc/shim/core"
 	"github.com/tsgonest/tsgonest/internal/analyzer"
 	"github.com/tsgonest/tsgonest/internal/compiler"
 	"github.com/tsgonest/tsgonest/internal/metadata"
@@ -363,13 +363,12 @@ func TestParseTSConfig_CLIOverrideStrict(t *testing.T) {
 	}`)
 
 	fs := compiler.CreateDefaultFS()
-	host := compiler.CreateDefaultHost(dir, fs)
 
 	// Parse with --strict override
 	overrides := &core.CompilerOptions{
 		Strict: core.TSTrue,
 	}
-	parsed, diags, err := compiler.ParseTSConfig(fs, dir, "tsconfig.json", host, overrides)
+	parsed, diags, err := compiler.ParseTSConfig(fs, dir, "tsconfig.json", overrides)
 	if err != nil {
 		t.Fatalf("ParseTSConfig error: %v", err)
 	}
@@ -393,12 +392,11 @@ func TestParseTSConfig_CLIOverrideNoEmit(t *testing.T) {
 	}`)
 
 	fs := compiler.CreateDefaultFS()
-	host := compiler.CreateDefaultHost(dir, fs)
 
 	overrides := &core.CompilerOptions{
 		NoEmit: core.TSTrue,
 	}
-	parsed, diags, err := compiler.ParseTSConfig(fs, dir, "tsconfig.json", host, overrides)
+	parsed, diags, err := compiler.ParseTSConfig(fs, dir, "tsconfig.json", overrides)
 	if err != nil {
 		t.Fatalf("ParseTSConfig error: %v", err)
 	}
@@ -422,12 +420,11 @@ func TestParseTSConfig_CLIOverrideTarget(t *testing.T) {
 	}`)
 
 	fs := compiler.CreateDefaultFS()
-	host := compiler.CreateDefaultHost(dir, fs)
 
 	overrides := &core.CompilerOptions{
 		Target: core.ScriptTargetES2022,
 	}
-	parsed, diags, err := compiler.ParseTSConfig(fs, dir, "tsconfig.json", host, overrides)
+	parsed, diags, err := compiler.ParseTSConfig(fs, dir, "tsconfig.json", overrides)
 	if err != nil {
 		t.Fatalf("ParseTSConfig error: %v", err)
 	}
@@ -452,10 +449,9 @@ func TestParseTSConfig_NilOverridesUsesDefaults(t *testing.T) {
 	}`)
 
 	fs := compiler.CreateDefaultFS()
-	host := compiler.CreateDefaultHost(dir, fs)
 
 	// nil overrides — tsconfig values should be used as-is
-	parsed, diags, err := compiler.ParseTSConfig(fs, dir, "tsconfig.json", host, nil)
+	parsed, diags, err := compiler.ParseTSConfig(fs, dir, "tsconfig.json", nil)
 	if err != nil {
 		t.Fatalf("ParseTSConfig error: %v", err)
 	}
@@ -786,8 +782,7 @@ func TestPipeline_FullIntegrationWithTSConfig(t *testing.T) {
 
 	// Now parse tsconfig with CLI overrides
 	fs := compiler.CreateDefaultFS()
-	host := compiler.CreateDefaultHost(dir, fs)
-	parsed, diags, err := compiler.ParseTSConfig(fs, dir, "tsconfig.json", host, opts)
+	parsed, diags, err := compiler.ParseTSConfig(fs, dir, "tsconfig.json", opts)
 	if err != nil {
 		t.Fatalf("ParseTSConfig error: %v", err)
 	}

@@ -1,14 +1,15 @@
-module github.com/microsoft/typescript-go/shim/checker
+module github.com/microsoft/TypeScript/tsc/shim/checker
 
-go 1.26
+go 1.27
 
-require github.com/microsoft/typescript-go v0.0.0-20260424234512-515d036f927a
+require github.com/microsoft/TypeScript/tsc v0.0.0-20261111233104-ad24728023c5
 
 require (
-	github.com/go-json-experiment/json v0.0.0-20260214004413-d219187c3433 // indirect
+	github.com/Microsoft/go-winio v0.6.4 // indirect
+	github.com/klauspost/compress v1.20.3 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.10 // indirect
 	github.com/zeebo/xxh3 v1.1.0 // indirect
-	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/sys v0.43.0 // indirect
-	golang.org/x/text v0.36.0 // indirect
+	golang.org/x/sync v0.24.0 // indirect
+	golang.org/x/sys v0.49.0 // indirect
+	golang.org/x/text v0.43.0 // indirect
 )

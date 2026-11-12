@@ -1,6 +1,6 @@
 # AGENTS.md - AI Assistant Guide for tsgonest
 
-tsgonest is a Go binary wrapping typescript-go (tsgo) that:
+tsgonest is a Go binary wrapping tsgo, the native TypeScript compiler from microsoft/TypeScript, that:
 
 1. Compiles TypeScript via tsgo (fast, native-speed)
 2. Generates companion files (`.tsgonest.js`) with runtime validators and fast JSON serializers
@@ -8,30 +8,30 @@ tsgonest is a Go binary wrapping typescript-go (tsgo) that:
 4. Provides a lightweight `@tsgonest/runtime` npm package with `defineConfig` and error types
 5. Replaces `nest` CLI with `tsgonest dev` (watch+reload) and `tsgonest build` (with tsconfig path alias resolution)
 
-## CRITICAL: typescript-go Submodule Rules
+## CRITICAL: typescript Submodule Rules
 
-The `typescript-go/` directory is a Git submodule referencing Microsoft's TypeScript Go port.
+The `typescript/` directory is a Git submodule of microsoft/TypeScript. The Go compiler lives in `typescript/tsc/` (module `github.com/microsoft/TypeScript/tsc`, requires Go 1.27).
 
 ### What IS allowed
 
 - **Submodule pointer updates** (upgrading to a newer upstream commit) — always commit these
   along with regenerated shims (`just shim`), updated `go.work.sum`, and any code that
   adapts to the new API surface (`cmd/`, `internal/compiler/`, etc.)
-- Temporary modifications inside `typescript-go/` during development for testing
+- Temporary modifications inside `typescript/tsc/` during development for testing
 
 ### What is NOT allowed
 
-- Committing **code changes you made inside** `typescript-go/` to the tsgonest repository.
+- Committing **code changes you made inside** `typescript/tsc/` to the tsgonest repository.
   These must be converted to patch files in `patches/` instead (see below).
 - In other words: the submodule pointer should always point to an **unmodified upstream commit**.
-  If you made local commits inside `typescript-go/`, those are your patches — extract them
+  If you made local commits inside `typescript/tsc/`, those are your patches — extract them
   and reset the submodule before finalizing.
 
-### Creating Permanent Changes to typescript-go internals
+### Creating Permanent Changes to typescript submodule internals
 
-1. Test your changes locally in the typescript-go directory
+1. Test your changes locally in the typescript submodule directory
 2. Create a patch file in `patches/` using `git format-patch`
-3. Reset the typescript-go submodule to its original state
+3. Reset the typescript submodule to its original state
 4. Patches are applied during `just init` via `git am`
 
 ### Exposing New Functions
@@ -72,7 +72,6 @@ packages/
 # ── Go source (repo root) ────────────────────────────────────
 cmd/tsgonest/              CLI entry point (main.go, build.go, dev.go, assets.go)
 internal/
-  collections/             Copied from typescript-go/internal/collections during init
   compiler/                tsgo program creation, host, and emission
   config/                  Config file parsing and validation
   analyzer/                AST analysis (type walking, NestJS decorator recognition)
@@ -81,11 +80,11 @@ internal/
   openapi/                 OpenAPI 3.2 document assembly
   testutil/                Test utilities (OverlayVFS)
 shim/                      [GENERATED] Go bindings to tsgo internals (DO NOT EDIT)
-patches/                   Git patches applied to typescript-go during init
+patches/                   Git patches applied to the typescript submodule during init
 tools/gen_shims/           Shim code generator
 e2e/                       End-to-end tests (Vitest) — run after building the Go binary
 testdata/                  Test fixtures (TypeScript files, NestJS controllers, branded types)
-typescript-go/             [SUBMODULE] Microsoft's TypeScript Go port
+typescript/                [SUBMODULE] microsoft/TypeScript (Go compiler in typescript/tsc)
 ```
 
 ## pnpm Workspace — Key Commands
@@ -171,7 +170,7 @@ tsgonest uses the same shim pattern as tsgolint to access tsgo's internal APIs:
 - `go:linkname` directives reach into unexported functions
 - `unsafe.Pointer` field accessors for unexported struct fields
 - The root `go.mod` has `replace` directives pointing to local `./shim/` paths
-- `go.work` workspace includes both the root module and typescript-go
+- `go.work` workspace includes both the root module and typescript/tsc
 
 ### packages/core — Binary Distribution
 
@@ -203,7 +202,7 @@ are defined in `justfile` at the repo root.
 ### First-time Setup
 
 ```bash
-just init    # Clone submodule, apply patches, copy collections
+just init    # Clone submodule, apply patches
 ```
 
 ### Building
@@ -252,7 +251,7 @@ pnpm --filter docs start   # Serve the static export locally
 
 ### Adding a New Shim Method
 
-1. Find the method in typescript-go source (e.g., `checker.getTypeOfExpression`)
+1. Find the method in typescript/tsc source (e.g., `checker.getTypeOfExpression`)
 2. Add it to the appropriate `shim/*/extra-shim.json` under `ExtraMethods`
 3. Run `just shim` to regenerate
 4. Use it in Go code as `checker.Checker_getTypeOfExpression(recv, args...)`
@@ -312,10 +311,9 @@ pnpm add -D tsgonest@latest
 
 ### DO NOT Modify
 
-- `typescript-go/*` — Submodule (use `patches/` for permanent changes)
+- `typescript/*` — Submodule (use `patches/` for permanent changes)
 - `shim/*/shim.go` — Generated code (regenerate with `go run tools/gen_shims/main.go`)
 - `.gitmodules` — Submodule configuration
-- `internal/collections/*` — Synced from typescript-go by init
 - `packages/cli-*/` — Platform binary packages; populated by CI, not hand-edited
 
 ### Modify with Caution
@@ -350,7 +348,7 @@ pnpm add -D tsgonest@latest
 
 ## Key Dependencies
 
-- `typescript-go` — Microsoft's Go port of TypeScript (submodule)
+- `typescript` — microsoft/TypeScript, whose `tsc/` dir holds the Go compiler (submodule)
 - `golang.org/x/tools/go/packages` — For shim generation
 - `golang.org/x/text` — For text case conversion in shim generator
 - Vitest — E2e test framework + runtime tests
@@ -358,7 +356,7 @@ pnpm add -D tsgonest@latest
 
 ## Common Pitfalls
 
-1. **Modifying typescript-go without patches**: Changes will be lost on submodule update
+1. **Modifying typescript submodule without patches**: Changes will be lost on submodule update
 2. **Editing shim files directly**: Will be overwritten on shim regeneration
 3. **Forgetting `go mod tidy`**: After adding new shim imports
 4. **Recursive types in type walker**: Always use visited-type tracking

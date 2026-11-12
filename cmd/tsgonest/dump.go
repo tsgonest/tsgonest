@@ -8,9 +8,9 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/microsoft/typescript-go/shim/ast"
-	shimcompiler "github.com/microsoft/typescript-go/shim/compiler"
-	"github.com/microsoft/typescript-go/shim/core"
+	"github.com/microsoft/TypeScript/tsc/shim/ast"
+	shimcompiler "github.com/microsoft/TypeScript/tsc/shim/compiler"
+	"github.com/microsoft/TypeScript/tsc/shim/core"
 	"github.com/tsgonest/tsgonest/internal/analyzer"
 	"github.com/tsgonest/tsgonest/internal/metadata"
 )
@@ -91,7 +91,7 @@ func runDumpMetadata(program *shimcompiler.Program, opts *core.CompilerOptions) 
 
 		if len(types) > 0 {
 			files = append(files, fileDump{
-				FileName: sf.FileName(),
+				FileName: string(sf.FileName()),
 				Types:    types,
 			})
 		}

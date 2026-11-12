@@ -5,13 +5,13 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/microsoft/typescript-go/shim/ast"
-	shimcompiler "github.com/microsoft/typescript-go/shim/compiler"
-	"github.com/microsoft/typescript-go/shim/core"
-	shimincremental "github.com/microsoft/typescript-go/shim/execute/incremental"
-	"github.com/microsoft/typescript-go/shim/tsoptions"
-	"github.com/microsoft/typescript-go/shim/tspath"
-	"github.com/microsoft/typescript-go/shim/vfs"
+	"github.com/microsoft/TypeScript/tsc/shim/ast"
+	shimcompiler "github.com/microsoft/TypeScript/tsc/shim/compiler"
+	"github.com/microsoft/TypeScript/tsc/shim/core"
+	shimincremental "github.com/microsoft/TypeScript/tsc/shim/execute/incremental"
+	"github.com/microsoft/TypeScript/tsc/shim/tsoptions"
+	"github.com/microsoft/TypeScript/tsc/shim/tspath"
+	"github.com/microsoft/TypeScript/tsc/shim/vfs"
 )
 
 // Diagnostic represents a compilation diagnostic message.
@@ -39,8 +39,8 @@ type CreateProgramResult struct {
 //
 // If cliOverrides is non-nil, those compiler options take precedence over tsconfig
 // values (same as tsc CLI flags overriding tsconfig.json).
-func ParseTSConfig(fs vfs.FS, cwd string, tsconfigPath string, host shimcompiler.CompilerHost, cliOverrides *core.CompilerOptions) (*tsoptions.ParsedCommandLine, []Diagnostic, error) {
-	resolvedConfigPath := tspath.ResolvePath(cwd, tsconfigPath)
+func ParseTSConfig(fs vfs.FS, cwd string, tsconfigPath string, cliOverrides *core.CompilerOptions) (*tsoptions.ParsedCommandLine, []Diagnostic, error) {
+	resolvedConfigPath := tspath.ToRootedFilePath(tsconfigPath, tspath.RootedDirectoryPathFromAbsolute(cwd))
 	if !fs.FileExists(resolvedConfigPath) {
 		return nil, nil, fmt.Errorf("could not find tsconfig at %v", resolvedConfigPath)
 	}
@@ -49,7 +49,7 @@ func ParseTSConfig(fs vfs.FS, cwd string, tsconfigPath string, host shimcompiler
 		cliOverrides = &core.CompilerOptions{}
 	}
 
-	configParseResult, diagnostics := tsoptions.GetParsedCommandLineOfConfigFile(tsconfigPath, cliOverrides, nil, host, nil)
+	configParseResult, diagnostics := tsoptions.GetParsedCommandLineOfConfigFile(resolvedConfigPath, cliOverrides, nil, tsoptions.NewDefaultParseConfigHost(fs), nil)
 
 	if len(diagnostics) > 0 {
 		return nil, convertDiagnostics(diagnostics), nil
@@ -94,7 +94,7 @@ func CreateProgramFromConfig(singleThreaded bool, parsedConfig *tsoptions.Parsed
 // CreateProgram creates a TypeScript program from a tsconfig.json file.
 // Convenience wrapper that parses config and creates program in one step.
 func CreateProgram(singleThreaded bool, fs vfs.FS, cwd string, tsconfigPath string, host shimcompiler.CompilerHost) (*CreateProgramResult, []Diagnostic, error) {
-	parsedConfig, diags, err := ParseTSConfig(fs, cwd, tsconfigPath, host, nil)
+	parsedConfig, diags, err := ParseTSConfig(fs, cwd, tsconfigPath, nil)
 	if err != nil || len(diags) > 0 {
 		return nil, diags, err
 	}
@@ -128,7 +128,7 @@ func EmitProgram(program *shimcompiler.Program, writeFile ...shimcompiler.WriteF
 	}
 	result := program.Emit(context.Background(), opts)
 	return &EmitResult{
-		EmittedFiles: result.EmittedFiles,
+		EmittedFiles: rootedPathsToStrings(result.EmittedFiles),
 		Diagnostics:  result.Diagnostics,
 		EmitSkipped:  result.EmitSkipped,
 	}
@@ -202,7 +202,7 @@ func EmitIncrementalProgram(incrProgram *shimincremental.Program, writeFile ...s
 	}
 	result := incrProgram.Emit(context.Background(), opts)
 	return &EmitResult{
-		EmittedFiles: result.EmittedFiles,
+		EmittedFiles: rootedPathsToStrings(result.EmittedFiles),
 		Diagnostics:  result.Diagnostics,
 		EmitSkipped:  result.EmitSkipped,
 	}
@@ -252,13 +252,11 @@ func GetSyntacticDiagnosticsIncremental(incrProgram *shimincremental.Program) []
 //
 // changedFilePath must be an absolute path. It is canonicalized internally
 // using the program's case sensitivity setting.
-func UpdateProgram(oldProgram *shimcompiler.Program, changedFilePath string, cwd string, fs vfs.FS) (*shimcompiler.Program, bool) {
-	host := CreateDefaultHost(cwd, fs)
+func UpdateProgram(oldProgram *shimcompiler.Program, changedFilePath string, fs vfs.FS) (*shimcompiler.Program, bool) {
+	host := CreateDefaultHost(fs)
+	pathKey := oldProgram.CaseSensitivity().PathKey(tspath.RootedFilePathFromAbsolute(changedFilePath).AsPath())
 
-	// Convert to tspath.Path — the canonicalized format used by program internals.
-	canonPath := tspath.ToPath(changedFilePath, cwd, oldProgram.UseCaseSensitiveFileNames())
-
-	newProgram, _, reused := oldProgram.UpdateProgram(canonPath, host, nil)
+	newProgram, _, reused := oldProgram.UpdateProgram(pathKey, host, nil, nil)
 	if newProgram != nil {
 		newProgram.BindSourceFiles()
 	}
@@ -276,13 +274,21 @@ func GetSourceFiles(program *shimcompiler.Program) []*ast.SourceFile {
 	return files
 }
 
+func rootedPathsToStrings(paths []tspath.RootedFilePath) []string {
+	out := make([]string, len(paths))
+	for i, p := range paths {
+		out[i] = string(p)
+	}
+	return out
+}
+
 // convertDiagnostics converts tsgo diagnostics to our Diagnostic type.
 func convertDiagnostics(tsdiags []*ast.Diagnostic) []Diagnostic {
 	diags := make([]Diagnostic, len(tsdiags))
 	for i, d := range tsdiags {
 		var filePath string
 		if d.File() != nil {
-			filePath = d.File().FileName()
+			filePath = string(d.File().FileName())
 		}
 		diags[i] = Diagnostic{
 			FilePath: filePath,

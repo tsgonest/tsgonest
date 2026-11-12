@@ -9,9 +9,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/microsoft/typescript-go/shim/ast"
-	shimchecker "github.com/microsoft/typescript-go/shim/checker"
-	shimscanner "github.com/microsoft/typescript-go/shim/scanner"
+	"github.com/microsoft/TypeScript/tsc/shim/ast"
+	shimchecker "github.com/microsoft/TypeScript/tsc/shim/checker"
+	shimscanner "github.com/microsoft/TypeScript/tsc/shim/scanner"
 )
 
 // MarkerCall represents a detected call to a tsgonest marker function
@@ -174,8 +174,8 @@ func resolveTypeArgName(typeNode *ast.Node, checker *shimchecker.Checker) string
 		ref := typeNode.AsTypeReferenceNode()
 		if ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier {
 			if sym := checker.GetSymbolAtLocation(ref.TypeName); sym != nil {
-				if resolved := shimchecker.SkipAlias(sym, checker); resolved != nil && !isAnonymousTypeName(resolved.Name) {
-					return resolved.Name
+				if resolved := shimchecker.SkipAlias(sym, checker); resolved != nil && !isAnonymousTypeName(resolved.Name()) {
+					return resolved.Name()
 				}
 			}
 		}
@@ -186,8 +186,8 @@ func resolveTypeArgName(typeNode *ast.Node, checker *shimchecker.Checker) string
 		return ""
 	}
 	sym := resolvedType.Symbol()
-	if sym == nil || isAnonymousTypeName(sym.Name) {
+	if sym == nil || isAnonymousTypeName(sym.Name()) {
 		return ""
 	}
-	return sym.Name
+	return sym.Name()
 }

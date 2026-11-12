@@ -11,14 +11,14 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/go-json-experiment/json"
+	"encoding/json"
 
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
 	"golang.org/x/tools/go/packages"
 )
 
-const tsgoInternalPrefix = "github.com/microsoft/typescript-go/internal/"
+const tsgoInternalPrefix = "github.com/microsoft/TypeScript/tsc/internal/"
 
 func signatureHasUnexportedType(t types.Signature) bool {
 	if params := t.Params(); params != nil {

@@ -3,12 +3,12 @@
 
 package fswatch
 
-import "github.com/microsoft/typescript-go/internal/fswatch"
+import "github.com/microsoft/TypeScript/tsc/internal/fswatch"
 import _ "unsafe"
 
-//go:linkname AllWatchers github.com/microsoft/typescript-go/internal/fswatch.AllWatchers
+//go:linkname AllWatchers github.com/microsoft/TypeScript/tsc/internal/fswatch.AllWatchers
 func AllWatchers() []fswatch.Watcher
-//go:linkname Default github.com/microsoft/typescript-go/internal/fswatch.Default
+//go:linkname Default github.com/microsoft/TypeScript/tsc/internal/fswatch.Default
 func Default() fswatch.Watcher
 var ErrFilesystemUnsupported = fswatch.ErrFilesystemUnsupported
 var ErrOverflow = fswatch.ErrOverflow
@@ -18,22 +18,26 @@ type Event = fswatch.Event
 const EventDelete = fswatch.EventDelete
 type EventKind = fswatch.EventKind
 const EventUpdate = fswatch.EventUpdate
-//go:linkname FSEvents github.com/microsoft/typescript-go/internal/fswatch.FSEvents
+//go:linkname FSEvents github.com/microsoft/TypeScript/tsc/internal/fswatch.FSEvents
 func FSEvents() fswatch.Watcher
-//go:linkname Fanotify github.com/microsoft/typescript-go/internal/fswatch.Fanotify
+//go:linkname Fanotify github.com/microsoft/TypeScript/tsc/internal/fswatch.Fanotify
 func Fanotify() fswatch.Watcher
-//go:linkname Inotify github.com/microsoft/typescript-go/internal/fswatch.Inotify
+//go:linkname Inotify github.com/microsoft/TypeScript/tsc/internal/fswatch.Inotify
 func Inotify() fswatch.Watcher
-//go:linkname Kqueue github.com/microsoft/typescript-go/internal/fswatch.Kqueue
+//go:linkname Kqueue github.com/microsoft/TypeScript/tsc/internal/fswatch.Kqueue
 func Kqueue() fswatch.Watcher
+const NativePathComparisonAvailable = fswatch.NativePathComparisonAvailable
+type PathComparer = fswatch.PathComparer
+//go:linkname PathComparerForPath github.com/microsoft/TypeScript/tsc/internal/fswatch.PathComparerForPath
+func PathComparerForPath(path string) (fswatch.PathComparer, error)
 type Watch = fswatch.Watch
 type WatchCallback = fswatch.WatchCallback
 type WatchDirectoryRequest = fswatch.WatchDirectoryRequest
 type WatchOption = fswatch.WatchOption
 type Watcher = fswatch.Watcher
-//go:linkname Windows github.com/microsoft/typescript-go/internal/fswatch.Windows
+//go:linkname Windows github.com/microsoft/TypeScript/tsc/internal/fswatch.Windows
 func Windows() fswatch.Watcher
-//go:linkname WithIgnore github.com/microsoft/typescript-go/internal/fswatch.WithIgnore
+//go:linkname WithIgnore github.com/microsoft/TypeScript/tsc/internal/fswatch.WithIgnore
 func WithIgnore(fn func(path string) bool) fswatch.WatchOption
-//go:linkname WithRecursive github.com/microsoft/typescript-go/internal/fswatch.WithRecursive
+//go:linkname WithRecursive github.com/microsoft/TypeScript/tsc/internal/fswatch.WithRecursive
 func WithRecursive() fswatch.WatchOption

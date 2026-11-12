@@ -11,7 +11,7 @@ the project locally, run tests, and submit changes.
 - [Building and testing](#building-and-testing)
 - [Commit conventions](#commit-conventions)
 - [Submitting a pull request](#submitting-a-pull-request)
-- [Working with the typescript-go submodule](#working-with-the-typescript-go-submodule)
+- [Working with the typescript submodule](#working-with-the-typescript-submodule)
 - [Adding shim methods](#adding-shim-methods)
 
 ---
@@ -20,7 +20,7 @@ the project locally, run tests, and submit changes.
 
 | Tool | Version | Purpose |
 |------|---------|---------|
-| Go | 1.24+ | Build the CLI binary |
+| Go | 1.27+ | Build the CLI binary |
 | Node.js | 22+ | Run e2e tests and docs |
 | pnpm | 10+ | Manage the npm workspace |
 | Git | any | Version control |
@@ -28,21 +28,17 @@ the project locally, run tests, and submit changes.
 ## Setting up the project
 
 ```bash
-# Clone with submodules (typescript-go is required)
-git clone --recurse-submodules https://github.com/tsgonest/tsgonest.git
+git clone https://github.com/tsgonest/tsgonest.git
 cd tsgonest
+
+# Shallow-clone the microsoft/TypeScript submodule and apply patches
+just init
 
 # Install npm workspace dependencies
 pnpm install
 
 # Build the Go binary
 go build -o tsgonest ./cmd/tsgonest
-```
-
-If you cloned without `--recurse-submodules`:
-
-```bash
-git submodule update --init --recursive
 ```
 
 ## Repository layout
@@ -54,9 +50,9 @@ packages/           npm packages (core, runtime, types, cli-*)
 apps/docs/          Documentation site (Next.js + Fumadocs)
 e2e/                End-to-end tests (Vitest)
 testdata/           TypeScript fixtures used by Go unit tests
-patches/            Git patches applied to typescript-go during init
+patches/            Git patches applied to the typescript submodule during init
 shim/               Generated Go ↔ tsgo bindings — do not edit directly
-typescript-go/      Microsoft's TypeScript Go port (Git submodule)
+typescript/         microsoft/TypeScript (Git submodule, Go compiler in tsc/)
 ```
 
 ## Building and testing
@@ -123,31 +119,32 @@ The changelog is auto-generated from these commit messages on every release.
 
 For large changes, consider opening an issue first to discuss the approach.
 
-## Working with the typescript-go submodule
+## Working with the typescript submodule
 
-`typescript-go/` is a Git submodule pointing to Microsoft's TypeScript Go port.
+`typescript/` is a Git submodule of microsoft/TypeScript. The Go compiler lives
+in `typescript/tsc/`.
 **Do not commit changes to it directly** — they will be lost when the submodule
 is updated.
 
 Instead, write a patch file:
 
 ```bash
-# 1. Make your changes inside typescript-go/
-cd typescript-go
+# 1. Make your changes inside typescript/tsc/ and commit them
+cd typescript
 # … edit files …
 
 # 2. Create a patch
 git format-patch HEAD~1 -o ../patches/
 
 # 3. Reset the submodule
-git checkout .
+git checkout --detach HEAD~1
 
 # 4. Back in the root: test that the patch applies cleanly
 cd ..
-git -C typescript-go am ../patches/0001-your-change.patch
+git -C typescript am ../patches/0001-your-change.patch
 ```
 
-Patches in `patches/` are applied automatically during `git submodule update`.
+Patches in `patches/` are applied by `just init`.
 
 ## Windows contributors
 
@@ -171,7 +168,7 @@ No special Git configuration is required — just keep the default settings.
 tsgonest accesses unexported tsgo functions via a shim layer. To expose a new
 method:
 
-1. Find the function in `typescript-go/` (e.g. `checker.getTypeOfExpression`).
+1. Find the function in `typescript/tsc/` (e.g. `checker.getTypeOfExpression`).
 2. Add it to the relevant `shim/*/extra-shim.json` under `ExtraMethods`.
 3. Regenerate: `go run tools/gen_shims/main.go`.
 4. Use it in Go as `checker.Checker_getTypeOfExpression(recv, args...)`.

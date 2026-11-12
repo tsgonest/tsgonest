@@ -1,10 +1,7 @@
-module github.com/microsoft/typescript-go/shim/core
+module github.com/microsoft/TypeScript/tsc/shim/core
 
-go 1.25.0
+go 1.27
 
-require github.com/microsoft/typescript-go v0.0.0-20260207160609-5597f4c8ecf4
+require github.com/microsoft/TypeScript/tsc v0.0.0-20261111233104-ad24728023c5
 
-require (
-	github.com/go-json-experiment/json v0.0.0-20251027170946-4849db3c2f7e // indirect
-	golang.org/x/sync v0.19.0 // indirect
-)
+require golang.org/x/sync v0.24.0 // indirect

@@ -5,7 +5,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/microsoft/typescript-go/shim/core"
+	"github.com/microsoft/TypeScript/tsc/shim/core"
 	"github.com/tsgonest/tsgonest/internal/analyzer"
 	"github.com/tsgonest/tsgonest/internal/formats"
 	"github.com/tsgonest/tsgonest/internal/metadata"

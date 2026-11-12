@@ -60,9 +60,9 @@ func runCheckOnce(configPath, tsconfigPath string, noCheck bool) int {
 
 	// Parse tsconfig
 	tsFS := compiler.CreateDefaultFS()
-	host := compiler.CreateDefaultHost(cwd, tsFS)
+	host := compiler.CreateDefaultHost(tsFS)
 
-	parsedConfig, diags, err := compiler.ParseTSConfig(tsFS, cwd, tsconfigPath, host, nil)
+	parsedConfig, diags, err := compiler.ParseTSConfig(tsFS, cwd, tsconfigPath, nil)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		return 1

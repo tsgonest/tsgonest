@@ -3,8 +3,8 @@ package analyzer
 import (
 	"strings"
 
-	"github.com/microsoft/typescript-go/shim/ast"
-	shimchecker "github.com/microsoft/typescript-go/shim/checker"
+	"github.com/microsoft/TypeScript/tsc/shim/ast"
+	shimchecker "github.com/microsoft/TypeScript/tsc/shim/checker"
 	"github.com/tsgonest/tsgonest/internal/metadata"
 )
 
@@ -163,17 +163,17 @@ func (w *TypeWalker) extractValidateFnConstraint(c *metadata.Constraints, rawPha
 		return false
 	}
 
-	fnName := fnSym.Name
+	fnName := fnSym.Name()
 	if fnName == "" {
 		return false
 	}
 
 	// Get the source file of the function's declaration
 	var sourceFilePath string
-	if fnSym.ValueDeclaration != nil {
-		sf := ast.GetSourceFileOfNode(fnSym.ValueDeclaration)
+	if fnSym.ValueDeclaration() != nil {
+		sf := ast.GetSourceFileOfNode(fnSym.ValueDeclaration())
 		if sf != nil {
-			sourceFilePath = sf.FileName()
+			sourceFilePath = string(sf.FileName())
 		}
 	}
 

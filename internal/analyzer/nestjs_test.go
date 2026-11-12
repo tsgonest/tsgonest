@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/microsoft/typescript-go/shim/ast"
-	shimcompiler "github.com/microsoft/typescript-go/shim/compiler"
+	"github.com/microsoft/TypeScript/tsc/shim/ast"
+	shimcompiler "github.com/microsoft/TypeScript/tsc/shim/compiler"
 	"github.com/tsgonest/tsgonest/internal/analyzer"
 	"github.com/tsgonest/tsgonest/internal/metadata"
 )
