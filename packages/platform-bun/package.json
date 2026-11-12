@@ -1,7 +1,7 @@
 {
   "name": "@tsgonest/platform-bun",
   "version": "0.0.1",
-  "description": "Bun HTTP adapter for NestJS \u2014 uses Bun.serve() with native C++ radix-tree routing",
+  "description": "Bun HTTP adapter for NestJS — uses Bun.serve() with native C++ radix-tree routing",
   "main": "dist/index.cjs",
   "module": "dist/index.mjs",
   "types": "dist/index.d.mts",
@@ -33,20 +33,20 @@
     "tsgonest"
   ],
   "peerDependencies": {
-    "@nestjs/common": "^10.0.0 || ^11.0.0",
-    "@nestjs/core": "^10.0.0 || ^11.0.0",
+    "@nestjs/common": "^10.0.0 || ^11.0.0 || ^12.0.0",
+    "@nestjs/core": "^10.0.0 || ^11.0.0 || ^12.0.0",
     "rxjs": "^7.0.0"
   },
   "devDependencies": {
-    "@nestjs/common": "^11.1.19",
-    "@nestjs/core": "^11.1.19",
-    "@types/node": "^25.9.5",
-    "bun-types": "^1.3.14",
+    "@nestjs/common": "^12.4.2",
+    "@nestjs/core": "^12.4.2",
+    "@types/node": "^26.6.6",
+    "bun-types": "^1.4.4",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.2",
-    "tsdown": "^0.22.12",
+    "tsdown": "^0.22.14",
     "typescript": "^6.0.3",
-    "vitest": "^4.1.10"
+    "vitest": "^5.1.0"
   },
   "license": "MIT",
   "repository": {

@@ -25,3 +25,6 @@ updates:
       - "testdata/**"
     ignore:
       - dependency-name: "@tsgonest/cli-*"
+      # TS 7 drops the classic compiler API that tsdown's dts build and ts-morph rely on.
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
