@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { existsSync, rmSync } from "fs";
+import { cpSync, existsSync, mkdtempSync, rmSync } from "fs";
+import { tmpdir } from "os";
 import { resolve } from "path";
 import { runTsgonest, FIXTURES_DIR } from "./helpers";
 
@@ -36,21 +37,15 @@ describe("tsgonest check", () => {
   });
 
   it("should not emit any files", () => {
-    const distDir = resolve(FIXTURES_DIR, "simple/dist");
-    // Clean dist so we can verify check doesn't create it
-    if (existsSync(distDir)) {
-      rmSync(distDir, { recursive: true });
-    }
+    const tempDir = mkdtempSync(resolve(tmpdir(), "tsgonest-check-"));
+    cpSync(resolve(FIXTURES_DIR, "simple/src"), resolve(tempDir, "src"), { recursive: true });
+    cpSync(resolve(FIXTURES_DIR, "simple/tsconfig.json"), resolve(tempDir, "tsconfig.json"));
 
-    const { exitCode } = runTsgonest([
-      "check",
-      "--project",
-      "testdata/simple/tsconfig.json",
-    ]);
+    const { exitCode } = runTsgonest(["check", "--project", "tsconfig.json"], { cwd: tempDir });
     expect(exitCode).toBe(0);
+    expect(existsSync(resolve(tempDir, "dist"))).toBe(false);
 
-    // check should NOT emit any files
-    expect(existsSync(resolve(distDir, "index.js"))).toBe(false);
+    rmSync(tempDir, { recursive: true });
   });
 
   it("should skip type errors with --no-check", () => {
