@@ -34,9 +34,13 @@ func ComputeECMALineStarts(text string) core.ECMALineStarts
 func ComputeECMALineStartsSeq(text string) iter.Seq[core.TextPos]
 type ECMALineStarts = core.ECMALineStarts
 var EmptyCompilerOptions = core.EmptyCompilerOptions
+//go:linkname EnsureScriptKindFromFileName github.com/microsoft/typescript-go/internal/core.EnsureScriptKindFromFileName
+func EnsureScriptKindFromFileName(fileName string) core.ScriptKind
 var ExclusivelyPrefixedNodeCoreModules = core.ExclusivelyPrefixedNodeCoreModules
 //go:linkname GetCheckerLifetime github.com/microsoft/typescript-go/internal/core.GetCheckerLifetime
 func GetCheckerLifetime(ctx context.Context) core.CheckerLifetime
+//go:linkname GetDefaultExtensionForScriptKind github.com/microsoft/typescript-go/internal/core.GetDefaultExtensionForScriptKind
+func GetDefaultExtensionForScriptKind(scriptKind core.ScriptKind) string
 //go:linkname GetNewLineKind github.com/microsoft/typescript-go/internal/core.GetNewLineKind
 func GetNewLineKind(s string) core.NewLineKind
 //go:linkname GetRequestID github.com/microsoft/typescript-go/internal/core.GetRequestID
@@ -102,7 +106,7 @@ func NewWorkGroup(singleThreaded bool) core.WorkGroup
 var NodeCoreModules = core.NodeCoreModules
 //go:linkname NonRelativeModuleNameForTypingCache github.com/microsoft/typescript-go/internal/core.NonRelativeModuleNameForTypingCache
 func NonRelativeModuleNameForTypingCache(moduleName string) string
-type ParsedOptions = core.ParsedOptions
+type PagedLinkStore[V any] = core.PagedLinkStore[V]
 type Pattern = core.Pattern
 type PollingKind = core.PollingKind
 const PollingKindDynamicPriority = core.PollingKindDynamicPriority
@@ -122,8 +126,6 @@ func ResolveConfigFileNameOfProjectReference(path string) string
 //go:linkname ResolveProjectReferencePath github.com/microsoft/typescript-go/internal/core.ResolveProjectReferencePath
 func ResolveProjectReferencePath(ref *core.ProjectReference) string
 type ScriptKind = core.ScriptKind
-const ScriptKindDeferred = core.ScriptKindDeferred
-const ScriptKindExternal = core.ScriptKindExternal
 const ScriptKindJS = core.ScriptKindJS
 const ScriptKindJSON = core.ScriptKindJSON
 const ScriptKindJSX = core.ScriptKindJSX

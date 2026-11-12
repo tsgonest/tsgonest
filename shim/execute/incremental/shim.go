@@ -4,6 +4,7 @@
 package incremental
 
 import "github.com/microsoft/typescript-go/internal/compiler"
+import "github.com/microsoft/typescript-go/internal/contentmapper"
 import "github.com/microsoft/typescript-go/internal/core"
 import "github.com/microsoft/typescript-go/internal/execute/incremental"
 import "github.com/microsoft/typescript-go/internal/tsoptions"
@@ -27,6 +28,8 @@ type BuildInfoRootInfoReader = incremental.BuildInfoRootInfoReader
 type BuildInfoSemanticDiagnostic = incremental.BuildInfoSemanticDiagnostic
 //go:linkname ComputeHash github.com/microsoft/typescript-go/internal/execute/incremental.ComputeHash
 func ComputeHash(text string, hashWithText bool) string
+//go:linkname ContentMapperIdentities github.com/microsoft/typescript-go/internal/execute/incremental.ContentMapperIdentities
+func ContentMapperIdentities(project contentmapper.Project) ([]string, error)
 //go:linkname CreateHost github.com/microsoft/typescript-go/internal/execute/incremental.CreateHost
 func CreateHost(compilerHost compiler.CompilerHost) incremental.Host
 type DiagnosticsOrBuildInfoDiagnosticsWithFileName = incremental.DiagnosticsOrBuildInfoDiagnosticsWithFileName
@@ -54,7 +57,7 @@ func IsBuildInfoFileNameDefaultLibrary(fileName string) bool
 //go:linkname NewBuildInfoReader github.com/microsoft/typescript-go/internal/execute/incremental.NewBuildInfoReader
 func NewBuildInfoReader(host compiler.CompilerHost) incremental.BuildInfoReader
 //go:linkname NewProgram github.com/microsoft/typescript-go/internal/execute/incremental.NewProgram
-func NewProgram(program *compiler.Program, oldProgram *incremental.Program, host incremental.Host, testing bool) *incremental.Program
+func NewProgram(program *compiler.Program, oldProgram *incremental.Program, host incremental.Host, nestedEmitNow func() time.Time, testing bool) *incremental.Program
 type Program = incremental.Program
 //go:linkname ReadBuildInfoProgram github.com/microsoft/typescript-go/internal/execute/incremental.ReadBuildInfoProgram
 func ReadBuildInfoProgram(config *tsoptions.ParsedCommandLine, reader incremental.BuildInfoReader, host compiler.CompilerHost) *incremental.Program

@@ -188,7 +188,7 @@ func CreateIncrementalProgram(
 		// oldProgram may still be nil if no .tsbuildinfo exists — that's OK
 	}
 	incrHost := shimincremental.CreateHost(host)
-	return shimincremental.NewProgram(program, oldProgram, incrHost, false)
+	return shimincremental.NewProgram(program, oldProgram, incrHost, nil, false)
 }
 
 // EmitIncrementalProgram emits only changed files through the incremental program.

@@ -10,6 +10,7 @@ import _ "unsafe"
 func AllWatchers() []fswatch.Watcher
 //go:linkname Default github.com/microsoft/typescript-go/internal/fswatch.Default
 func Default() fswatch.Watcher
+var ErrFilesystemUnsupported = fswatch.ErrFilesystemUnsupported
 var ErrOverflow = fswatch.ErrOverflow
 var ErrUnavailable = fswatch.ErrUnavailable
 var ErrWatchTerminated = fswatch.ErrWatchTerminated

@@ -6,6 +6,7 @@ package compiler
 import "context"
 import "github.com/microsoft/typescript-go/internal/ast"
 import "github.com/microsoft/typescript-go/internal/compiler"
+import "github.com/microsoft/typescript-go/internal/contentmapper"
 import "github.com/microsoft/typescript-go/internal/core"
 import "github.com/microsoft/typescript-go/internal/diagnostics"
 import "github.com/microsoft/typescript-go/internal/tsoptions"
@@ -20,8 +21,8 @@ type DuplicateSourceFile = compiler.DuplicateSourceFile
 const EmitAll = compiler.EmitAll
 type EmitHost = compiler.EmitHost
 type EmitOnly = compiler.EmitOnly
+const EmitOnlyBuilderSignature = compiler.EmitOnlyBuilderSignature
 const EmitOnlyDts = compiler.EmitOnlyDts
-const EmitOnlyForcedDts = compiler.EmitOnlyForcedDts
 const EmitOnlyJs = compiler.EmitOnlyJs
 type EmitOptions = compiler.EmitOptions
 type EmitResult = compiler.EmitResult
@@ -29,14 +30,14 @@ type FileIncludeReason = compiler.FileIncludeReason
 //go:linkname FilterNoEmitSemanticDiagnostics github.com/microsoft/typescript-go/internal/compiler.FilterNoEmitSemanticDiagnostics
 func FilterNoEmitSemanticDiagnostics(diagnostics []*ast.Diagnostic, options *core.CompilerOptions) []*ast.Diagnostic
 //go:linkname GetDiagnosticsOfAnyProgram github.com/microsoft/typescript-go/internal/compiler.GetDiagnosticsOfAnyProgram
-func GetDiagnosticsOfAnyProgram(ctx context.Context, program compiler.ProgramLike, file *ast.SourceFile, skipNoEmitCheckForDtsDiagnostics bool, getBindDiagnostics func(context.Context, *ast.SourceFile) []*ast.Diagnostic, getSemanticDiagnostics func(context.Context, *ast.SourceFile) []*ast.Diagnostic) []*ast.Diagnostic
-//go:linkname HandleNoEmitOnError github.com/microsoft/typescript-go/internal/compiler.HandleNoEmitOnError
-func HandleNoEmitOnError(ctx context.Context, program compiler.ProgramLike, file *ast.SourceFile) *compiler.EmitResult
+func GetDiagnosticsOfAnyProgram(ctx context.Context, program compiler.ProgramLike, files []*ast.SourceFile, skipNoEmitCheckForDtsDiagnostics bool, getBindDiagnostics func(context.Context, *ast.SourceFile) []*ast.Diagnostic, getSemanticDiagnostics func(context.Context, *ast.SourceFile) []*ast.Diagnostic) []*ast.Diagnostic
+//go:linkname HandleNoEmitOptions github.com/microsoft/typescript-go/internal/compiler.HandleNoEmitOptions
+func HandleNoEmitOptions(ctx context.Context, program compiler.ProgramLike, files []*ast.SourceFile, emitBuildInfo func() *compiler.EmitResult) *compiler.EmitResult
 type LibFile = compiler.LibFile
 //go:linkname NewCachedFSCompilerHost github.com/microsoft/typescript-go/internal/compiler.NewCachedFSCompilerHost
-func NewCachedFSCompilerHost(currentDirectory string, fs vfs.FS, defaultLibraryPath string, extendedConfigCache tsoptions.ExtendedConfigCache, trace func(msg *diagnostics.Message, args ...any)) compiler.CompilerHost
+func NewCachedFSCompilerHost(currentDirectory string, fs vfs.FS, defaultLibraryPath string, extendedConfigCache tsoptions.ExtendedConfigCache, trace func(msg *diagnostics.Message, args ...any), contentMapperProject contentmapper.Project) compiler.CompilerHost
 //go:linkname NewCompilerHost github.com/microsoft/typescript-go/internal/compiler.NewCompilerHost
-func NewCompilerHost(currentDirectory string, fs vfs.FS, defaultLibraryPath string, extendedConfigCache tsoptions.ExtendedConfigCache, trace func(msg *diagnostics.Message, args ...any)) compiler.CompilerHost
+func NewCompilerHost(currentDirectory string, fs vfs.FS, defaultLibraryPath string, extendedConfigCache tsoptions.ExtendedConfigCache, trace func(msg *diagnostics.Message, args ...any), contentMapperProject contentmapper.Project) compiler.CompilerHost
 //go:linkname NewProgram github.com/microsoft/typescript-go/internal/compiler.NewProgram
 func NewProgram(opts compiler.ProgramOptions) *compiler.Program
 type Program = compiler.Program

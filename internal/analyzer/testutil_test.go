@@ -47,7 +47,7 @@ func setupWalker(t *testing.T, tsSource string) *walkerEnv {
 		filePath: tsSource,
 	}
 	fs := testutil.NewDefaultOverlayVFS(virtualFiles)
-	host := shimcompiler.NewCompilerHost(rootDir, fs, bundled.LibPath(), nil, nil)
+	host := shimcompiler.NewCompilerHost(rootDir, fs, bundled.LibPath(), nil, nil, nil)
 
 	// Parse tsconfig
 	configParseResult, diags := tsoptions.GetParsedCommandLineOfConfigFile(
@@ -102,7 +102,7 @@ func setupWalkerMultiFile(t *testing.T, files map[string]string, mainFile string
 		virtualFiles[tspath.ResolvePath(rootDir, name)] = content
 	}
 	fs := testutil.NewDefaultOverlayVFS(virtualFiles)
-	host := shimcompiler.NewCompilerHost(rootDir, fs, bundled.LibPath(), nil, nil)
+	host := shimcompiler.NewCompilerHost(rootDir, fs, bundled.LibPath(), nil, nil, nil)
 
 	configParseResult, diags := tsoptions.GetParsedCommandLineOfConfigFile(
 		"tsconfig.json", &core.CompilerOptions{}, nil, host, nil,

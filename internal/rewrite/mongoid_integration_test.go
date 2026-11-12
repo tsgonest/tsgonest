@@ -36,7 +36,7 @@ func setupRewriteIntegration(t *testing.T, tsSource string) *rewriteIntegrationE
 	filePath := tspath.ResolvePath(rootDir, fileName)
 
 	fs := testutil.NewDefaultOverlayVFS(map[string]string{filePath: tsSource})
-	host := shimcompiler.NewCompilerHost(rootDir, fs, bundled.LibPath(), nil, nil)
+	host := shimcompiler.NewCompilerHost(rootDir, fs, bundled.LibPath(), nil, nil, nil)
 
 	parsed, diags := tsoptions.GetParsedCommandLineOfConfigFile("tsconfig.json", &core.CompilerOptions{}, nil, host, nil)
 	if len(diags) > 0 {
