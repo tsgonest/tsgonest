@@ -1,7 +1,8 @@
 import { AbstractHttpAdapter } from '@nestjs/core';
 import { RequestMethod } from '@nestjs/common';
-import type { NestApplicationOptions, VersioningOptions } from '@nestjs/common';
-import type { VersionValue } from '@nestjs/common/interfaces';
+import type { NestApplicationOptions, Version, VersioningOptions } from '@nestjs/common';
+
+type VersionValue = Parameters<typeof Version>[0];
 import { BunRequest } from './bun-request';
 import { BunResponse } from './bun-response';
 import { executeMiddlewareChain } from './bun-middleware';

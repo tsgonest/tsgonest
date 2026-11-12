@@ -7,19 +7,19 @@
     "build": "cd ../.. && go run ./cmd/tsgonest/ build --config benchmarks/http/tsgonest.config.json --project benchmarks/http/tsconfig.json"
   },
   "dependencies": {
-    "@nestjs/common": "^11.1.28",
-    "@nestjs/core": "^11.1.28",
-    "@nestjs/platform-express": "^11.1.28",
-    "@nestjs/platform-fastify": "^11.1.28",
+    "@nestjs/common": "^12.4.2",
+    "@nestjs/core": "^12.4.2",
+    "@nestjs/platform-express": "^12.4.2",
+    "@nestjs/platform-fastify": "^12.4.2",
     "@tsgonest/platform-bun": "workspace:*",
     "@tsgonest/runtime": "workspace:*",
-    "autocannon": "^8.0.0",
+    "autocannon": "^9.0.0",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.2"
   },
   "devDependencies": {
-    "@types/node": "^22.20.1",
-    "tsx": "^4.23.1",
-    "typescript": "^5.9.3"
+    "@types/node": "^26.6.6",
+    "tsx": "^4.23.15",
+    "typescript": "^6.0.3"
   }
 }

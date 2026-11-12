@@ -5570,3 +5570,46 @@ func TestControllerAnalyzer_StreamableFileReturnsOverride(t *testing.T) {
 
 // The following ensures we're using the shimcompiler import correctly.
 var _ = (*shimcompiler.Program)(nil)
+
+func TestControllerAnalyzer_ParameterDecoratorOptionsObject(t *testing.T) {
+	env := setupWalker(t, `
+		function Controller(path: string): ClassDecorator { return (target) => target; }
+		function Post(path?: string): MethodDecorator { return (t, k, d) => d; }
+		function Body(...args: unknown[]): ParameterDecorator { return () => {}; }
+		function Query(...args: unknown[]): ParameterDecorator { return () => {}; }
+		function Param(...args: unknown[]): ParameterDecorator { return () => {}; }
+		const schema = { "~standard": { version: 1, vendor: "x", validate: (v: unknown) => ({ value: v }) } };
+
+		interface CreateDto { name: string; }
+
+		@Controller("items")
+		export class ItemController {
+			@Post(":id")
+			async create(
+				@Param("id", { schema }) id: string,
+				@Query("page", { pipes: [] }) page: number,
+				@Body({ schema }) body: CreateDto,
+			): Promise<void> {}
+		}
+	`)
+	defer env.release()
+
+	ca, caRelease := analyzer.NewControllerAnalyzer(env.program)
+	defer caRelease()
+
+	controllers := ca.AnalyzeSourceFile(env.sourceFile)
+	if len(controllers) != 1 || len(controllers[0].Routes) != 1 {
+		t.Fatalf("expected 1 controller with 1 route")
+	}
+
+	want := []struct{ category, name string }{{"param", "id"}, {"query", "page"}, {"body", ""}}
+	params := controllers[0].Routes[0].Parameters
+	if len(params) != len(want) {
+		t.Fatalf("expected %d parameters, got %d", len(want), len(params))
+	}
+	for i, w := range want {
+		if params[i].Category != w.category || params[i].Name != w.name {
+			t.Errorf("param %d: expected (%q, %q), got (%q, %q)", i, w.category, w.name, params[i].Category, params[i].Name)
+		}
+	}
+}
