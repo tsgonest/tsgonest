@@ -86,10 +86,10 @@ func runOpenAPI(args []string) int {
 
 	// Parse tsconfig
 	tsFS := compiler.CreateDefaultFS()
-	host := compiler.CreateDefaultHost(cwd, tsFS)
+	host := compiler.CreateDefaultHost(tsFS)
 	printStatus(os.Stderr, pretty, "◆", "parsing tsconfig: %s", *tsconfigPath)
 
-	parsedConfig, diags, err := compiler.ParseTSConfig(tsFS, cwd, *tsconfigPath, host, nil)
+	parsedConfig, diags, err := compiler.ParseTSConfig(tsFS, cwd, *tsconfigPath, nil)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		return 1

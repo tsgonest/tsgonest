@@ -14,8 +14,8 @@ import (
 	"syscall"
 	"time"
 
-	shimcompiler "github.com/microsoft/typescript-go/shim/compiler"
-	shimincremental "github.com/microsoft/typescript-go/shim/execute/incremental"
+	shimcompiler "github.com/microsoft/TypeScript/tsc/shim/compiler"
+	shimincremental "github.com/microsoft/TypeScript/tsc/shim/execute/incremental"
 	"github.com/tsgonest/tsgonest/internal/compiler"
 	"github.com/tsgonest/tsgonest/internal/config"
 	"github.com/tsgonest/tsgonest/internal/runner"
@@ -67,7 +67,7 @@ func (b *devBuilder) BuildSingleFile(changedFile string) int {
 	}
 
 	fs := compiler.CreateDefaultFS()
-	updatedProgram, reused := compiler.UpdateProgram(b.baseProgram, changedFile, b.cwd, fs)
+	updatedProgram, reused := compiler.UpdateProgram(b.baseProgram, changedFile, fs)
 	if !reused || updatedProgram == nil {
 		// Structural change (new imports, etc.) — fall back to full rebuild
 		return b.fullBuild()

@@ -9,10 +9,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/microsoft/typescript-go/shim/ast"
-	shimchecker "github.com/microsoft/typescript-go/shim/checker"
-	shimcompiler "github.com/microsoft/typescript-go/shim/compiler"
-	shimscanner "github.com/microsoft/typescript-go/shim/scanner"
+	"github.com/microsoft/TypeScript/tsc/shim/ast"
+	shimchecker "github.com/microsoft/TypeScript/tsc/shim/checker"
+	shimcompiler "github.com/microsoft/TypeScript/tsc/shim/compiler"
+	shimscanner "github.com/microsoft/TypeScript/tsc/shim/scanner"
 	"github.com/tsgonest/tsgonest/internal/analyzer"
 	"github.com/tsgonest/tsgonest/internal/codegen"
 	"github.com/tsgonest/tsgonest/internal/config"
@@ -186,16 +186,17 @@ func generateCompanionsInMemory(program *shimcompiler.Program, cfg *config.Confi
 		if sf.IsDeclarationFile {
 			continue
 		}
-		if skipFiles[sf.FileName()] {
-			fmt.Fprintf(os.Stderr, "warning: skipping companion generation for %s (syntax errors)\n", filepath.Base(sf.FileName()))
+		fileName := string(sf.FileName())
+		if skipFiles[fileName] {
+			fmt.Fprintf(os.Stderr, "warning: skipping companion generation for %s (syntax errors)\n", filepath.Base(fileName))
 			continue
 		}
 		if len(cfg.Transforms.Include) > 0 {
-			if !analyzer.MatchesGlob(sf.FileName(), cfg.Transforms.Include, nil) {
+			if !analyzer.MatchesGlob(fileName, cfg.Transforms.Include, nil) {
 				continue
 			}
 		}
-		outputBase, ok := sourceToOutput[sf.FileName()]
+		outputBase, ok := sourceToOutput[fileName]
 		if !ok {
 			continue
 		}
@@ -218,7 +219,7 @@ func generateCompanionsInMemory(program *shimcompiler.Program, cfg *config.Confi
 					continue
 				}
 				line := shimscanner.GetECMALineOfPosition(sf, decl.Name().Pos())
-				walker.SetRootContext(fmt.Sprintf("%s (%s:%d)", name, sf.FileName(), line+1))
+				walker.SetRootContext(fmt.Sprintf("%s (%s:%d)", name, fileName, line+1))
 				resolvedType := checker.GetTypeFromTypeNode(decl.Type)
 				m := walker.WalkNamedType(name, resolvedType)
 				walker.SetRootContext("")
@@ -234,7 +235,7 @@ func generateCompanionsInMemory(program *shimcompiler.Program, cfg *config.Confi
 					continue
 				}
 				line := shimscanner.GetECMALineOfPosition(sf, decl.Name().Pos())
-				walker.SetRootContext(fmt.Sprintf("%s (%s:%d)", name, sf.FileName(), line+1))
+				walker.SetRootContext(fmt.Sprintf("%s (%s:%d)", name, fileName, line+1))
 				sym := checker.GetSymbolAtLocation(decl.Name())
 				if sym != nil {
 					resolvedType := checker.GetDeclaredTypeOfSymbol(sym)
@@ -254,7 +255,7 @@ func generateCompanionsInMemory(program *shimcompiler.Program, cfg *config.Confi
 		for name := range types {
 			fileTypeNames = append(fileTypeNames, name)
 		}
-		typesByFile[sf.FileName()] = fileTypeNames
+		typesByFile[fileName] = fileTypeNames
 
 		// Record source file → output base mapping in the registry for each type.
 		// This is used by codegen to compute import paths for cross-companion refs.
@@ -266,7 +267,7 @@ func generateCompanionsInMemory(program *shimcompiler.Program, cfg *config.Confi
 		}
 
 		fileInfos = append(fileInfos, fileTypeInfo{
-			sourceName: sf.FileName(),
+			sourceName: fileName,
 			outputBase: outputBase,
 			types:      types,
 		})

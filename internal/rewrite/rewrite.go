@@ -7,7 +7,8 @@ import (
 	"strings"
 	"sync"
 
-	shimcompiler "github.com/microsoft/typescript-go/shim/compiler"
+	shimcompiler "github.com/microsoft/TypeScript/tsc/shim/compiler"
+	"github.com/microsoft/TypeScript/tsc/shim/tspath"
 	"github.com/tsgonest/tsgonest/internal/analyzer"
 	"github.com/tsgonest/tsgonest/internal/pathalias"
 )
@@ -141,7 +142,8 @@ func (ctx *RewriteContext) HasErrors() bool {
 // 3. Injects @Body() validation into controller methods
 // 4. Writes the transformed file to disk
 func (ctx *RewriteContext) MakeWriteFile() shimcompiler.WriteFile {
-	return func(fileName string, text string, data *shimcompiler.WriteFileData) error {
+	return func(rootedFileName tspath.RootedFilePath, text string, data *shimcompiler.WriteFileData) error {
+		fileName := string(rootedFileName)
 		if strings.HasSuffix(fileName, ".js") {
 			// 1. Path alias resolution
 			if ctx.PathResolver != nil && ctx.PathResolver.HasAliases() {

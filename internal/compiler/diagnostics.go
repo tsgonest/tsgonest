@@ -9,8 +9,8 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/microsoft/typescript-go/shim/ast"
-	shimscanner "github.com/microsoft/typescript-go/shim/scanner"
+	"github.com/microsoft/TypeScript/tsc/shim/ast"
+	shimscanner "github.com/microsoft/TypeScript/tsc/shim/scanner"
 )
 
 // DiagnosticCategory mirrors tsgo's diagnostics.Category.
@@ -103,7 +103,7 @@ func CreateDiagnosticReporter(w io.Writer, cwd string, pretty bool) DiagnosticRe
 func writePlainDiagnostic(w io.Writer, d *ast.Diagnostic, cwd string) {
 	if d.File() != nil {
 		line, char := shimscanner.GetECMALineAndUTF16CharacterOfPosition(d.File(), d.Pos())
-		fileName := relativePath(d.File().FileName(), cwd)
+		fileName := relativePath(string(d.File().FileName()), cwd)
 		fmt.Fprintf(w, "%s(%d,%d): ", fileName, line+1, int(char)+1)
 	}
 
@@ -119,7 +119,7 @@ func writePrettyDiagnostic(w io.Writer, d *ast.Diagnostic, cwd string) {
 
 	if d.File() != nil {
 		line, char := shimscanner.GetECMALineAndUTF16CharacterOfPosition(d.File(), d.Pos())
-		fileName := relativePath(d.File().FileName(), cwd)
+		fileName := relativePath(string(d.File().FileName()), cwd)
 		// file:line:col colored like tsgo
 		fmt.Fprintf(w, "%s%s%s:%s%d%s:%s%d%s",
 			colorCyan, fileName, colorReset,
@@ -229,7 +229,7 @@ func WriteErrorSummary(w io.Writer, diags []*ast.Diagnostic, cwd string) {
 			firstErrorPos = d.Pos()
 		}
 		if d.File() != nil {
-			fileErrors[d.File().FileName()]++
+			fileErrors[string(d.File().FileName())]++
 		}
 	}
 
@@ -243,7 +243,7 @@ func WriteErrorSummary(w io.Writer, diags []*ast.Diagnostic, cwd string) {
 	if errorCount == 1 {
 		if firstErrorFile != nil {
 			line := shimscanner.GetECMALineOfPosition(firstErrorFile, firstErrorPos)
-			fileName := relativePath(firstErrorFile.FileName(), cwd)
+			fileName := relativePath(string(firstErrorFile.FileName()), cwd)
 			fmt.Fprintf(w, "Found 1 error in %s%s:%d%s\n",
 				fileName, colorGrey, line+1, colorReset)
 		} else {
@@ -252,7 +252,7 @@ func WriteErrorSummary(w io.Writer, diags []*ast.Diagnostic, cwd string) {
 	} else if numFiles <= 1 {
 		if firstErrorFile != nil {
 			line := shimscanner.GetECMALineOfPosition(firstErrorFile, firstErrorPos)
-			fileName := relativePath(firstErrorFile.FileName(), cwd)
+			fileName := relativePath(string(firstErrorFile.FileName()), cwd)
 			fmt.Fprintf(w, "Found %d errors in the same file, starting at: %s%s:%d%s\n",
 				errorCount, fileName, colorGrey, line+1, colorReset)
 		} else {
@@ -280,7 +280,7 @@ func FilesWithSyntaxErrors(diags []*ast.Diagnostic) map[string]bool {
 	files := make(map[string]bool)
 	for _, d := range diags {
 		if d.File() != nil {
-			files[d.File().FileName()] = true
+			files[string(d.File().FileName())] = true
 		}
 	}
 	return files

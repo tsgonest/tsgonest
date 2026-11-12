@@ -6,8 +6,8 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/microsoft/typescript-go/shim/ast"
-	shimchecker "github.com/microsoft/typescript-go/shim/checker"
+	"github.com/microsoft/TypeScript/tsc/shim/ast"
+	shimchecker "github.com/microsoft/TypeScript/tsc/shim/checker"
 	"github.com/tsgonest/tsgonest/internal/metadata"
 )
 
@@ -146,7 +146,7 @@ func (w *TypeWalker) hasNamedAlias(t *shimchecker.Type) bool {
 	if sym == nil {
 		return false
 	}
-	name := sym.Name
+	name := sym.Name()
 	return name != "" && name != "__type" && name != "__object" && (len(name) == 0 || name[0] != '\xfe')
 }
 
@@ -291,15 +291,15 @@ func (w *TypeWalker) extractAliasJSDocFromTypeNode(typeNode *ast.Node) *metadata
 	// For cross-file imports, GetSymbolAtLocation returns an import-alias symbol
 	// whose declarations are ImportSpecifier nodes. Resolve to the original
 	// symbol so we reach the TypeAliasDeclaration carrying the JSDoc.
-	if sym.Flags&ast.SymbolFlagsAlias != 0 {
+	if sym.Flags()&ast.SymbolFlagsAlias != 0 {
 		if original := w.checker.GetAliasedSymbol(sym); original != nil {
 			sym = original
 		}
 	}
-	if sym.Declarations == nil {
+	if sym.Declarations() == nil {
 		return nil
 	}
-	for _, decl := range sym.Declarations {
+	for _, decl := range sym.Declarations() {
 		if decl == nil || decl.Kind != ast.KindTypeAliasDeclaration {
 			continue
 		}
@@ -331,9 +331,9 @@ func (w *TypeWalker) applyAliasJSDoc(t *shimchecker.Type, result metadata.Metada
 	// Fast path: alias info is attached directly on the type (object/array aliases).
 	if alias := t.Alias(); alias != nil {
 		if sym := alias.Symbol(); sym != nil {
-			name := sym.Name
-			if !(name == "" || name == "__type" || name == "__object" || (len(name) > 0 && name[0] == '\xfe')) && sym.Declarations != nil {
-				for _, decl := range sym.Declarations {
+			name := sym.Name()
+			if !(name == "" || name == "__type" || name == "__object" || (len(name) > 0 && name[0] == '\xfe')) && sym.Declarations() != nil {
+				for _, decl := range sym.Declarations() {
 					if decl == nil || decl.Kind != ast.KindTypeAliasDeclaration {
 						continue
 					}
@@ -482,7 +482,7 @@ func (w *TypeWalker) resolveAliasName(t *shimchecker.Type) string {
 	if aliasSym == nil {
 		return ""
 	}
-	name := aliasSym.Name
+	name := aliasSym.Name()
 	if name == "" || name == "__type" || name == "__object" || (len(name) > 0 && name[0] == '\xfe') {
 		return ""
 	}
@@ -675,7 +675,7 @@ func (w *TypeWalker) walkUnion(t *shimchecker.Type) metadata.Metadata {
 		alias := t.Alias()
 		if alias != nil {
 			if aliasSym := alias.Symbol(); aliasSym != nil {
-				aliasName := aliasSym.Name
+				aliasName := aliasSym.Name()
 				if aliasName != "" && aliasName != "__type" && aliasName != "__object" && (len(aliasName) == 0 || aliasName[0] != '\xfe') {
 					registrationName := aliasName
 					aliasTypeArgs := alias.TypeArguments()
@@ -712,8 +712,8 @@ func (w *TypeWalker) getUnionEnumName(t *shimchecker.Type) string {
 	alias := t.Alias()
 	if alias != nil {
 		aliasSym := alias.Symbol()
-		if aliasSym != nil && aliasSym.Name != "" {
-			name := aliasSym.Name
+		if aliasSym != nil && aliasSym.Name() != "" {
+			name := aliasSym.Name()
 			// Filter out internal names
 			if name != "__type" && name != "__object" && (len(name) == 0 || name[0] != '\xfe') {
 				return name
@@ -723,8 +723,8 @@ func (w *TypeWalker) getUnionEnumName(t *shimchecker.Type) string {
 
 	// 2. Check for enum symbol (actual TS enum declarations)
 	sym := t.Symbol()
-	if sym != nil && sym.Name != "" {
-		name := sym.Name
+	if sym != nil && sym.Name() != "" {
+		name := sym.Name()
 		if name != "__type" && name != "__object" && (len(name) == 0 || name[0] != '\xfe') {
 			return name
 		}
@@ -847,7 +847,7 @@ func (w *TypeWalker) tryFastBrandedLiteral(t *shimchecker.Type) (metadata.Metada
 			allPhantom := true
 			var propMetadata []metadata.Property
 			for _, prop := range props {
-				if !isPhantomPropertyName(prop.Name) {
+				if !isPhantomPropertyName(prop.Name()) {
 					allPhantom = false
 					break
 				}
@@ -855,7 +855,7 @@ func (w *TypeWalker) tryFastBrandedLiteral(t *shimchecker.Type) (metadata.Metada
 				propType := w.checker.GetTypeOfSymbol(prop)
 				propMeta := w.WalkType(propType)
 				propMetadata = append(propMetadata, metadata.Property{
-					Name: prop.Name,
+					Name: prop.Name(),
 					Type: propMeta,
 				})
 			}
@@ -976,7 +976,7 @@ func (w *TypeWalker) walkIntersection(t *shimchecker.Type) metadata.Metadata {
 		alias := t.Alias()
 		if alias != nil && w.pendingName[t.Id()] == "" {
 			if aliasSym := alias.Symbol(); aliasSym != nil {
-				aliasName := aliasSym.Name
+				aliasName := aliasSym.Name()
 				if aliasName != "" && aliasName != "__type" && aliasName != "__object" && (len(aliasName) == 0 || aliasName[0] != '\xfe') {
 					registrationName := aliasName
 					aliasTypeArgs := alias.TypeArguments()
@@ -1110,7 +1110,7 @@ func (w *TypeWalker) walkObjectType(t *shimchecker.Type) metadata.Metadata {
 	// Check for native/built-in types (Date, RegExp, Map, Set, Promise, etc.)
 	sym := t.Symbol()
 	if sym != nil {
-		name := sym.Name
+		name := sym.Name()
 		switch name {
 		case "Date":
 			return metadata.Metadata{Kind: metadata.KindNative, NativeType: "Date"}
@@ -1243,7 +1243,7 @@ func (w *TypeWalker) walkObjectType(t *shimchecker.Type) metadata.Metadata {
 		alias := t.Alias()
 		if alias != nil {
 			if aliasSym := alias.Symbol(); aliasSym != nil {
-				aliasName := aliasSym.Name
+				aliasName := aliasSym.Name()
 				if aliasName != "" && aliasName != "__type" && aliasName != "__object" && (len(aliasName) == 0 || aliasName[0] != '\xfe') {
 					aliasTypeArgs := alias.TypeArguments()
 					if len(aliasTypeArgs) > 0 {
@@ -1329,7 +1329,7 @@ func (w *TypeWalker) analyzeObjectProperties(t *shimchecker.Type, name string) m
 
 		propMeta := w.WalkType(propType)
 
-		isOptional := prop.Flags&ast.SymbolFlagsOptional != 0
+		isOptional := prop.Flags()&ast.SymbolFlagsOptional != 0
 		if isOptional {
 			propMeta.Optional = true
 		}
@@ -1347,8 +1347,8 @@ func (w *TypeWalker) analyzeObjectProperties(t *shimchecker.Type, name string) m
 		// to a type alias whose declaration has JSDoc tags. Primitive aliases
 		// like `type MongoId = string` lose AliasSymbol on the resolved Type,
 		// so we recover the alias via the property's AST type node.
-		if prop.ValueDeclaration != nil {
-			if aliasJSDoc := w.extractAliasJSDocFromTypeNode(prop.ValueDeclaration.Type()); aliasJSDoc != nil {
+		if prop.ValueDeclaration() != nil {
+			if aliasJSDoc := w.extractAliasJSDocFromTypeNode(prop.ValueDeclaration().Type()); aliasJSDoc != nil {
 				c := *aliasJSDoc // copy so subsequent merges don't mutate the source
 				constraints = &c
 			}
@@ -1369,8 +1369,8 @@ func (w *TypeWalker) analyzeObjectProperties(t *shimchecker.Type, name string) m
 		// node is an ArrayType. Recurse into its ElementType to recover alias-JSDoc
 		// on the element, and attach to propMeta.ElementType.Constraints so codegen's
 		// per-element loop can emit the runtime check.
-		if prop.ValueDeclaration != nil && propMeta.Kind == metadata.KindArray && propMeta.ElementType != nil {
-			if typeNode := prop.ValueDeclaration.Type(); typeNode != nil && typeNode.Kind == ast.KindArrayType {
+		if prop.ValueDeclaration() != nil && propMeta.Kind == metadata.KindArray && propMeta.ElementType != nil {
+			if typeNode := prop.ValueDeclaration().Type(); typeNode != nil && typeNode.Kind == ast.KindArrayType {
 				elemNode := typeNode.AsArrayTypeNode().ElementType
 				if elemAliasJSDoc := w.extractAliasJSDocFromTypeNode(elemNode); elemAliasJSDoc != nil {
 					merged := w.mergeAliasJSDocInto(*propMeta.ElementType, elemAliasJSDoc)
@@ -1381,8 +1381,8 @@ func (w *TypeWalker) analyzeObjectProperties(t *shimchecker.Type, name string) m
 
 		// Merge property-site JSDoc (most specific — takes precedence) and extract annotations
 		var ann propertyAnnotations
-		if prop.ValueDeclaration != nil {
-			jsdocConstraints := w.extractJSDocConstraints(prop.ValueDeclaration)
+		if prop.ValueDeclaration() != nil {
+			jsdocConstraints := w.extractJSDocConstraints(prop.ValueDeclaration())
 			if jsdocConstraints != nil {
 				if constraints == nil {
 					constraints = jsdocConstraints
@@ -1390,11 +1390,11 @@ func (w *TypeWalker) analyzeObjectProperties(t *shimchecker.Type, name string) m
 					mergeConstraints(constraints, jsdocConstraints)
 				}
 			}
-			ann = extractPropertyAnnotations(prop.ValueDeclaration)
+			ann = extractPropertyAnnotations(prop.ValueDeclaration())
 		}
 
 		properties = append(properties, metadata.Property{
-			Name:          prop.Name,
+			Name:          prop.Name(),
 			Type:          propMeta,
 			Required:      !isOptional,
 			Readonly:      isReadonly,
@@ -1414,8 +1414,8 @@ func (w *TypeWalker) analyzeObjectProperties(t *shimchecker.Type, name string) m
 
 	// Extract type-level annotations (@strict, @tsgonest-ignore, etc.)
 	typeSym := t.Symbol()
-	if typeSym != nil && typeSym.ValueDeclaration != nil {
-		strictness, ignore := w.extractTypeLevelAnnotations(typeSym.ValueDeclaration)
+	if typeSym != nil && typeSym.ValueDeclaration() != nil {
+		strictness, ignore := w.extractTypeLevelAnnotations(typeSym.ValueDeclaration())
 		if strictness != "" {
 			result.Strictness = strictness
 		}
@@ -1526,7 +1526,7 @@ func (w *TypeWalker) getTypeName(t *shimchecker.Type) string {
 	if sym == nil {
 		return ""
 	}
-	name := sym.Name
+	name := sym.Name()
 
 	// Filter out anonymous/structural types
 	if name == "" || name == "__type" || name == "__object" || name == "__function" {
@@ -1726,8 +1726,8 @@ func (w *TypeWalker) deriveTypeArgName(t *shimchecker.Type) (string, bool) {
 
 		// Named type — use symbol name
 		sym := t.Symbol()
-		if sym != nil && sym.Name != "" && sym.Name != "__type" && sym.Name != "__object" {
-			name := sym.Name
+		if sym != nil && sym.Name() != "" && sym.Name() != "__type" && sym.Name() != "__object" {
+			name := sym.Name()
 			if len(name) > 0 && name[0] == '\xfe' {
 				return "", false
 			}
@@ -1745,8 +1745,8 @@ func (w *TypeWalker) deriveTypeArgName(t *shimchecker.Type) (string, bool) {
 		// Anonymous object — check for type alias name
 		alias := t.Alias()
 		if alias != nil {
-			if aliasSym := alias.Symbol(); aliasSym != nil && aliasSym.Name != "" {
-				name := aliasSym.Name
+			if aliasSym := alias.Symbol(); aliasSym != nil && aliasSym.Name() != "" {
+				name := aliasSym.Name()
 				if name != "__type" && name != "__object" && (len(name) == 0 || name[0] != '\xfe') {
 					aliasArgs := alias.TypeArguments()
 					if len(aliasArgs) > 0 {
@@ -1765,8 +1765,8 @@ func (w *TypeWalker) deriveTypeArgName(t *shimchecker.Type) (string, bool) {
 		// Named union alias (e.g., type Status = 'active' | 'inactive')
 		alias := t.Alias()
 		if alias != nil {
-			if aliasSym := alias.Symbol(); aliasSym != nil && aliasSym.Name != "" {
-				return aliasSym.Name, true
+			if aliasSym := alias.Symbol(); aliasSym != nil && aliasSym.Name() != "" {
+				return aliasSym.Name(), true
 			}
 		}
 		// Try to build a name from literal union members (common in Pick<T, 'a' | 'b'>).

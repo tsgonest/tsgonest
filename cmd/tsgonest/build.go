@@ -9,12 +9,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/microsoft/typescript-go/shim/ast"
-	shimchecker "github.com/microsoft/typescript-go/shim/checker"
-	shimcompiler "github.com/microsoft/typescript-go/shim/compiler"
-	"github.com/microsoft/typescript-go/shim/core"
-	shimincremental "github.com/microsoft/typescript-go/shim/execute/incremental"
-	shimtsoptions "github.com/microsoft/typescript-go/shim/tsoptions"
+	"github.com/microsoft/TypeScript/tsc/shim/ast"
+	shimchecker "github.com/microsoft/TypeScript/tsc/shim/checker"
+	shimcompiler "github.com/microsoft/TypeScript/tsc/shim/compiler"
+	"github.com/microsoft/TypeScript/tsc/shim/core"
+	shimincremental "github.com/microsoft/TypeScript/tsc/shim/execute/incremental"
+	shimtsoptions "github.com/microsoft/TypeScript/tsc/shim/tsoptions"
+	"github.com/microsoft/TypeScript/tsc/shim/tspath"
 	"github.com/tsgonest/tsgonest/internal/analyzer"
 	"github.com/tsgonest/tsgonest/internal/buildcache"
 	"github.com/tsgonest/tsgonest/internal/codegen"
@@ -92,8 +93,11 @@ func parseTsgoFlags(tsgoArgs []string) (*core.CompilerOptions, []string) {
 	}
 
 	cliFS := compiler.CreateDefaultFS()
-	cliHost := compiler.CreateDefaultHost("", cliFS)
-	parsedCLI := shimtsoptions.ParseCommandLine(tsgoArgs, cliHost)
+	cliCwd, err := os.Getwd()
+	if err != nil {
+		return nil, []string{err.Error()}
+	}
+	parsedCLI := shimtsoptions.ParseCommandLine(tsgoArgs, cliFS, tspath.RootedDirectoryPathFromAbsolute(cliCwd))
 	if parsedCLI != nil && len(parsedCLI.Errors) > 0 {
 		var errs []string
 		for _, d := range parsedCLI.Errors {
@@ -210,11 +214,11 @@ func runBuildWithIncrAndProgram(args []string, oldIncrProgram *shimincremental.P
 	// Step 1: Parse tsconfig using tsgo's native JSONC parser (handles comments, trailing commas, extends).
 	tsconfigStart := time.Now()
 	tsFS := compiler.CreateDefaultFS()
-	host := compiler.CreateDefaultHost(cwd, tsFS)
+	host := compiler.CreateDefaultHost(tsFS)
 
 	printStatus(os.Stderr, pretty, "◆", "compiling with tsconfig: %s", tsconfigPath)
 
-	parsedConfig, diags, err := compiler.ParseTSConfig(tsFS, cwd, tsconfigPath, host, cliOverrides)
+	parsedConfig, diags, err := compiler.ParseTSConfig(tsFS, cwd, tsconfigPath, cliOverrides)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		return 1
@@ -232,10 +236,10 @@ func runBuildWithIncrAndProgram(args []string, oldIncrProgram *shimincremental.P
 	if !filepath.IsAbs(resolvedTsconfigPath) {
 		resolvedTsconfigPath = filepath.Join(cwd, resolvedTsconfigPath)
 	}
-	postCachePath := buildcache.CachePath(opts.OutDir, resolvedTsconfigPath)
+	postCachePath := buildcache.CachePath(string(opts.OutDir), resolvedTsconfigPath)
 
 	// Sweep orphaned .tmp files before any build logic touches the cache.
-	sweepBuildCacheTmp(opts.OutDir)
+	sweepBuildCacheTmp(string(opts.OutDir))
 
 	// Clean output directory if requested (using parsed OutDir, no re-parsing needed)
 	if clean && opts.OutDir != "" {
@@ -243,7 +247,7 @@ func runBuildWithIncrAndProgram(args []string, oldIncrProgram *shimincremental.P
 		// Full clean: remove output directory and .tsbuildinfo to force a complete rebuild.
 		// Without deleting .tsbuildinfo, the incremental compiler thinks files are up-to-date
 		// and skips emit — which means controller rewriting (in the WriteFile callback) never runs.
-		if cleanErr := cleanDir(opts.OutDir); cleanErr != nil {
+		if cleanErr := cleanDir(string(opts.OutDir)); cleanErr != nil {
 			fmt.Fprintf(os.Stderr, "warning: clean: %v\n", cleanErr)
 		}
 		// Delete .tsbuildinfo so incremental compilation starts fresh
@@ -332,9 +336,9 @@ func runBuildWithIncrAndProgram(args []string, oldIncrProgram *shimincremental.P
 			pathsMap[k] = v
 		}
 		pathResolver = pathalias.NewPathResolver(pathalias.Config{
-			PathsBaseDir: opts.GetPathsBasePath(cwd),
-			OutDir:       opts.OutDir,
-			RootDir:      opts.RootDir,
+			PathsBaseDir: string(opts.GetPathsBasePath(tspath.RootedDirectoryPathFromAbsolute(cwd))),
+			OutDir:       string(opts.OutDir),
+			RootDir:      string(opts.RootDir),
 			Paths:        pathsMap,
 		})
 	}
@@ -365,7 +369,7 @@ func runBuildWithIncrAndProgram(args []string, oldIncrProgram *shimincremental.P
 		timing.Checker = time.Since(checkerStart)
 
 		// Build source→output map (needed before emit for companion path computation)
-		sourceToOutput := buildSourceToOutputMapFromConfig(program, opts.RootDir, opts.OutDir)
+		sourceToOutput := buildSourceToOutputMapFromConfig(program, string(opts.RootDir), string(opts.OutDir))
 
 		// ── Step 1: Analyze controllers to discover needed types ─────────
 		// No blanket pre-registration pass — the walker discovers and registers
@@ -390,7 +394,7 @@ func runBuildWithIncrAndProgram(args []string, oldIncrProgram *shimincremental.P
 			}
 			calls, markerWarnings := rewrite.ExtractMarkerCalls(sf, sharedChecker)
 			if len(calls) > 0 {
-				markerCalls[sf.FileName()] = calls
+				markerCalls[string(sf.FileName())] = calls
 			}
 			rewriteWarnings = append(rewriteWarnings, markerWarnings...)
 		}
@@ -492,7 +496,7 @@ func runBuildWithIncrAndProgram(args []string, oldIncrProgram *shimincremental.P
 		// .tsbuildinfo survived), delete .tsbuildinfo and re-create the incremental
 		// program from scratch so the fresh emit also writes a valid .tsbuildinfo.
 		if len(emitResult.EmittedFiles) == 0 && !emitResult.EmitSkipped {
-			if missing := checkExpectedOutputsMissing(program, opts.RootDir, opts.OutDir); len(missing) > 0 {
+			if missing := checkExpectedOutputsMissing(program, string(opts.RootDir), string(opts.OutDir)); len(missing) > 0 {
 				tsbuildInfoPath := tsbuildInfoPathFromTsconfig(resolvedTsconfigPath)
 				if err := os.Remove(tsbuildInfoPath); err != nil && !os.IsNotExist(err) {
 					fmt.Fprintf(os.Stderr, "warning: could not remove stale .tsbuildinfo: %v\n", err)
@@ -503,7 +507,7 @@ func runBuildWithIncrAndProgram(args []string, oldIncrProgram *shimincremental.P
 				// would still produce 0 emitted files. A fresh host also
 				// avoids any cached .tsbuildinfo reads.
 				freshFS := compiler.CreateDefaultFS()
-				freshHost := compiler.CreateDefaultHost(cwd, freshFS)
+				freshHost := compiler.CreateDefaultHost(freshFS)
 				freshProgram, _, freshErr := compiler.CreateProgramFromConfig(false, parsedConfig, freshHost)
 				if freshErr == nil && freshProgram != nil {
 					incrProgram = compiler.CreateIncrementalProgram(freshProgram, nil, freshHost, parsedConfig)
@@ -598,7 +602,7 @@ func runBuildWithIncrAndProgram(args []string, oldIncrProgram *shimincremental.P
 
 	// ── Generate a single shared helpers file at the output root ────────
 	if len(allCompanions) > 0 {
-		helpersRoot := opts.OutDir
+		helpersRoot := string(opts.OutDir)
 		if helpersRoot == "" {
 			helpersRoot = determineOutputDir(allCompanions, emittedFiles, cwd)
 		}
@@ -1071,7 +1075,7 @@ func buildSourceToOutputMapFromConfig(program *shimcompiler.Program, rootDir, ou
 		if sf.IsDeclarationFile {
 			continue
 		}
-		srcName := sf.FileName()
+		srcName := string(sf.FileName())
 
 		srcNoExt := srcName
 		for _, ext := range []string{".ts", ".tsx", ".mts", ".cts"} {

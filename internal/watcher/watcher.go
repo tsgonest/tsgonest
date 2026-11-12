@@ -10,7 +10,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/microsoft/typescript-go/shim/fswatch"
+	"github.com/microsoft/TypeScript/tsc/shim/fswatch"
 )
 
 // Event represents a file change event.

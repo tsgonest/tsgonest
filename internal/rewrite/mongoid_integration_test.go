@@ -7,13 +7,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/microsoft/typescript-go/shim/ast"
-	"github.com/microsoft/typescript-go/shim/bundled"
-	shimchecker "github.com/microsoft/typescript-go/shim/checker"
-	shimcompiler "github.com/microsoft/typescript-go/shim/compiler"
-	"github.com/microsoft/typescript-go/shim/core"
-	"github.com/microsoft/typescript-go/shim/tsoptions"
-	"github.com/microsoft/typescript-go/shim/tspath"
+	"github.com/microsoft/TypeScript/tsc/shim/ast"
+	"github.com/microsoft/TypeScript/tsc/shim/bundled"
+	shimchecker "github.com/microsoft/TypeScript/tsc/shim/checker"
+	shimcompiler "github.com/microsoft/TypeScript/tsc/shim/compiler"
+	"github.com/microsoft/TypeScript/tsc/shim/core"
+	"github.com/microsoft/TypeScript/tsc/shim/tsoptions"
+	"github.com/microsoft/TypeScript/tsc/shim/tspath"
 	"github.com/tsgonest/tsgonest/internal/analyzer"
 	"github.com/tsgonest/tsgonest/internal/testutil"
 )
@@ -36,9 +36,9 @@ func setupRewriteIntegration(t *testing.T, tsSource string) *rewriteIntegrationE
 	filePath := tspath.ResolvePath(rootDir, fileName)
 
 	fs := testutil.NewDefaultOverlayVFS(map[string]string{filePath: tsSource})
-	host := shimcompiler.NewCompilerHost(rootDir, fs, bundled.LibPath(), nil, nil, nil)
+	host := shimcompiler.NewCompilerHost(fs, bundled.LibPath(), nil, nil, nil)
 
-	parsed, diags := tsoptions.GetParsedCommandLineOfConfigFile("tsconfig.json", &core.CompilerOptions{}, nil, host, nil)
+	parsed, diags := tsoptions.GetParsedCommandLineOfConfigFile(tspath.RootedFilePathFromAbsolute(tspath.ResolvePath(rootDir, "tsconfig.json")), &core.CompilerOptions{}, nil, tsoptions.NewDefaultParseConfigHost(fs), nil)
 	if len(diags) > 0 {
 		t.Fatalf("tsconfig parse errors: %v", diags[0].String())
 	}
@@ -54,7 +54,7 @@ func setupRewriteIntegration(t *testing.T, tsSource string) *rewriteIntegrationE
 	}
 	program.BindSourceFiles()
 
-	sf := program.GetSourceFile(fileName)
+	sf := program.GetSourceFile(tspath.RootedFilePathFromAbsolute(filePath))
 	if sf == nil {
 		t.Fatalf("source file %q not found", fileName)
 	}

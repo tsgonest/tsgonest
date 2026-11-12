@@ -4,7 +4,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/microsoft/typescript-go/shim/ast"
+	"github.com/microsoft/TypeScript/tsc/shim/ast"
 	"github.com/tsgonest/tsgonest/internal/constraints"
 	"github.com/tsgonest/tsgonest/internal/metadata"
 )

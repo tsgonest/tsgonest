@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/microsoft/TypeScript/tsc/shim/tspath"
 	"github.com/tsgonest/tsgonest/internal/analyzer"
 )
 
@@ -145,7 +146,7 @@ func TestWriteFileCallback_Integration(t *testing.T) {
 const user = assert(body);
 console.log(user);`
 
-	err := writeFile(outputFile, input, nil)
+	err := writeFile(tspath.RootedFilePathFromAbsolute(outputFile), input, nil)
 	if err != nil {
 		t.Fatalf("WriteFile failed: %v", err)
 	}

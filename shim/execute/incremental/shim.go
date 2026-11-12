@@ -3,15 +3,17 @@
 
 package incremental
 
-import "github.com/microsoft/typescript-go/internal/compiler"
-import "github.com/microsoft/typescript-go/internal/contentmapper"
-import "github.com/microsoft/typescript-go/internal/core"
-import "github.com/microsoft/typescript-go/internal/execute/incremental"
-import "github.com/microsoft/typescript-go/internal/tsoptions"
+import "github.com/microsoft/TypeScript/tsc/internal/compiler"
+import "github.com/microsoft/TypeScript/tsc/internal/contentmapper"
+import "github.com/microsoft/TypeScript/tsc/internal/core"
+import "github.com/microsoft/TypeScript/tsc/internal/execute/incremental"
+import "github.com/microsoft/TypeScript/tsc/internal/tsoptions"
+import "github.com/microsoft/TypeScript/tsc/internal/tspath"
 import "time"
 import _ "unsafe"
 
 type BuildInfo = incremental.BuildInfo
+type BuildInfoCompilerOptions = incremental.BuildInfoCompilerOptions
 type BuildInfoDiagnostic = incremental.BuildInfoDiagnostic
 type BuildInfoDiagnosticsOfFile = incremental.BuildInfoDiagnosticsOfFile
 type BuildInfoEmitSignature = incremental.BuildInfoEmitSignature
@@ -19,6 +21,7 @@ type BuildInfoFileId = incremental.BuildInfoFileId
 type BuildInfoFileIdListId = incremental.BuildInfoFileIdListId
 type BuildInfoFileInfo = incremental.BuildInfoFileInfo
 type BuildInfoFilePendingEmit = incremental.BuildInfoFilePendingEmit
+type BuildInfoPath = incremental.BuildInfoPath
 type BuildInfoReader = incremental.BuildInfoReader
 type BuildInfoReferenceMapEntry = incremental.BuildInfoReferenceMapEntry
 type BuildInfoRepopulateInfo = incremental.BuildInfoRepopulateInfo
@@ -26,11 +29,11 @@ type BuildInfoResolvedRoot = incremental.BuildInfoResolvedRoot
 type BuildInfoRoot = incremental.BuildInfoRoot
 type BuildInfoRootInfoReader = incremental.BuildInfoRootInfoReader
 type BuildInfoSemanticDiagnostic = incremental.BuildInfoSemanticDiagnostic
-//go:linkname ComputeHash github.com/microsoft/typescript-go/internal/execute/incremental.ComputeHash
+//go:linkname ComputeHash github.com/microsoft/TypeScript/tsc/internal/execute/incremental.ComputeHash
 func ComputeHash(text string, hashWithText bool) string
-//go:linkname ContentMapperIdentities github.com/microsoft/typescript-go/internal/execute/incremental.ContentMapperIdentities
+//go:linkname ContentMapperIdentities github.com/microsoft/TypeScript/tsc/internal/execute/incremental.ContentMapperIdentities
 func ContentMapperIdentities(project contentmapper.Project) ([]string, error)
-//go:linkname CreateHost github.com/microsoft/typescript-go/internal/execute/incremental.CreateHost
+//go:linkname CreateHost github.com/microsoft/TypeScript/tsc/internal/execute/incremental.CreateHost
 func CreateHost(compilerHost compiler.CompilerHost) incremental.Host
 type DiagnosticsOrBuildInfoDiagnosticsWithFileName = incremental.DiagnosticsOrBuildInfoDiagnosticsWithFileName
 type FileEmitKind = incremental.FileEmitKind
@@ -47,20 +50,22 @@ const FileEmitKindJsInlineMap = incremental.FileEmitKindJsInlineMap
 const FileEmitKindJsMap = incremental.FileEmitKindJsMap
 const FileEmitKindNone = incremental.FileEmitKindNone
 type FileInfo = incremental.FileInfo
-//go:linkname GetFileEmitKind github.com/microsoft/typescript-go/internal/execute/incremental.GetFileEmitKind
+//go:linkname GetFileEmitKind github.com/microsoft/TypeScript/tsc/internal/execute/incremental.GetFileEmitKind
 func GetFileEmitKind(options *core.CompilerOptions) incremental.FileEmitKind
-//go:linkname GetMTime github.com/microsoft/typescript-go/internal/execute/incremental.GetMTime
-func GetMTime(host compiler.CompilerHost, fileName string) time.Time
+//go:linkname GetMTime github.com/microsoft/TypeScript/tsc/internal/execute/incremental.GetMTime
+func GetMTime(host compiler.CompilerHost, fileName tspath.RootedFilePath) time.Time
 type Host = incremental.Host
-//go:linkname IsBuildInfoFileNameDefaultLibrary github.com/microsoft/typescript-go/internal/execute/incremental.IsBuildInfoFileNameDefaultLibrary
-func IsBuildInfoFileNameDefaultLibrary(fileName string) bool
-//go:linkname NewBuildInfoReader github.com/microsoft/typescript-go/internal/execute/incremental.NewBuildInfoReader
+//go:linkname IsBuildInfoFileNameDefaultLibrary github.com/microsoft/TypeScript/tsc/internal/execute/incremental.IsBuildInfoFileNameDefaultLibrary
+func IsBuildInfoFileNameDefaultLibrary(fileName incremental.BuildInfoPath) bool
+//go:linkname NewBuildInfoReader github.com/microsoft/TypeScript/tsc/internal/execute/incremental.NewBuildInfoReader
 func NewBuildInfoReader(host compiler.CompilerHost) incremental.BuildInfoReader
-//go:linkname NewProgram github.com/microsoft/typescript-go/internal/execute/incremental.NewProgram
+//go:linkname NewProgram github.com/microsoft/TypeScript/tsc/internal/execute/incremental.NewProgram
 func NewProgram(program *compiler.Program, oldProgram *incremental.Program, host incremental.Host, nestedEmitNow func() time.Time, testing bool) *incremental.Program
 type Program = incremental.Program
-//go:linkname ReadBuildInfoProgram github.com/microsoft/typescript-go/internal/execute/incremental.ReadBuildInfoProgram
+//go:linkname ReadBuildInfoProgram github.com/microsoft/TypeScript/tsc/internal/execute/incremental.ReadBuildInfoProgram
 func ReadBuildInfoProgram(config *tsoptions.ParsedCommandLine, reader incremental.BuildInfoReader, host compiler.CompilerHost) *incremental.Program
+//go:linkname ResolveBuildInfoFileName github.com/microsoft/TypeScript/tsc/internal/execute/incremental.ResolveBuildInfoFileName
+func ResolveBuildInfoFileName(fileName incremental.BuildInfoPath, buildInfoDirectory tspath.RootedDirectoryPath, defaultLibraryPath tspath.RootedDirectoryPath) tspath.RootedFilePath
 type SignatureUpdateKind = incremental.SignatureUpdateKind
 const SignatureUpdateKindComputedDts = incremental.SignatureUpdateKindComputedDts
 const SignatureUpdateKindStoredAtEmit = incremental.SignatureUpdateKindStoredAtEmit

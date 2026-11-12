@@ -7,10 +7,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/microsoft/typescript-go/shim/bundled"
-	"github.com/microsoft/typescript-go/shim/tspath"
-	"github.com/microsoft/typescript-go/shim/vfs"
-	"github.com/microsoft/typescript-go/shim/vfs/osvfs"
+	"github.com/microsoft/TypeScript/tsc/shim/bundled"
+	"github.com/microsoft/TypeScript/tsc/shim/tspath"
+	"github.com/microsoft/TypeScript/tsc/shim/vfs"
+	"github.com/microsoft/TypeScript/tsc/shim/vfs/osvfs"
 )
 
 // OverlayVFS wraps a base filesystem with in-memory virtual files.
@@ -22,26 +22,26 @@ type OverlayVFS struct {
 
 var _ vfs.FS = (*OverlayVFS)(nil)
 
-func (o *OverlayVFS) UseCaseSensitiveFileNames() bool {
-	return o.fs.UseCaseSensitiveFileNames()
+func (o *OverlayVFS) CaseSensitivity() tspath.CaseSensitivity {
+	return o.fs.CaseSensitivity()
 }
 
-func (o *OverlayVFS) FileExists(path string) bool {
-	if _, ok := o.VirtualFiles[path]; ok {
+func (o *OverlayVFS) FileExists(path tspath.RootedFilePath) bool {
+	if _, ok := o.VirtualFiles[string(path)]; ok {
 		return true
 	}
 	return o.fs.FileExists(path)
 }
 
-func (o *OverlayVFS) ReadFile(path string) (contents string, ok bool) {
-	if src, ok := o.VirtualFiles[path]; ok {
+func (o *OverlayVFS) ReadFile(path tspath.RootedFilePath) (contents string, ok bool) {
+	if src, ok := o.VirtualFiles[string(path)]; ok {
 		return src, true
 	}
 	return o.fs.ReadFile(path)
 }
 
-func (o *OverlayVFS) DirectoryExists(path string) bool {
-	normalizedPath := tspath.NormalizePath(path)
+func (o *OverlayVFS) DirectoryExists(path tspath.RootedDirectoryPath) bool {
+	normalizedPath := string(path)
 	if !strings.HasSuffix(normalizedPath, "/") {
 		normalizedPath = normalizedPath + "/"
 	}
@@ -53,10 +53,10 @@ func (o *OverlayVFS) DirectoryExists(path string) bool {
 	return o.fs.DirectoryExists(path)
 }
 
-func (o *OverlayVFS) GetAccessibleEntries(path string) (result vfs.Entries) {
+func (o *OverlayVFS) GetAccessibleEntries(path tspath.RootedDirectoryPath) (result vfs.Entries) {
 	result = o.fs.GetAccessibleEntries(path)
 
-	normalizedPath := tspath.NormalizePath(path)
+	normalizedPath := string(path)
 	if !strings.HasSuffix(normalizedPath, "/") {
 		normalizedPath = normalizedPath + "/"
 	}
@@ -95,50 +95,46 @@ func (fi *overlayFileInfo) Sys() any                   { return nil }
 func (fi *overlayFileInfo) Info() (fs.FileInfo, error) { return fi, nil }
 func (fi *overlayFileInfo) Type() fs.FileMode          { return fi.mode.Type() }
 
-func (o *OverlayVFS) Stat(path string) vfs.FileInfo {
-	if src, ok := o.VirtualFiles[path]; ok {
+func (o *OverlayVFS) Stat(path tspath.RootedPath) vfs.FileInfo {
+	if src, ok := o.VirtualFiles[string(path)]; ok {
 		return &overlayFileInfo{
-			name: path,
+			name: string(path),
 			size: int64(len(src)),
 		}
 	}
 	return o.fs.Stat(path)
 }
 
-func (o *OverlayVFS) WalkDir(root string, walkFn vfs.WalkDirFunc) error {
-	return o.fs.WalkDir(root, walkFn)
-}
-
-func (o *OverlayVFS) Realpath(path string) string {
-	if _, ok := o.VirtualFiles[path]; ok {
+func (o *OverlayVFS) Realpath(path tspath.RootedPath) tspath.RootedPath {
+	if _, ok := o.VirtualFiles[string(path)]; ok {
 		return path
 	}
 	return o.fs.Realpath(path)
 }
 
-func (o *OverlayVFS) WriteFile(path string, data string) error {
-	if _, ok := o.VirtualFiles[path]; ok {
+func (o *OverlayVFS) WriteFile(path tspath.RootedFilePath, data string) error {
+	if _, ok := o.VirtualFiles[string(path)]; ok {
 		panic("cannot write to overlay virtual file")
 	}
 	return o.fs.WriteFile(path, data)
 }
 
-func (o *OverlayVFS) AppendFile(path string, data string) error {
-	if _, ok := o.VirtualFiles[path]; ok {
+func (o *OverlayVFS) AppendFile(path tspath.RootedFilePath, data string) error {
+	if _, ok := o.VirtualFiles[string(path)]; ok {
 		panic("cannot append to overlay virtual file")
 	}
 	return o.fs.AppendFile(path, data)
 }
 
-func (o *OverlayVFS) Remove(path string) error {
-	if _, ok := o.VirtualFiles[path]; ok {
+func (o *OverlayVFS) Remove(path tspath.RootedPath) error {
+	if _, ok := o.VirtualFiles[string(path)]; ok {
 		panic("cannot remove overlay virtual file")
 	}
 	return o.fs.Remove(path)
 }
 
-func (o *OverlayVFS) Chtimes(path string, aTime time.Time, mTime time.Time) error {
-	if _, ok := o.VirtualFiles[path]; ok {
+func (o *OverlayVFS) Chtimes(path tspath.RootedPath, aTime time.Time, mTime time.Time) error {
+	if _, ok := o.VirtualFiles[string(path)]; ok {
 		panic("cannot change times on overlay virtual file")
 	}
 	return o.fs.Chtimes(path, aTime, mTime)

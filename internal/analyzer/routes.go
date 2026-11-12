@@ -7,10 +7,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/microsoft/typescript-go/shim/ast"
-	shimchecker "github.com/microsoft/typescript-go/shim/checker"
-	shimcompiler "github.com/microsoft/typescript-go/shim/compiler"
-	shimscanner "github.com/microsoft/typescript-go/shim/scanner"
+	"github.com/microsoft/TypeScript/tsc/shim/ast"
+	shimchecker "github.com/microsoft/TypeScript/tsc/shim/checker"
+	shimcompiler "github.com/microsoft/TypeScript/tsc/shim/compiler"
+	shimscanner "github.com/microsoft/TypeScript/tsc/shim/scanner"
 	"github.com/tsgonest/tsgonest/internal/metadata"
 )
 
@@ -267,7 +267,7 @@ func (a *ControllerAnalyzer) AnalyzeSourceFile(sf *ast.SourceFile) []ControllerI
 			continue
 		}
 
-		infos := a.analyzeClass(stmt, sf.FileName())
+		infos := a.analyzeClass(stmt, string(sf.FileName()))
 		controllers = append(controllers, infos...)
 	}
 
@@ -284,7 +284,7 @@ func (a *ControllerAnalyzer) AnalyzeProgram(includePatterns []string, excludePat
 		}
 
 		// Check if the source file matches include/exclude patterns
-		if !MatchesGlob(sf.FileName(), includePatterns, excludePatterns) {
+		if !MatchesGlob(string(sf.FileName()), includePatterns, excludePatterns) {
 			continue
 		}
 
@@ -479,7 +479,7 @@ func (a *ControllerAnalyzer) collectInheritedMethods(
 			if sym == nil {
 				continue
 			}
-			baseDecl := sym.ValueDeclaration
+			baseDecl := sym.ValueDeclaration()
 			if baseDecl == nil || baseDecl.Kind != ast.KindClassDeclaration {
 				continue
 			}
@@ -989,7 +989,7 @@ func (a *ControllerAnalyzer) warnUnsupportedRuntimeControllers(sf *ast.SourceFil
 
 		if node.Kind == ast.KindClassDeclaration && node.Parent != nil && node.Parent.Kind != ast.KindSourceFile {
 			if a.hasControllerDecorator(node) {
-				a.warnUnsupportedRuntimeController(node, sf.FileName())
+				a.warnUnsupportedRuntimeController(node, string(sf.FileName()))
 			}
 		}
 
@@ -1599,14 +1599,14 @@ func (a *ControllerAnalyzer) resolveDecoratorIn(dec *ast.Node) (category string,
 
 	// An imported decorator resolves to its import specifier, which carries no JSDoc. Follow the alias to the
 	// declaration that does, so @in works on a decorator declared in another file.
-	if sym.Flags&ast.SymbolFlagsAlias != 0 {
+	if sym.Flags()&ast.SymbolFlagsAlias != 0 {
 		if aliased := a.checker.GetAliasedSymbol(sym); aliased != nil {
 			sym = aliased
 		}
 	}
 
 	// Get the value declaration
-	decl := sym.ValueDeclaration
+	decl := sym.ValueDeclaration()
 	if decl == nil {
 		return "", ""
 	}

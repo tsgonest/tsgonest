@@ -3,7 +3,7 @@ package watcher
 import (
 	"syscall"
 
-	"github.com/microsoft/typescript-go/shim/fswatch"
+	"github.com/microsoft/TypeScript/tsc/shim/fswatch"
 )
 
 // This file exposes package-internal seams that exist solely for tests in

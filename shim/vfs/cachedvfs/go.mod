@@ -1,11 +1,5 @@
-module github.com/microsoft/typescript-go/shim/vfs/cachedvfs
+module github.com/microsoft/TypeScript/tsc/shim/vfs/cachedvfs
 
-go 1.25.0
+go 1.27
 
-require github.com/microsoft/typescript-go v0.0.0-20260207160609-5597f4c8ecf4
-
-require (
-	github.com/dlclark/regexp2 v1.11.5 // indirect
-	github.com/go-json-experiment/json v0.0.0-20251027170946-4849db3c2f7e // indirect
-	golang.org/x/sync v0.19.0 // indirect
-)
+require github.com/microsoft/TypeScript/tsc v0.0.0-20261111233104-ad24728023c5

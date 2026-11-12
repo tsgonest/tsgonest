@@ -41,7 +41,7 @@ npx tsgonest build
 
 ## Why
 
-- **~10x faster compilation** via [typescript-go](https://github.com/microsoft/typescript-go)
+- **~10x faster compilation** via tsgo, the [native TypeScript compiler](https://github.com/microsoft/TypeScript)
 - **Zero runtime overhead** — validation and serialization are injected at compile time
 - **Zero decorators** — OpenAPI generated from static analysis, not `@ApiProperty()`
 - **Drop-in** — works with existing NestJS projects, no `ts-patch` or plugins
@@ -133,7 +133,7 @@ macOS (ARM64, x64) / Linux (x64, ARM64 — static, works on glibc + musl) / Wind
 
 ## Acknowledgments
 
-- [typescript-go](https://github.com/microsoft/typescript-go) — Microsoft's Go port of TypeScript
+- [microsoft/TypeScript](https://github.com/microsoft/TypeScript) — the native Go TypeScript compiler (tsgo)
 - [typia](https://github.com/samchon/typia) — Pioneered type-driven validation; tsgonest's branded types are inspired by typia
 - [nestia](https://github.com/samchon/nestia) — Decorator-free NestJS validation and OpenAPI via typia
 - [tsgolint](https://github.com/nicolo-ribaudo/tsgolint) — Established the shim pattern for accessing tsgo internals
