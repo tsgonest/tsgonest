@@ -74,6 +74,8 @@ func GetDeclarationFileExtension(fileName string) string
 func GetDirectoryPath(path string) string
 //go:linkname GetEncodedRootLength github.com/microsoft/typescript-go/internal/tspath.GetEncodedRootLength
 func GetEncodedRootLength(path string) int
+//go:linkname GetLongestExtensionFromPath github.com/microsoft/typescript-go/internal/tspath.GetLongestExtensionFromPath
+func GetLongestExtensionFromPath(path string, extensions []string, ignoreCase bool) string
 //go:linkname GetNormalizedAbsolutePath github.com/microsoft/typescript-go/internal/tspath.GetNormalizedAbsolutePath
 func GetNormalizedAbsolutePath(fileName string, currentDirectory string) string
 //go:linkname GetNormalizedAbsolutePathWithoutRoot github.com/microsoft/typescript-go/internal/tspath.GetNormalizedAbsolutePathWithoutRoot
@@ -131,6 +133,8 @@ type Path = tspath.Path
 func PathIsAbsolute(path string) bool
 //go:linkname PathIsRelative github.com/microsoft/typescript-go/internal/tspath.PathIsRelative
 func PathIsRelative(path string) bool
+//go:linkname RemoveAnyFileExtension github.com/microsoft/typescript-go/internal/tspath.RemoveAnyFileExtension
+func RemoveAnyFileExtension(path string) string
 //go:linkname RemoveExtension github.com/microsoft/typescript-go/internal/tspath.RemoveExtension
 func RemoveExtension(path string, extension string) string
 //go:linkname RemoveFileExtension github.com/microsoft/typescript-go/internal/tspath.RemoveFileExtension
@@ -159,6 +163,8 @@ var SupportedTSImplementationExtensions = tspath.SupportedTSImplementationExtens
 func ToFileNameLowerCase(fileName string) string
 //go:linkname ToPath github.com/microsoft/typescript-go/internal/tspath.ToPath
 func ToPath(fileName string, basePath string, useCaseSensitiveFileNames bool) tspath.Path
+//go:linkname TrimFilePathPrefix github.com/microsoft/typescript-go/internal/tspath.TrimFilePathPrefix
+func TrimFilePathPrefix(path string, prefix string, useCaseSensitiveFileNames bool) (string, bool)
 //go:linkname TryExtractTSExtension github.com/microsoft/typescript-go/internal/tspath.TryExtractTSExtension
 func TryExtractTSExtension(fileName string) string
 //go:linkname TryGetExtensionFromPath github.com/microsoft/typescript-go/internal/tspath.TryGetExtensionFromPath

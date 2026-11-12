@@ -76,8 +76,6 @@ const CheckModeTypeOnly = checker.CheckModeTypeOnly
 type Checker = checker.Checker
 //go:linkname Checker_isReadonlySymbol github.com/microsoft/typescript-go/internal/checker.(*Checker).isReadonlySymbol
 func Checker_isReadonlySymbol(recv *checker.Checker, symbol *ast.Symbol) bool
-//go:linkname Checker_isArrayType github.com/microsoft/typescript-go/internal/checker.(*Checker).isArrayType
-func Checker_isArrayType(recv *checker.Checker, t *checker.Type) bool
 //go:linkname CompareTypes github.com/microsoft/typescript-go/internal/checker.CompareTypes
 func CompareTypes(t1 *checker.Type, t2 *checker.Type) int
 type CompositeSignature = checker.CompositeSignature
@@ -326,6 +324,10 @@ const MappedTypeNameTypeKindFiltering = checker.MappedTypeNameTypeKindFiltering
 const MappedTypeNameTypeKindNone = checker.MappedTypeNameTypeKindNone
 const MappedTypeNameTypeKindRemapping = checker.MappedTypeNameTypeKindRemapping
 type MarkedAssignmentSymbolLinks = checker.MarkedAssignmentSymbolLinks
+type MemberOverrideStatus = checker.MemberOverrideStatus
+const MemberOverrideStatusHasInvalidOverride = checker.MemberOverrideStatusHasInvalidOverride
+const MemberOverrideStatusNeedsOverride = checker.MemberOverrideStatusNeedsOverride
+const MemberOverrideStatusNone = checker.MemberOverrideStatusNone
 type MembersAndExportsLinks = checker.MembersAndExportsLinks
 type MembersOrExportsResolutionKind = checker.MembersOrExportsResolutionKind
 const MembersOrExportsResolutionKindResolvedExports = checker.MembersOrExportsResolutionKindResolvedExports
@@ -397,6 +399,8 @@ const ObjectFlagsIsGenericType = checker.ObjectFlagsIsGenericType
 const ObjectFlagsIsGenericTypeComputed = checker.ObjectFlagsIsGenericTypeComputed
 const ObjectFlagsIsNeverIntersection = checker.ObjectFlagsIsNeverIntersection
 const ObjectFlagsIsNeverIntersectionComputed = checker.ObjectFlagsIsNeverIntersectionComputed
+const ObjectFlagsIsUniformEnum = checker.ObjectFlagsIsUniformEnum
+const ObjectFlagsIsUniformEnumComputed = checker.ObjectFlagsIsUniformEnumComputed
 const ObjectFlagsIsUnknownLikeUnion = checker.ObjectFlagsIsUnknownLikeUnion
 const ObjectFlagsIsUnknownLikeUnionComputed = checker.ObjectFlagsIsUnknownLikeUnionComputed
 const ObjectFlagsJSLiteral = checker.ObjectFlagsJSLiteral
@@ -459,7 +463,6 @@ const RelationComparisonResultOverflow = checker.RelationComparisonResultOverflo
 const RelationComparisonResultReportsMask = checker.RelationComparisonResultReportsMask
 const RelationComparisonResultReportsUnmeasurable = checker.RelationComparisonResultReportsUnmeasurable
 const RelationComparisonResultReportsUnreliable = checker.RelationComparisonResultReportsUnreliable
-const RelationComparisonResultStackDepthOverflow = checker.RelationComparisonResultStackDepthOverflow
 const RelationComparisonResultSucceeded = checker.RelationComparisonResultSucceeded
 type ReverseMappedSymbolLinks = checker.ReverseMappedSymbolLinks
 type ReverseMappedType = checker.ReverseMappedType
@@ -776,6 +779,7 @@ const VarianceFlagsUnmeasurable = checker.VarianceFlagsUnmeasurable
 const VarianceFlagsUnreliable = checker.VarianceFlagsUnreliable
 const VarianceFlagsVarianceMask = checker.VarianceFlagsVarianceMask
 type VarianceLinks = checker.VarianceLinks
+type VarianceStackEntry = checker.VarianceStackEntry
 type VerbosityContext = checker.VerbosityContext
 type WideningContext = checker.WideningContext
 type WideningKind = checker.WideningKind

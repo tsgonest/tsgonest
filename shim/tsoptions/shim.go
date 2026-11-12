@@ -5,6 +5,7 @@ package tsoptions
 
 import "github.com/microsoft/typescript-go/internal/ast"
 import "github.com/microsoft/typescript-go/internal/collections"
+import "github.com/microsoft/typescript-go/internal/contentmapper"
 import "github.com/microsoft/typescript-go/internal/core"
 import "github.com/microsoft/typescript-go/internal/diagnostics"
 import "github.com/microsoft/typescript-go/internal/tsoptions"
@@ -48,11 +49,12 @@ func CreateDiagnosticForNodeInSourceFileOrCompilerDiagnostic(sourceFile *ast.Sou
 type DidYouMeanOptionsDiagnostics = tsoptions.DidYouMeanOptionsDiagnostics
 type ExtendedConfigCache = tsoptions.ExtendedConfigCache
 type ExtendedConfigCacheEntry = tsoptions.ExtendedConfigCacheEntry
-type FileExtensionInfo = tsoptions.FileExtensionInfo
 //go:linkname ForEachCompilerOptionValue github.com/microsoft/typescript-go/internal/tsoptions.ForEachCompilerOptionValue
 func ForEachCompilerOptionValue(options *core.CompilerOptions, declFilter func(*tsoptions.CommandLineOption) bool, fn func(option *tsoptions.CommandLineOption, value reflect.Value, i int) bool) bool
 //go:linkname GetCallbackForFindingPropertyAssignmentByValue github.com/microsoft/typescript-go/internal/tsoptions.GetCallbackForFindingPropertyAssignmentByValue
 func GetCallbackForFindingPropertyAssignmentByValue(value string) func(property *ast.PropertyAssignment) *ast.Node
+//go:linkname GetContentMapperOptionDiagnosticLocation github.com/microsoft/typescript-go/internal/tsoptions.GetContentMapperOptionDiagnosticLocation
+func GetContentMapperOptionDiagnosticLocation(config *tsoptions.ParsedCommandLine, mapper *contentmapper.Mapper, path []contentmapper.OptionPathSegment) (*ast.SourceFile, core.TextRange)
 //go:linkname GetDefaultLibFileName github.com/microsoft/typescript-go/internal/tsoptions.GetDefaultLibFileName
 func GetDefaultLibFileName(options *core.CompilerOptions) string
 //go:linkname GetLibFileName github.com/microsoft/typescript-go/internal/tsoptions.GetLibFileName
@@ -66,7 +68,7 @@ func GetParsedCommandLineOfConfigFile(configFileName string, options *core.Compi
 //go:linkname GetParsedCommandLineOfConfigFilePath github.com/microsoft/typescript-go/internal/tsoptions.GetParsedCommandLineOfConfigFilePath
 func GetParsedCommandLineOfConfigFilePath(configFileName string, path tspath.Path, options *core.CompilerOptions, optionsRaw *collections.OrderedMap[string, any], sys tsoptions.ParseConfigHost, extendedConfigCache tsoptions.ExtendedConfigCache) (*tsoptions.ParsedCommandLine, []*ast.Diagnostic)
 //go:linkname GetSupportedExtensions github.com/microsoft/typescript-go/internal/tsoptions.GetSupportedExtensions
-func GetSupportedExtensions(compilerOptions *core.CompilerOptions, extraFileExtensions []tsoptions.FileExtensionInfo) [][]string
+func GetSupportedExtensions(compilerOptions *core.CompilerOptions, extraExtensions []string) [][]string
 //go:linkname GetSupportedExtensionsWithJsonIfResolveJsonModule github.com/microsoft/typescript-go/internal/tsoptions.GetSupportedExtensionsWithJsonIfResolveJsonModule
 func GetSupportedExtensionsWithJsonIfResolveJsonModule(compilerOptions *core.CompilerOptions, supportedExtensions [][]string) [][]string
 //go:linkname GetTsConfigPropArrayElementValue github.com/microsoft/typescript-go/internal/tsoptions.GetTsConfigPropArrayElementValue
@@ -97,9 +99,9 @@ type ParseConfigHost = tsoptions.ParseConfigHost
 //go:linkname ParseExtendedConfig github.com/microsoft/typescript-go/internal/tsoptions.ParseExtendedConfig
 func ParseExtendedConfig(fileName string, path tspath.Path, resolutionStack []tspath.Path, host tsoptions.ParseConfigHost, extendedConfigCache tsoptions.ExtendedConfigCache) *tsoptions.ExtendedConfigCacheEntry
 //go:linkname ParseJsonConfigFileContent github.com/microsoft/typescript-go/internal/tsoptions.ParseJsonConfigFileContent
-func ParseJsonConfigFileContent(json any, host tsoptions.ParseConfigHost, basePath string, existingOptions *core.CompilerOptions, configFileName string, resolutionStack []tspath.Path, extraFileExtensions []tsoptions.FileExtensionInfo, extendedConfigCache tsoptions.ExtendedConfigCache) *tsoptions.ParsedCommandLine
+func ParseJsonConfigFileContent(json any, host tsoptions.ParseConfigHost, basePath string, existingOptions *core.CompilerOptions, configFileName string, resolutionStack []tspath.Path, extendedConfigCache tsoptions.ExtendedConfigCache) *tsoptions.ParsedCommandLine
 //go:linkname ParseJsonSourceFileConfigFileContent github.com/microsoft/typescript-go/internal/tsoptions.ParseJsonSourceFileConfigFileContent
-func ParseJsonSourceFileConfigFileContent(sourceFile *tsoptions.TsConfigSourceFile, host tsoptions.ParseConfigHost, basePath string, existingOptions *core.CompilerOptions, existingOptionsRaw *collections.OrderedMap[string, any], configFileName string, resolutionStack []tspath.Path, extraFileExtensions []tsoptions.FileExtensionInfo, extendedConfigCache tsoptions.ExtendedConfigCache) *tsoptions.ParsedCommandLine
+func ParseJsonSourceFileConfigFileContent(sourceFile *tsoptions.TsConfigSourceFile, host tsoptions.ParseConfigHost, basePath string, existingOptions *core.CompilerOptions, existingOptionsRaw *collections.OrderedMap[string, any], configFileName string, resolutionStack []tspath.Path, extendedConfigCache tsoptions.ExtendedConfigCache) *tsoptions.ParsedCommandLine
 //go:linkname ParseListTypeOption github.com/microsoft/typescript-go/internal/tsoptions.ParseListTypeOption
 func ParseListTypeOption(opt *tsoptions.CommandLineOption, value string) ([]any, []*ast.Diagnostic)
 //go:linkname ParseString github.com/microsoft/typescript-go/internal/tsoptions.ParseString
@@ -114,6 +116,7 @@ func ParseTypeAcquisition(key string, value any, allOptions *core.TypeAcquisitio
 func ParseWatchOptions(key string, value any, allOptions *core.WatchOptions) []*ast.Diagnostic
 type ParsedBuildCommandLine = tsoptions.ParsedBuildCommandLine
 type ParsedCommandLine = tsoptions.ParsedCommandLine
+type ParsedOptions = tsoptions.ParsedOptions
 type SourceOutputAndProjectReference = tsoptions.SourceOutputAndProjectReference
 type TSConfig = tsoptions.TSConfig
 //go:linkname TargetToLibMap github.com/microsoft/typescript-go/internal/tsoptions.TargetToLibMap

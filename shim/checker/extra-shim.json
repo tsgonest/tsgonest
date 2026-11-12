@@ -1,7 +1,6 @@
 {
   "ExtraMethods": {
     "Checker": [
-      "isArrayType",
       "isReadonlySymbol"
     ]
   }

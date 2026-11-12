@@ -15,5 +15,5 @@ func CreateDefaultFS() vfs.FS {
 
 // CreateDefaultHost creates a compiler host with default settings.
 func CreateDefaultHost(cwd string, fs vfs.FS) shimcompiler.CompilerHost {
-	return shimcompiler.NewCompilerHost(cwd, fs, bundled.LibPath(), nil, nil)
+	return shimcompiler.NewCompilerHost(cwd, fs, bundled.LibPath(), nil, nil, nil)
 }
