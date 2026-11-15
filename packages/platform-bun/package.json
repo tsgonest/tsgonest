@@ -39,7 +39,7 @@
   },
   "devDependencies": {
     "@nestjs/common": "^12.4.2",
-    "@nestjs/core": "^12.4.2",
+    "@nestjs/core": "^12.5.0",
     "@types/node": "^26.6.6",
     "bun-types": "^1.4.4",
     "reflect-metadata": "^0.2.2",
